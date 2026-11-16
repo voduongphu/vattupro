@@ -11,6 +11,7 @@ export interface User {
   emailDigest?: string;
   department?: string;
   isActive: boolean;
+  allowedWarehouseIds?: string[];
   createdAt: string;
   lastLogin?: string;
   sessionRevokedAt?: number;
@@ -276,6 +277,7 @@ export interface InventoryStockRecord {
 
 export interface StockFilterParams {
   warehouseId?: string;
+  allowedWarehouseIds?: string[];
   packingListNo?: string;
   shipment?: string;
   manufacturer?: string;

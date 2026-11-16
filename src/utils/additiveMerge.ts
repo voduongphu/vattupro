@@ -83,6 +83,68 @@ export function isBootstrappedAdminUser(u?: Partial<User> | null): boolean {
   return false;
 }
 
+export function normalizeAllowedWarehouseIds(ids?: unknown): string[] {
+  if (!Array.isArray(ids)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    const raw = typeof ids[i] === 'string' ? ids[i].trim() : '';
+    if (!raw || seen.has(raw)) continue;
+    seen.add(raw);
+    out.push(raw);
+  }
+  return out;
+}
+
+export function areStringArraysEqual(a?: string[], b?: string[]): boolean {
+  const normA = a === undefined ? undefined : [...normalizeAllowedWarehouseIds(a)].sort();
+  const normB = b === undefined ? undefined : [...normalizeAllowedWarehouseIds(b)].sort();
+  if (normA === undefined && normB === undefined) return true;
+  if (normA === undefined || normB === undefined) return false;
+  if (normA.length !== normB.length) return false;
+  for (let i = 0; i < normA.length; i++) {
+    if (normA[i] !== normB[i]) return false;
+  }
+  return true;
+}
+
+export function isUserAdmin(user?: Partial<User> | null): boolean {
+  if (!user) return false;
+  return user.role === 'admin' || isBootstrappedAdminUser(user);
+}
+
+export function getAuthorizedWarehouses(warehouses: Warehouse[], user?: User | null): Warehouse[] {
+  if (!user || !Array.isArray(warehouses)) return [];
+  if (isUserAdmin(user)) return warehouses;
+  const allowedIds = normalizeAllowedWarehouseIds(user.allowedWarehouseIds);
+  if (allowedIds.length === 0) return [];
+  const allowedSet = new Set(allowedIds);
+  return warehouses.filter((w) => allowedSet.has(w.id));
+}
+
+export function isWarehouseAuthorized(
+  warehouseId?: string,
+  warehouseName?: string,
+  warehouses?: Warehouse[],
+  user?: User | null
+): boolean {
+  if (!user) return false;
+  if (isUserAdmin(user)) return true;
+  const allowedIds = normalizeAllowedWarehouseIds(user.allowedWarehouseIds);
+  if (allowedIds.length === 0) return false;
+  const allowedSet = new Set(allowedIds);
+  if (warehouseId && allowedSet.has(warehouseId)) return true;
+  if (warehouseName && Array.isArray(warehouses)) {
+    const targetName = foldVietnameseAscii(warehouseName);
+    if (targetName) {
+      return warehouses.some(
+        (w) => allowedSet.has(w.id) && foldVietnameseAscii(w.name) === targetName
+      );
+    }
+  }
+  return false;
+}
+
 export interface GoogleIdentityInput {
   email: string;
   displayName?: string | null;
@@ -187,26 +249,32 @@ export function resolveGoogleUserRecord(
         ? matched.fullName
         : cleanDisplay || matched.fullName || matched.username;
 
-    const needsEnrich =
-      (matched.email || '').trim().toLowerCase() !== emailLower ||
+    // Không kích hoạt cloudMetaDirty/bumping updatedAt chỉ vì accounts_0 ẩn PII email khi emailDigest đã khớp
+    const needsSyncMutation =
       matched.emailDigest !== emailDigest ||
       matched.fullName !== nextFullName;
+    const needsLocalEmail =
+      (matched.email || '').trim().toLowerCase() !== emailLower ||
+      !matched.password;
 
-    const enrichedUser: User = needsEnrich
-      ? {
-          ...matched,
-          fullName: nextFullName,
-          email: emailLower,
-          emailDigest,
-          password: matched.password || 'google-oauth',
-          updatedAt: Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1)
-        }
-      : matched;
+    const enrichedUser: User =
+      needsSyncMutation || needsLocalEmail
+        ? {
+            ...matched,
+            fullName: nextFullName,
+            email: emailLower,
+            emailDigest,
+            password: matched.password || 'google-oauth',
+            updatedAt: needsSyncMutation
+              ? Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1)
+              : matched.updatedAt
+          }
+        : matched;
 
     return {
       allowed: true,
       isNew: false,
-      mutated: needsEnrich,
+      mutated: needsSyncMutation,
       user: enrichedUser
     };
   }
@@ -315,8 +383,12 @@ export function computeMetaDigest(
 
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
+    const allowedWhStr =
+      u.allowedWarehouseIds !== undefined
+        ? [...normalizeAllowedWarehouseIds(u.allowedWarehouseIds)].sort().join(',')
+        : '';
     const [h1, h2] = hashPair(
-      `U|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${u.isActive ? 1 : 0}|${u.phone || ''}|${u.email || ''}|${u.department || ''}|${Number(u.updatedAt) || 0}|${Number(u.sessionRevokedAt) || 0}`
+      `U|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${u.isActive ? 1 : 0}|${u.phone || ''}|${u.email || ''}|${u.department || ''}|${allowedWhStr}|${Number(u.updatedAt) || 0}|${Number(u.sessionRevokedAt) || 0}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -565,17 +637,27 @@ export function mergeUsersAdditive(
     }
 
     if (existIdx === undefined) {
+      const normalizedAllowed =
+        !isProtectedAdmin && inc.role !== 'admin' && inc.allowedWarehouseIds !== undefined
+          ? normalizeAllowedWarehouseIds(inc.allowedWarehouseIds)
+          : undefined;
+      const baseInc: User = isProtectedAdmin || inc.role === 'admin'
+        ? { ...inc, allowedWarehouseIds: undefined }
+        : normalizedAllowed !== undefined
+          ? { ...inc, allowedWarehouseIds: normalizedAllowed }
+          : inc;
       const normalizedInc: User = isProtectedAdmin
         ? {
-            ...inc,
+            ...baseInc,
             role: 'admin',
             isActive: true,
             email: BOOTSTRAPPED_ADMIN_EMAIL,
-            emailDigest: BOOTSTRAPPED_ADMIN_DIGEST
+            emailDigest: BOOTSTRAPPED_ADMIN_DIGEST,
+            allowedWarehouseIds: undefined
           }
-        : incEmDigest && !inc.emailDigest
-          ? { ...inc, emailDigest: incEmDigest }
-          : inc;
+        : incEmDigest && !baseInc.emailDigest
+          ? { ...baseInc, emailDigest: incEmDigest }
+          : baseInc;
       const idx = result.length;
       result.push(normalizedInc);
       if (uKey) indexByUsername.set(uKey, idx);
@@ -606,19 +688,29 @@ export function mergeUsersAdditive(
         const mergedEmailDigest = protectAdmin
           ? BOOTSTRAPPED_ADMIN_DIGEST
           : computeEmailAuthDigest(mergedEmailVal) || inc.emailDigest || curr.emailDigest || undefined;
+        const nextRole = protectAdmin ? 'admin' : inc.role || curr.role;
+        const nextAllowedWarehouseIds =
+          protectAdmin || nextRole === 'admin'
+            ? undefined
+            : inc.allowedWarehouseIds !== undefined
+              ? normalizeAllowedWarehouseIds(inc.allowedWarehouseIds)
+              : curr.allowedWarehouseIds !== undefined
+                ? normalizeAllowedWarehouseIds(curr.allowedWarehouseIds)
+                : undefined;
         const nextUser: User = {
           ...curr,
           ...inc,
           id: preferDeclaredInc ? inc.id || curr.id : curr.id || inc.id,
           username: preferDeclaredInc ? inc.username || curr.username : curr.username || inc.username,
           fullName: inc.fullName || curr.fullName,
-          role: protectAdmin ? 'admin' : inc.role || curr.role,
+          role: nextRole,
           isActive: protectAdmin ? true : inc.isActive,
           email: mergedEmailVal,
           emailDigest: mergedEmailDigest,
           phone: inc.phone !== undefined && inc.phone !== '' ? inc.phone : curr.phone,
           department: inc.department || curr.department,
           password: inc.password || curr.password,
+          allowedWarehouseIds: nextAllowedWarehouseIds,
           lastLogin: inc.lastLogin || curr.lastLogin,
           sessionRevokedAt: maxRevokedAt,
           updatedAt: targetUpdatedAt
@@ -634,6 +726,7 @@ export function mergeUsersAdditive(
           nextUser.email !== curr.email ||
           nextUser.emailDigest !== curr.emailDigest ||
           nextUser.department !== curr.department ||
+          !areStringArraysEqual(nextUser.allowedWarehouseIds, curr.allowedWarehouseIds) ||
           nextUser.sessionRevokedAt !== curr.sessionRevokedAt ||
           nextUser.updatedAt !== curr.updatedAt
         ) {
@@ -655,6 +748,14 @@ export function mergeUsersAdditive(
         const mergedPass = curr.password || inc.password;
         const mergedRole = protectAdmin ? 'admin' : curr.role;
         const mergedActive = protectAdmin ? true : curr.isActive;
+        const mergedAllowedWarehouseIds =
+          protectAdmin || mergedRole === 'admin'
+            ? undefined
+            : curr.allowedWarehouseIds !== undefined
+              ? normalizeAllowedWarehouseIds(curr.allowedWarehouseIds)
+              : inc.allowedWarehouseIds !== undefined
+                ? normalizeAllowedWarehouseIds(inc.allowedWarehouseIds)
+                : undefined;
         if (
           mergedFullName !== curr.fullName ||
           mergedEmail !== curr.email ||
@@ -664,6 +765,7 @@ export function mergeUsersAdditive(
           mergedPass !== curr.password ||
           mergedRole !== curr.role ||
           mergedActive !== curr.isActive ||
+          !areStringArraysEqual(mergedAllowedWarehouseIds, curr.allowedWarehouseIds) ||
           maxRevokedAt !== curr.sessionRevokedAt
         ) {
           result[existIdx] = {
@@ -676,6 +778,7 @@ export function mergeUsersAdditive(
             phone: mergedPhone,
             department: mergedDept,
             password: mergedPass,
+            allowedWarehouseIds: mergedAllowedWarehouseIds,
             sessionRevokedAt: maxRevokedAt
           };
           if (mergedEmailDigest) indexByEmailDigest.set(mergedEmailDigest, existIdx);

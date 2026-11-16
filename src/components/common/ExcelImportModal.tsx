@@ -36,7 +36,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   isOpen,
   onClose,
   type,
-  warehouses = [],
+  warehouses,
   onImportSuccess
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -59,7 +59,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const availableWarehouses = warehouses.length > 0 ? warehouses : StorageService.getWarehouses();
+  const availableWarehouses = warehouses !== undefined ? warehouses : StorageService.getWarehouses();
 
   // Tính toán thống kê tổng hợp chỉ 1 lần bằng useMemo O(N)
   const summaryStats = useMemo(() => {

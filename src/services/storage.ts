@@ -29,7 +29,8 @@ import {
   mergeOsdReceiptsAdditive,
   buildLatestMaterialsFromReceipts,
   collectUsedMaterialCodeKeys,
-  generateUniqueMaterialCode
+  generateUniqueMaterialCode,
+  normalizeAllowedWarehouseIds
 } from '../utils/additiveMerge';
 import { incrementVersionVector } from '../utils/versionVector';
 
@@ -1047,6 +1048,12 @@ function applyStockAttributeFilters(
 ): InventoryStockRecord[] {
   if (!filter) return baseRecords;
 
+  const hasAllowedScope = Array.isArray(filter.allowedWarehouseIds);
+  const allowedSet = hasAllowedScope ? new Set(filter.allowedWarehouseIds!) : null;
+  if (allowedSet && allowedSet.size === 0) {
+    return [];
+  }
+
   const whId =
     !skipWarehouseFilter && filter.warehouseId && filter.warehouseId !== 'all'
       ? filter.warehouseId
@@ -1085,13 +1092,26 @@ function applyStockAttributeFilters(
       : '';
   const searchQ = filter.searchQuery ? filter.searchQuery.normalize('NFC').toLowerCase().trim() : '';
 
-  if (!whId && !plQ && !shpQ && !makerQ && !supQ && !pkgNoQ && !pkgNameQ && !catQ && !dwgQ && !searchQ) {
+  if (
+    !allowedSet &&
+    !whId &&
+    !plQ &&
+    !shpQ &&
+    !makerQ &&
+    !supQ &&
+    !pkgNoQ &&
+    !pkgNameQ &&
+    !catQ &&
+    !dwgQ &&
+    !searchQ
+  ) {
     return baseRecords;
   }
 
   const result: InventoryStockRecord[] = [];
   for (let i = 0; i < baseRecords.length; i++) {
     const r = baseRecords[i];
+    if (allowedSet && !allowedSet.has(r.warehouseId)) continue;
     if (whId && r.warehouseId !== whId) continue;
     if (plQ && !r.packingListNo.toLowerCase().includes(plQ)) continue;
     if (shpQ && !r.shipment.toLowerCase().includes(shpQ)) continue;
@@ -1339,6 +1359,12 @@ export const StorageService = {
       password: cleanPassword,
       email: cleanEmail,
       emailDigest: computeEmailAuthDigest(cleanEmail) || user.emailDigest,
+      allowedWarehouseIds:
+        user.role === 'admin'
+          ? undefined
+          : user.allowedWarehouseIds !== undefined
+            ? normalizeAllowedWarehouseIds(user.allowedWarehouseIds)
+            : [],
       id: `user-${now}-${Math.random().toString(36).slice(2, 6)}`,
       createdAt: new Date(now).toISOString(),
       updatedAt: monotonicTs
@@ -1396,12 +1422,17 @@ export const StorageService = {
     );
   },
 
-  updateUser(id: string, updates: Partial<User>): User | null {
+  updateUser(
+    id: string,
+    updates: Partial<User>,
+    options?: { preserveUpdatedAt?: boolean; emitMutation?: boolean }
+  ): User | null {
     const users = [...this.getUsers()];
     const index = users.findIndex((u) => u.id === id);
     if (index === -1) return null;
     const prev = users[index];
     const isAdminRoot = isBootstrappedAdminUser(prev);
+    const nextRole = isAdminRoot ? 'admin' : updates.role !== undefined ? updates.role : prev.role;
     const nextEmail = isAdminRoot
       ? 'voduongphu@gmail.com'
       : updates.email !== undefined
@@ -1409,26 +1440,39 @@ export const StorageService = {
         : prev.email;
     const nextEmailDigest =
       computeEmailAuthDigest(nextEmail) || prev.emailDigest || undefined;
-    const nextUpdatedAt = Math.max(
-      Date.now(),
-      (Number(prev.updatedAt) || 0) + 1,
-      Number(updates.updatedAt) || 0
-    );
+    const nextUpdatedAt = options?.preserveUpdatedAt
+      ? Number(updates.updatedAt) || Number(prev.updatedAt) || 1
+      : Math.max(
+          Date.now(),
+          (Number(prev.updatedAt) || 0) + 1,
+          Number(updates.updatedAt) || 0
+        );
+    const nextAllowedWarehouseIds =
+      isAdminRoot || nextRole === 'admin'
+        ? undefined
+        : updates.allowedWarehouseIds !== undefined
+          ? normalizeAllowedWarehouseIds(updates.allowedWarehouseIds)
+          : prev.allowedWarehouseIds !== undefined
+            ? normalizeAllowedWarehouseIds(prev.allowedWarehouseIds)
+            : undefined;
     users[index] = {
       ...prev,
       ...updates,
-      role: isAdminRoot ? 'admin' : updates.role !== undefined ? updates.role : prev.role,
+      role: nextRole,
       isActive: isAdminRoot ? true : updates.isActive !== undefined ? updates.isActive : prev.isActive,
       username: (updates.username !== undefined ? updates.username : prev.username).normalize('NFC').trim(),
       fullName: (updates.fullName !== undefined ? updates.fullName : prev.fullName).normalize('NFC').trim(),
       email: nextEmail,
       emailDigest: nextEmailDigest,
       password: updates.password !== undefined ? updates.password.trim() : prev.password,
+      allowedWarehouseIds: nextAllowedWarehouseIds,
       updatedAt: nextUpdatedAt
     };
     this.saveUsers(users);
     notifySubscribers();
-    emitLocalMutation('meta');
+    if (options?.emitMutation !== false) {
+      emitLocalMutation('meta');
+    }
     return users[index];
   },
 
@@ -2474,13 +2518,53 @@ export const StorageService = {
     return cachedBaseRecords;
   },
 
-  getInventoryFilterOptions() {
-    this.ensureBaseInventoryCache();
-    return cachedFilterOptions;
+  getInventoryFilterOptions(allowedWarehouseIds?: string[]) {
+    const baseRecords = this.ensureBaseInventoryCache();
+    if (!Array.isArray(allowedWarehouseIds)) {
+      return cachedFilterOptions;
+    }
+    const allowedSet = new Set(allowedWarehouseIds);
+    const plSet = new Set<string>();
+    const shpSet = new Set<string>();
+    const makerSet = new Set<string>();
+    const supSet = new Set<string>();
+    const catSet = new Set<string>();
+
+    for (let i = 0; i < baseRecords.length; i++) {
+      const r = baseRecords[i];
+      if (!allowedSet.has(r.warehouseId)) continue;
+      if (r.packingListNo && r.packingListNo !== 'N/A') plSet.add(r.packingListNo);
+      if (r.shipment && r.shipment !== 'N/A') shpSet.add(r.shipment);
+      if (r.manufacturer && r.manufacturer !== 'N/A') makerSet.add(r.manufacturer);
+      if (r.supplier && r.supplier !== 'N/A') supSet.add(r.supplier);
+      if (r.category && r.category !== 'N/A') catSet.add(r.category);
+    }
+
+    const takeFirst = (set: Set<string>, limit: number): string[] => {
+      const out: string[] = [];
+      for (const val of set) {
+        out.push(val);
+        if (out.length >= limit) break;
+      }
+      return out;
+    };
+
+    return {
+      availablePLs: takeFirst(plSet, 150),
+      availableShipments: takeFirst(shpSet, 150),
+      availableMakers: takeFirst(makerSet, 150),
+      availableSuppliers: takeFirst(supSet, 150),
+      availableCategories: takeFirst(catSet, 150),
+      totalPLCount: plSet.size,
+      totalShipmentCount: shpSet.size
+    };
   },
 
   // TÍNH TOÁN TỒN KHO THEO TỪNG KHO BÃI (Dùng cho Chọn tồn kho Xuất kho & Tổng quan)
   calculateInventoryRecords(filter?: StockFilterParams): InventoryStockRecord[] {
+    if (Array.isArray(filter?.allowedWarehouseIds) && filter.allowedWarehouseIds.length === 0) {
+      return [];
+    }
     let baseRecords: InventoryStockRecord[];
 
     if (filter?.startDate || filter?.endDate) {
@@ -2505,10 +2589,15 @@ export const StorageService = {
   calculateMergedInventoryReport(filter?: StockFilterParams): InventoryStockRecord[] {
     const hasDateFilter = Boolean(filter?.startDate || filter?.endDate);
     const whId = filter?.warehouseId && filter.warehouseId !== 'all' ? filter.warehouseId : '';
+    const hasAllowedScope = Array.isArray(filter?.allowedWarehouseIds);
+    const allowedSet = hasAllowedScope ? new Set(filter!.allowedWarehouseIds!) : null;
+    if (allowedSet && allowedSet.size === 0) {
+      return [];
+    }
 
     let mergedRecords: InventoryStockRecord[];
 
-    if (!hasDateFilter && !whId) {
+    if (!hasDateFilter && !whId && !hasAllowedScope) {
       const baseRecords = this.ensureBaseInventoryCache();
       if (cachedMergedReportVersion !== inventoryVersion) {
         cachedMergedReportRecords = mergeRecordsForInventoryReport(baseRecords);
@@ -2536,12 +2625,13 @@ export const StorageService = {
         scopedRecords = this.ensureBaseInventoryCache();
       }
 
-      if (whId) {
+      if (whId || allowedSet) {
         const whFiltered: InventoryStockRecord[] = [];
         for (let i = 0; i < scopedRecords.length; i++) {
-          if (scopedRecords[i].warehouseId === whId) {
-            whFiltered.push(scopedRecords[i]);
-          }
+          const rec = scopedRecords[i];
+          if (allowedSet && !allowedSet.has(rec.warehouseId)) continue;
+          if (whId && rec.warehouseId !== whId) continue;
+          whFiltered.push(rec);
         }
         scopedRecords = whFiltered;
       }

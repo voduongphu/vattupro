@@ -2,7 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { StorageService } from '../../services/storage';
-import { roundQty, sumInboundItems, sumOutboundItems } from '../../utils/additiveMerge';
+import {
+  getAuthorizedWarehouses,
+  isWarehouseAuthorized,
+  roundQty,
+  sumInboundItems,
+  sumOutboundItems
+} from '../../utils/additiveMerge';
 import { formatVoucherDateVi } from '../../services/excelService';
 import { 
   ArrowDownLeft, 
@@ -14,7 +20,8 @@ import {
   Truck, 
   ShieldCheck,
   TrendingUp,
-  FileWarning
+  FileWarning,
+  ShieldAlert
 } from 'lucide-react';
 
 interface DashboardOverviewProps {
@@ -22,7 +29,7 @@ interface DashboardOverviewProps {
 }
 
 export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, isAdmin } = useAuth();
   const { language, t } = useLanguage();
   const [stats, setStats] = useState({
     totalStockWeightKg: 0,
@@ -31,6 +38,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
     totalShipmentCount: 0,
     totalWarehouseCount: 0,
     totalMaterialCount: 0,
+    noAssignedWarehouses: false,
+    hasSystemWarehouses: false,
     recentInbounds: [] as any[],
     recentOutbounds: [] as any[],
     categoryBreakdown: [] as { name: string; count: number; weight: number }[]
@@ -38,21 +47,40 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
 
   useEffect(() => {
     const computeStats = () => {
-      const inbounds = StorageService.getInboundReceipts();
-      const outbounds = StorageService.getOutboundReceipts();
-      const warehouses = StorageService.getWarehouses();
+      const allInbounds = StorageService.getInboundReceipts();
+      const allOutbounds = StorageService.getOutboundReceipts();
+      const allWarehouses = StorageService.getWarehouses();
       const materials = StorageService.getMaterials();
-      const records = StorageService.calculateInventoryRecords();
-      const filterOpts = StorageService.getInventoryFilterOptions();
+
+      const authorizedWarehouses = getAuthorizedWarehouses(allWarehouses, currentUser);
+      const allowedWarehouseIds = isAdmin ? undefined : authorizedWarehouses.map((w) => w.id);
+      const inbounds = isAdmin
+        ? allInbounds
+        : allInbounds.filter((r) =>
+            isWarehouseAuthorized(r.warehouseId, r.warehouseName, allWarehouses, currentUser)
+          );
+      const outbounds = isAdmin
+        ? allOutbounds
+        : allOutbounds.filter((r) =>
+            isWarehouseAuthorized(r.warehouseId, r.warehouseName, allWarehouses, currentUser)
+          );
+
+      const records = StorageService.calculateInventoryRecords(
+        isAdmin ? undefined : { allowedWarehouseIds }
+      );
+      const filterOpts = StorageService.getInventoryFilterOptions(allowedWarehouseIds);
 
       let totalWeight = 0;
       let totalQty = 0;
       const catMap = new Map<string, { count: number; weight: number }>();
+      const uniqueMaterialKeys = new Set<string>();
 
       for (let i = 0; i < records.length; i++) {
         const r = records[i];
         totalWeight += r.currentWeightKg;
         totalQty += r.currentQuantity;
+        const matKey = (r.materialCode || r.materialName || r.id).trim().toUpperCase();
+        if (matKey) uniqueMaterialKeys.add(matKey);
         const cat = r.category || 'Khác';
         const curr = catMap.get(cat);
         if (curr) {
@@ -96,8 +124,10 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
         totalStockQty: roundQty(totalQty),
         totalPLCount: filterOpts.totalPLCount,
         totalShipmentCount: filterOpts.totalShipmentCount,
-        totalWarehouseCount: warehouses.length,
-        totalMaterialCount: materials.length,
+        totalWarehouseCount: authorizedWarehouses.length,
+        totalMaterialCount: isAdmin ? materials.length : uniqueMaterialKeys.size,
+        noAssignedWarehouses: !isAdmin && authorizedWarehouses.length === 0,
+        hasSystemWarehouses: allWarehouses.length > 0,
         recentInbounds: inbounds.slice(0, 4),
         recentOutbounds: outbounds.slice(0, 4),
         categoryBreakdown
@@ -106,7 +136,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
 
     computeStats();
     return StorageService.subscribe(computeStats);
-  }, []);
+  }, [currentUser, isAdmin]);
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -171,6 +201,24 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
         {/* Decorative background glow */}
         <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-gradient-to-l from-blue-500/10 to-transparent pointer-events-none" />
       </div>
+
+      {stats.noAssignedWarehouses && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start gap-3 text-xs text-amber-950 shadow-xs">
+          <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold text-sm text-amber-900">
+              {stats.hasSystemWarehouses
+                ? 'Tài khoản chưa được phân quyền thao tác kho nào'
+                : 'Chưa tải được dữ liệu kho từ Cloud Firestore'}
+            </div>
+            <p className="mt-1 text-amber-800 leading-relaxed">
+              {stats.hasSystemWarehouses
+                ? 'Vui lòng liên hệ Quản trị viên (Admin) để cấp quyền truy cập cho các kho bãi bạn phụ trách trong mục Quản Lý Người Dùng.'
+                : 'Vui lòng nhấn nút "Đồng Bộ Cloud" trên thanh tiêu đề để tải danh mục kho và dữ liệu mới nhất từ Cloud Firestore.'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">

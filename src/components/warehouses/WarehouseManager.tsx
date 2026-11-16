@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { Warehouse } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
-import { deriveWarehouseAbbrev } from '../../utils/additiveMerge';
+import { deriveWarehouseAbbrev, getAuthorizedWarehouses } from '../../utils/additiveMerge';
 import { 
   Warehouse as WarehouseIcon, 
   Plus, 
@@ -21,7 +21,7 @@ import {
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 
 export const WarehouseManager: React.FC = () => {
-  const { isAdmin } = useAuth();
+  const { currentUser, isAdmin } = useAuth();
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
@@ -171,7 +171,12 @@ export const WarehouseManager: React.FC = () => {
     setWarehouseToDelete(null);
   };
 
-  const filtered = warehouses.filter(w => {
+  const visibleWarehouses = useMemo(
+    () => getAuthorizedWarehouses(warehouses, currentUser),
+    [warehouses, currentUser]
+  );
+
+  const filtered = visibleWarehouses.filter(w => {
     const matchSearch = 
       w.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       w.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -251,7 +256,7 @@ export const WarehouseManager: React.FC = () => {
             onChange={(e) => setFilterType(e.target.value)}
             className="flex-1 sm:flex-initial px-3 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
           >
-            <option value="all">Tất cả kho bãi ({warehouses.length})</option>
+            <option value="all">Tất cả kho bãi ({visibleWarehouses.length})</option>
             <option value="covered">Kho kín tiêu chuẩn</option>
             <option value="open_yard">Bãi ngoài trời</option>
             <option value="specialized">Kho chuyên dụng / điều hòa</option>
@@ -261,6 +266,15 @@ export const WarehouseManager: React.FC = () => {
       </div>
 
       {/* Warehouses Grid Cards */}
+      {filtered.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-8 text-center text-sm text-slate-500 shadow-sm">
+          {!isAdmin && visibleWarehouses.length === 0
+            ? warehouses.length === 0
+              ? 'Chưa có dữ liệu kho bãi tại thiết bị. Vui lòng bấm "Đồng Bộ Cloud" trên thanh tiêu đề để tải dữ liệu.'
+              : 'Tài khoản của bạn chưa được Admin phân quyền thao tác trên kho bãi nào.'
+            : 'Không tìm thấy kho bãi nào phù hợp điều kiện lọc.'}
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {filtered.map(w => (
           <div key={w.id} className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm hover:shadow-md transition flex flex-col justify-between">
@@ -348,6 +362,7 @@ export const WarehouseManager: React.FC = () => {
           </div>
         ))}
       </div>
+      )}
 
       {/* Modal Thêm Kho Bãi */}
       {isAddModalOpen && (

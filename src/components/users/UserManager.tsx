@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { User, UserRole } from '../../types/inventory';
+import { User, UserRole, Warehouse } from '../../types/inventory';
 import {
   Users,
   UserPlus,
@@ -17,27 +17,37 @@ import {
   Mail,
   Lock,
   Unlock,
-  Cloud,
-  CloudUpload,
-  RefreshCw
+  Warehouse as WarehouseIcon
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   computeEmailAuthDigest,
+  deriveWarehouseAbbrev,
   isBootstrappedAdminUser,
+  isUserAdmin,
+  normalizeAllowedWarehouseIds,
   normUserKey
 } from '../../utils/additiveMerge';
+import { StorageService } from '../../services/storage';
 import { SyncService } from '../../services/syncService';
 
 export const UserManager: React.FC = () => {
   const { users, isAdmin, addUser, updateUser, deleteUser } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRole, setSelectedRole] = useState<string>('all');
+  const [warehouses, setWarehouses] = useState<Warehouse[]>(() => StorageService.getWarehouses());
   const [cloudState, setCloudState] = useState(() => SyncService.getCloudState());
 
   useEffect(() => {
-    return SyncService.subscribeCloudState((st) => setCloudState(st));
+    const unsubCloud = SyncService.subscribeCloudState((st) => setCloudState(st));
+    const unsubStorage = StorageService.subscribe(() => {
+      setWarehouses(StorageService.getWarehouses());
+    });
+    return () => {
+      unsubCloud();
+      unsubStorage();
+    };
   }, []);
 
   // Modals state
@@ -52,6 +62,7 @@ export const UserManager: React.FC = () => {
   const [formRole, setFormRole] = useState<UserRole>('staff');
   const [formPhone, setFormPhone] = useState('');
   const [formDepartment, setFormDepartment] = useState('');
+  const [formAllowedWarehouseIds, setFormAllowedWarehouseIds] = useState<string[]>([]);
   const [formIsActive, setFormIsActive] = useState(true);
   const [formError, setFormError] = useState('');
   const [notification, setNotification] = useState<{
@@ -65,18 +76,21 @@ export const UserManager: React.FC = () => {
   };
 
   const openAddModal = () => {
+    setWarehouses(StorageService.getWarehouses());
     setFormEmail('');
     setFormFullName('');
     setFormUsername('');
     setFormRole('staff');
     setFormPhone('');
     setFormDepartment('Ban Quản Lý Kho Bãi');
+    setFormAllowedWarehouseIds([]);
     setFormIsActive(true);
     setFormError('');
     setIsAddModalOpen(true);
   };
 
   const openEditModal = (u: User) => {
+    setWarehouses(StorageService.getWarehouses());
     const mainAdmin = isBootstrappedAdminUser(u);
     setEditingUser(u);
     setFormEmail(mainAdmin ? BOOTSTRAPPED_ADMIN_EMAIL : u.email || '');
@@ -85,8 +99,17 @@ export const UserManager: React.FC = () => {
     setFormRole(mainAdmin ? 'admin' : u.role);
     setFormPhone(u.phone || '');
     setFormDepartment(u.department || '');
+    setFormAllowedWarehouseIds(
+      mainAdmin || u.role === 'admin' ? [] : normalizeAllowedWarehouseIds(u.allowedWarehouseIds)
+    );
     setFormIsActive(mainAdmin ? true : u.isActive);
     setFormError('');
+  };
+
+  const toggleWarehousePermission = (whId: string) => {
+    setFormAllowedWarehouseIds((prev) =>
+      prev.includes(whId) ? prev.filter((id) => id !== whId) : [...prev, whId]
+    );
   };
 
   const buildUniqueUsername = (preferred: string, emailLower: string, excludeId?: string): string => {
@@ -136,16 +159,21 @@ export const UserManager: React.FC = () => {
 
     const finalUsername = buildUniqueUsername(formUsername, cleanEmail);
 
+    const resolvedRole: UserRole = cleanEmail === BOOTSTRAPPED_ADMIN_EMAIL ? 'admin' : formRole;
+    const resolvedAllowedWarehouses =
+      resolvedRole === 'admin' ? undefined : normalizeAllowedWarehouseIds(formAllowedWarehouseIds);
+
     try {
       addUser({
         username: finalUsername,
         fullName: cleanFullName,
-        role: cleanEmail === BOOTSTRAPPED_ADMIN_EMAIL ? 'admin' : formRole,
+        role: resolvedRole,
         password: 'google-oauth',
         email: cleanEmail,
         emailDigest: digest,
         phone: formPhone.trim(),
         department: formDepartment.trim(),
+        allowedWarehouseIds: resolvedAllowedWarehouses,
         isActive: cleanEmail === BOOTSTRAPPED_ADMIN_EMAIL ? true : formIsActive
       });
       setIsAddModalOpen(false);
@@ -203,14 +231,19 @@ export const UserManager: React.FC = () => {
       ? editingUser.username
       : buildUniqueUsername(formUsername || editingUser.username, cleanEmail, editingUser.id);
 
+    const resolvedRole: UserRole = isMainAdmin ? 'admin' : formRole;
+    const resolvedAllowedWarehouses =
+      resolvedRole === 'admin' ? undefined : normalizeAllowedWarehouseIds(formAllowedWarehouseIds);
+
     updateUser(editingUser.id, {
       username: finalUsername,
       fullName: cleanFullName,
-      role: isMainAdmin ? 'admin' : formRole,
+      role: resolvedRole,
       email: cleanEmail,
       emailDigest: digest,
       phone: formPhone.trim(),
       department: formDepartment.trim(),
+      allowedWarehouseIds: resolvedAllowedWarehouses,
       isActive: isMainAdmin ? true : formIsActive
     });
 
@@ -456,6 +489,7 @@ export const UserManager: React.FC = () => {
                 <th className="px-5 py-3.5">Người Sử Dụng</th>
                 <th className="px-5 py-3.5">Tài Khoản Google (Email)</th>
                 <th className="px-5 py-3.5">Vai Trò</th>
+                <th className="px-5 py-3.5">Phân Quyền Kho Bãi</th>
                 <th className="px-5 py-3.5">Phòng Ban / Liên Hệ</th>
                 <th className="px-5 py-3.5 text-center">Trạng Thái</th>
                 <th className="px-5 py-3.5 text-right">Thao Tác Quản Trị</th>
@@ -464,7 +498,7 @@ export const UserManager: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-slate-400">
+                  <td colSpan={7} className="px-6 py-12 text-center text-slate-400">
                     Không tìm thấy người sử dụng nào phù hợp điều kiện tìm kiếm.
                   </td>
                 </tr>
@@ -516,6 +550,45 @@ export const UserManager: React.FC = () => {
                       </td>
 
                       <td className="px-5 py-4">{getRoleBadge(isMainAdmin ? 'admin' : u.role)}</td>
+
+                      <td className="px-5 py-4">
+                        {isUserAdmin(u) ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Toàn quyền tất cả kho
+                          </span>
+                        ) : (() => {
+                          const assignedIds = normalizeAllowedWarehouseIds(u.allowedWarehouseIds);
+                          if (assignedIds.length === 0) {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200">
+                                Chưa phân quyền kho
+                              </span>
+                            );
+                          }
+                          const assignedNames = assignedIds.map((whId) => {
+                            const foundWh = warehouses.find((w) => w.id === whId);
+                            return foundWh ? foundWh.name : whId;
+                          });
+                          return (
+                            <div className="flex flex-wrap gap-1 max-w-[260px]">
+                              {assignedNames.slice(0, 3).map((whName, idx) => (
+                                <span
+                                  key={`${u.id}-wh-${idx}`}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-blue-50 text-blue-800 border border-blue-200"
+                                >
+                                  <WarehouseIcon className="w-3 h-3 text-blue-600 shrink-0" />
+                                  <span className="truncate max-w-[160px]">{whName}</span>
+                                </span>
+                              ))}
+                              {assignedNames.length > 3 && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                                  +{assignedNames.length - 3} kho khác
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
 
                       <td className="px-5 py-4">
                         <div className="space-y-0.5 text-xs text-slate-600">
@@ -724,6 +797,85 @@ export const UserManager: React.FC = () => {
                 />
               </div>
 
+              {/* Phân quyền thao tác kho bãi */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <label className="text-xs font-semibold text-slate-800 uppercase flex items-center gap-1.5">
+                    <WarehouseIcon className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                    <span>Phân quyền thao tác kho bãi</span>
+                  </label>
+                  {formRole !== 'admin' && warehouses.length > 0 && (
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setFormAllowedWarehouseIds(warehouses.map((w) => w.id))}
+                        className="font-semibold text-blue-600 hover:text-blue-800"
+                      >
+                        Chọn tất cả
+                      </button>
+                      <span className="text-slate-300">|</span>
+                      <button
+                        type="button"
+                        onClick={() => setFormAllowedWarehouseIds([])}
+                        className="font-semibold text-slate-500 hover:text-slate-700"
+                      >
+                        Bỏ chọn
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {formRole === 'admin' ? (
+                  <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 font-medium">
+                    Quản trị viên (Admin) có toàn quyền xem và thao tác trên tất cả kho bãi.
+                  </p>
+                ) : warehouses.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic">
+                    Chưa có danh mục kho bãi nào trong hệ thống.
+                  </p>
+                ) : (
+                  <>
+                    <div className="max-h-40 overflow-y-auto grid grid-cols-1 gap-1.5 pr-1">
+                      {warehouses.map((w) => {
+                        const checked = formAllowedWarehouseIds.includes(w.id);
+                        return (
+                          <label
+                            key={w.id}
+                            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs cursor-pointer transition ${
+                              checked
+                                ? 'bg-blue-50/90 border-blue-300 text-blue-950'
+                                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleWarehousePermission(w.id)}
+                                className="w-4 h-4 text-blue-600 rounded border-slate-300 shrink-0"
+                              />
+                              <span className="font-semibold truncate">{w.name}</span>
+                            </div>
+                            <span className="font-mono text-[11px] text-slate-500 shrink-0">
+                              {w.code} • {deriveWarehouseAbbrev(w)}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {formAllowedWarehouseIds.length === 0 ? (
+                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                        Chưa chọn kho nào: Người dùng sẽ chưa xem hoặc thao tác được dữ liệu kho cho đến khi được phân quyền.
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-blue-700 font-medium">
+                        Đã chọn {formAllowedWarehouseIds.length}/{warehouses.length} kho bãi được phép thao tác.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+
               <div className="flex items-center gap-2 pt-1">
                 <input
                   type="checkbox"
@@ -870,6 +1022,85 @@ export const UserManager: React.FC = () => {
                   onChange={(e) => setFormPhone(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
+              </div>
+
+              {/* Phân quyền thao tác kho bãi */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <label className="text-xs font-semibold text-slate-800 uppercase flex items-center gap-1.5">
+                    <WarehouseIcon className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                    <span>Phân quyền thao tác kho bãi</span>
+                  </label>
+                  {!isBootstrappedAdminUser(editingUser) && formRole !== 'admin' && warehouses.length > 0 && (
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setFormAllowedWarehouseIds(warehouses.map((w) => w.id))}
+                        className="font-semibold text-blue-600 hover:text-blue-800"
+                      >
+                        Chọn tất cả
+                      </button>
+                      <span className="text-slate-300">|</span>
+                      <button
+                        type="button"
+                        onClick={() => setFormAllowedWarehouseIds([])}
+                        className="font-semibold text-slate-500 hover:text-slate-700"
+                      >
+                        Bỏ chọn
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {isBootstrappedAdminUser(editingUser) || formRole === 'admin' ? (
+                  <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 font-medium">
+                    Quản trị viên (Admin) có toàn quyền xem và thao tác trên tất cả kho bãi.
+                  </p>
+                ) : warehouses.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic">
+                    Chưa có danh mục kho bãi nào trong hệ thống.
+                  </p>
+                ) : (
+                  <>
+                    <div className="max-h-40 overflow-y-auto grid grid-cols-1 gap-1.5 pr-1">
+                      {warehouses.map((w) => {
+                        const checked = formAllowedWarehouseIds.includes(w.id);
+                        return (
+                          <label
+                            key={w.id}
+                            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs cursor-pointer transition ${
+                              checked
+                                ? 'bg-blue-50/90 border-blue-300 text-blue-950'
+                                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleWarehousePermission(w.id)}
+                                className="w-4 h-4 text-blue-600 rounded border-slate-300 shrink-0"
+                              />
+                              <span className="font-semibold truncate">{w.name}</span>
+                            </div>
+                            <span className="font-mono text-[11px] text-slate-500 shrink-0">
+                              {w.code} • {deriveWarehouseAbbrev(w)}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {formAllowedWarehouseIds.length === 0 ? (
+                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                        Chưa chọn kho nào: Người dùng sẽ chưa xem hoặc thao tác được dữ liệu kho cho đến khi được phân quyền.
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-blue-700 font-medium">
+                        Đã chọn {formAllowedWarehouseIds.length}/{warehouses.length} kho bãi được phép thao tác.
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
 
               <div className="flex items-center gap-2 pt-1">

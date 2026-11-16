@@ -61,7 +61,8 @@ import {
   sumOutboundItems,
   roundQty,
   canonicalUserSessionKey,
-  computeOsdDigest
+  computeOsdDigest,
+  normalizeAllowedWarehouseIds
 } from '../utils/additiveMerge';
 
 export type CloudConnectionStatus =
@@ -149,6 +150,14 @@ let lastAppliedCloudServerRev = -1;
 let lastAppliedCloudMetaRev = -1;
 let isCloudReconciling = false;
 let pendingCloudReconcile = false;
+let pendingForceManifestRefresh = false;
+let reconcileInFlightPromise: Promise<{
+  ok: boolean;
+  pulledChanges: boolean;
+  pushedChanges?: boolean;
+  quotaExceeded?: boolean;
+  errorMessage?: string;
+}> | null = null;
 let isPushingOsd = false;
 let pendingOsdPush = false;
 let cloudMetaDirty = false;
@@ -390,8 +399,12 @@ function computeCloudSharedMetaDigest(
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
     const emDigest = u.emailDigest || computeEmailAuthDigest(u.email) || '';
+    const allowedWhStr =
+      u.allowedWarehouseIds !== undefined
+        ? [...normalizeAllowedWarehouseIds(u.allowedWarehouseIds)].sort().join(',')
+        : '';
     const [h1, h2] = hash32Pair(
-      `CU|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${emDigest}|${u.isActive ? 1 : 0}|${u.department || ''}|${Number(u.updatedAt) || 0}|${Number(u.sessionRevokedAt) || 0}`
+      `CU|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${emDigest}|${u.isActive ? 1 : 0}|${u.department || ''}|${allowedWhStr}|${Number(u.updatedAt) || 0}|${Number(u.sessionRevokedAt) || 0}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -653,6 +666,13 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
 // ============================================================================
 function serializeAccountPublic(u: User): Record<string, any> {
   const emailDigest = cleanStr(u.emailDigest || computeEmailAuthDigest(u.email), 64, '');
+  const allowedWarehouseIds =
+    u.role === 'admin'
+      ? []
+      : normalizeAllowedWarehouseIds(u.allowedWarehouseIds)
+          .slice(0, 100)
+          .map((id) => cleanStr(id, 120, ''))
+          .filter(Boolean);
   return {
     id: cleanStr(u.id, 120, `user-${Date.now()}`),
     username: cleanStr(u.username, 120, 'user'),
@@ -662,6 +682,7 @@ function serializeAccountPublic(u: User): Record<string, any> {
     emailDigest,
     department: cleanStr(u.department, 160, ''),
     isActive: Boolean(u.isActive),
+    allowedWarehouseIds,
     createdAt: cleanStr(u.createdAt, 64, new Date().toISOString()),
     lastLogin: cleanStr(u.lastLogin, 64, ''),
     sessionRevokedAt: cleanNum(u.sessionRevokedAt, 0),
@@ -671,15 +692,25 @@ function serializeAccountPublic(u: User): Record<string, any> {
 
 function deserializeAccountPublic(m: Record<string, any>): User {
   const emailDigest = cleanStr(m.emailDigest, 64, '');
+  const role: User['role'] = ['admin', 'manager', 'staff', 'viewer'].includes(m.role)
+    ? m.role
+    : 'staff';
+  const allowedWarehouseIds =
+    role === 'admin'
+      ? undefined
+      : Array.isArray(m.allowedWarehouseIds)
+        ? normalizeAllowedWarehouseIds(m.allowedWarehouseIds)
+        : undefined;
   return {
     id: cleanStr(m.id, 120, 'user-unknown'),
     username: cleanStr(m.username, 120, 'user'),
     fullName: cleanStr(m.fullName, 160, cleanStr(m.username, 120, 'Người dùng')),
-    role: ['admin', 'manager', 'staff', 'viewer'].includes(m.role) ? m.role : 'staff',
+    role,
     password: cleanStr(m.credential, 120, ''),
     emailDigest: emailDigest || undefined,
     department: cleanStr(m.department, 160, ''),
     isActive: m.isActive !== false,
+    allowedWarehouseIds,
     createdAt: cleanStr(m.createdAt, 64, '2026-01-01T00:00:00Z'),
     lastLogin: cleanStr(m.lastLogin, 64, '') || undefined,
     sessionRevokedAt: Number(m.sessionRevokedAt) > 0 ? Number(m.sessionRevokedAt) : undefined,
@@ -2692,7 +2723,19 @@ export const FirestoreSyncService = {
       }
       attachWorkspaceRealtimeListener();
       emitCloudState({ status: 'connected', errorMessage: null });
-      void this.reconcileWithCloud();
+      const syncRes = await this.reconcileWithCloudDetailed({ forceManifestRefresh: true });
+      if (!syncRes.ok) {
+        return {
+          success: false,
+          email: authRes.email,
+          displayName: authRes.displayName,
+          message:
+            syncRes.errorMessage ||
+            (syncRes.quotaExceeded
+              ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+              : 'Chưa thể đồng bộ dữ liệu từ Google Cloud Firestore. Vui lòng thử lại.')
+        };
+      }
     } catch (err) {
       if (isQuotaExceededError(err) || isFirestoreQuotaExhausted()) {
         const msg = notifyFirestoreQuotaExceeded(300_000);
@@ -2789,7 +2832,7 @@ export const FirestoreSyncService = {
     return res.ok;
   },
 
-  async reconcileWithCloudDetailed(): Promise<{
+  async reconcileWithCloudDetailed(options?: { forceManifestRefresh?: boolean }): Promise<{
     ok: boolean;
     pulledChanges: boolean;
     pushedChanges?: boolean;
@@ -2811,55 +2854,90 @@ export const FirestoreSyncService = {
           errorMessage: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
         };
       }
-      return { ok: false, pulledChanges: false, pushedChanges: false };
+      return {
+        ok: false,
+        pulledChanges: false,
+        pushedChanges: false,
+        errorMessage: 'Kết nối Cloud Firestore đang tạm gián đoạn. Vui lòng thử lại sau giây lát.'
+      };
     }
     if (interactiveAuthInFlight) {
-      return { ok: false, pulledChanges: false, pushedChanges: false };
+      return {
+        ok: false,
+        pulledChanges: false,
+        pushedChanges: false,
+        errorMessage: 'Đang hoàn tất xác thực tài khoản Google, vui lòng thử lại sau giây lát.'
+      };
     }
     const fbUser = auth.currentUser;
     if (!fbUser || !fbUser.emailVerified) {
-      return { ok: false, pulledChanges: false, pushedChanges: false };
+      return {
+        ok: false,
+        pulledChanges: false,
+        pushedChanges: false,
+        errorMessage: 'Chưa kết nối tài khoản Google đã xác minh.'
+      };
     }
 
-    if (isCloudReconciling) {
+    if (isCloudReconciling && reconcileInFlightPromise) {
       pendingCloudReconcile = true;
-      return { ok: true, pulledChanges: false, pushedChanges: false };
+      if (options?.forceManifestRefresh) {
+        pendingForceManifestRefresh = true;
+      }
+      return await reconcileInFlightPromise;
     }
 
     isCloudReconciling = true;
-    let pulledChanges = false;
-    let pushedChanges = false;
-    try {
-      const ok = await ensureWorkspaceReady(fbUser);
-      if (!ok) {
-        return {
-          ok: false,
-          pulledChanges: false,
-          pushedChanges: false,
-          quotaExceeded: isFirestoreQuotaExhausted() || currentState.quotaExceeded,
-          errorMessage: currentState.errorMessage || undefined
-        };
-      }
-      attachWorkspaceRealtimeListener();
+    let initialForceRefresh = Boolean(options?.forceManifestRefresh);
 
-      const wsPath = `workspaces/${WORKSPACE_ID}`;
-      const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
-      let wsData: WorkspaceManifestDoc | null = null;
-      if (cachedWsManifest && Date.now() - cachedWsManifest.atMs < 5000) {
-        wsData = cachedWsManifest.data;
-        cachedWsManifest = null;
-      } else {
-        const wsSnap = await safeGetDoc(wsRef, wsPath);
-        if (!wsSnap.exists()) return { ok: false, pulledChanges: false, pushedChanges: false };
-        wsData = wsSnap.data() as WorkspaceManifestDoc;
-      }
+    const runSinglePass = async (forceRefresh: boolean): Promise<{
+      ok: boolean;
+      pulledChanges: boolean;
+      pushedChanges?: boolean;
+      quotaExceeded?: boolean;
+      errorMessage?: string;
+    }> => {
+      let pulledChanges = false;
+      let pushedChanges = false;
+      try {
+        const ok = await ensureWorkspaceReady(fbUser);
+        if (!ok) {
+          return {
+            ok: false,
+            pulledChanges: false,
+            pushedChanges: false,
+            quotaExceeded: isFirestoreQuotaExhausted() || currentState.quotaExceeded,
+            errorMessage: currentState.errorMessage || 'Không thể kết nối không gian làm việc Cloud Firestore.'
+          };
+        }
+        attachWorkspaceRealtimeListener();
 
-      const remoteServerRev = Number(wsData.serverRevision) || 0;
-      const checkpoint = readCloudSyncCheckpoint(fbUser.uid);
-      if (lastAppliedCloudServerRev < 0 && checkpoint && checkpoint.serverRevision === remoteServerRev) {
-        lastAppliedCloudServerRev = checkpoint.serverRevision;
-        lastAppliedCloudMetaRev = checkpoint.metaRevision;
-      }
+        const wsPath = `workspaces/${WORKSPACE_ID}`;
+        const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+        let wsData: WorkspaceManifestDoc | null = null;
+        if (!forceRefresh && cachedWsManifest && Date.now() - cachedWsManifest.atMs < 5000) {
+          wsData = cachedWsManifest.data;
+          cachedWsManifest = null;
+        } else {
+          cachedWsManifest = null;
+          const wsSnap = await safeGetDoc(wsRef, wsPath);
+          if (!wsSnap.exists()) {
+            return {
+              ok: false,
+              pulledChanges: false,
+              pushedChanges: false,
+              errorMessage: 'Không tìm thấy dữ liệu đồng bộ trên Cloud Firestore.'
+            };
+          }
+          wsData = wsSnap.data() as WorkspaceManifestDoc;
+        }
+
+        const remoteServerRev = Number(wsData.serverRevision) || 0;
+        const checkpoint = readCloudSyncCheckpoint(fbUser.uid);
+        if (lastAppliedCloudServerRev < 0 && checkpoint && checkpoint.serverRevision === remoteServerRev) {
+          lastAppliedCloudServerRev = checkpoint.serverRevision;
+          lastAppliedCloudMetaRev = checkpoint.metaRevision;
+        }
 
       let nextAccountChunkCount = Number(wsData.accountChunkCount) || 0;
       let nextWarehouseChunkCount = Number(wsData.warehouseChunkCount) || 0;
@@ -2925,6 +3003,9 @@ export const FirestoreSyncService = {
         !checkpoint ||
         preMatDigest !== nextMaterialsDigest;
 
+      const missingLocalWhs = nextWarehouseChunkCount > 0 && localWhs.length === 0;
+      const missingLocalAccounts = nextAccountChunkCount > 0 && localUsers.length <= 1;
+
       // Fast-path: Chỉ đồng bộ khi nhận thấy có sự thay đổi dữ liệu cục bộ hoặc từ Cloud
       if (
         !serverChanged &&
@@ -2933,6 +3014,8 @@ export const FirestoreSyncService = {
         !outboundLocalDirty &&
         !materialsLocalDirty &&
         !adminMissingPii &&
+        !missingLocalWhs &&
+        !missingLocalAccounts &&
         !(nextInboundIndexChunkCount > 0 && localInbounds.length === 0) &&
         !(nextOutboundIndexChunkCount > 0 && localOutbounds.length === 0) &&
         !(nextMaterialsChunkCount > 0 && localMats.length === 0)
@@ -2947,10 +3030,12 @@ export const FirestoreSyncService = {
         return { ok: true, pulledChanges: false, pushedChanges: false };
       }
 
-      // 1. Đồng bộ Meta (Users + Warehouses + OSD + Tombstones) chỉ khi có khác biệt
+      // 1. Đồng bộ Meta (Users + Warehouses + OSD + Tombstones) chỉ khi có khác biệt hoặc thiếu dữ liệu cục bộ
       const shouldPullMeta =
         localMetaDigestBefore !== nextMetaDigest ||
         adminMissingPii ||
+        missingLocalWhs ||
+        missingLocalAccounts ||
         (Number(wsData.metaRevision) !== lastAppliedCloudMetaRev &&
           (!checkpoint || checkpoint.metaRevision !== Number(wsData.metaRevision)));
 
@@ -3284,19 +3369,57 @@ export const FirestoreSyncService = {
           errorMessage: msg
         };
       }
-      return {
-        ok: false,
-        pulledChanges,
-        pushedChanges,
-        errorMessage: err instanceof Error ? err.message : String(err)
-      };
-    } finally {
-      isCloudReconciling = false;
-      if (pendingCloudReconcile) {
-        pendingCloudReconcile = false;
-        void this.reconcileWithCloud();
+        return {
+          ok: false,
+          pulledChanges,
+          pushedChanges,
+          errorMessage: err instanceof Error ? err.message : String(err)
+        };
       }
-    }
+    };
+
+    reconcileInFlightPromise = (async () => {
+      let anyPulled = false;
+      let anyPushed = false;
+      let passCount = 0;
+      let lastRes: {
+        ok: boolean;
+        pulledChanges: boolean;
+        pushedChanges?: boolean;
+        quotaExceeded?: boolean;
+        errorMessage?: string;
+      } = { ok: false, pulledChanges: false, pushedChanges: false };
+
+      try {
+        while (true) {
+          passCount += 1;
+          const forceThisPass = passCount === 1 ? initialForceRefresh : pendingForceManifestRefresh;
+          pendingCloudReconcile = false;
+          pendingForceManifestRefresh = false;
+
+          const passRes = await runSinglePass(forceThisPass);
+          if (passRes.pulledChanges) anyPulled = true;
+          if (passRes.pushedChanges) anyPushed = true;
+          lastRes = {
+            ...passRes,
+            pulledChanges: anyPulled,
+            pushedChanges: anyPushed
+          };
+
+          if (passRes.quotaExceeded || !passRes.ok || !pendingCloudReconcile || passCount >= 2) {
+            pendingCloudReconcile = false;
+            pendingForceManifestRefresh = false;
+            break;
+          }
+        }
+        return lastRes;
+      } finally {
+        isCloudReconciling = false;
+        reconcileInFlightPromise = null;
+      }
+    })();
+
+    return await reconcileInFlightPromise;
   },
 
   // ==========================================================================
@@ -3541,18 +3664,22 @@ export const FirestoreSyncService = {
         }
       );
 
-      const nextUserUpdatedAt = Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1);
       const updatedFromStore =
-        StorageService.updateUser(matched.id, {
-          lastLogin: nowIso,
-          sessionRevokedAt: forceLogoutOtherDevice
-            ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
-            : matched.sessionRevokedAt,
-          updatedAt: nextUserUpdatedAt
-        }) || {
+        StorageService.updateUser(
+          matched.id,
+          {
+            lastLogin: nowIso,
+            sessionRevokedAt: forceLogoutOtherDevice
+              ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
+              : matched.sessionRevokedAt
+          },
+          {
+            preserveUpdatedAt: !forceLogoutOtherDevice,
+            emitMutation: forceLogoutOtherDevice
+          }
+        ) || {
           ...matched,
-          lastLogin: nowIso,
-          updatedAt: nextUserUpdatedAt
+          lastLogin: nowIso
         };
 
       emitCloudState({ status: 'connected', errorMessage: null });
@@ -3623,43 +3750,48 @@ export const FirestoreSyncService = {
 
         const emailLower = fbUser.email.trim().toLowerCase();
         const emailDigest = computeEmailAuthDigest(emailLower);
-        let localUsers = StorageService.getUsers();
-        const alreadyKnownLocally =
-          emailLower === BOOTSTRAPPED_ADMIN_EMAIL ||
-          localUsers.some(
-            (u) =>
-              !String(u.id || '').startsWith('user-g-') &&
-              ((u.email && u.email.trim().toLowerCase() === emailLower) ||
-                (emailDigest && u.emailDigest === emailDigest))
-          );
 
-        // Tải danh sách tài khoản đã được Admin khai báo trên Cloud (accounts_0..N) nếu máy cục bộ chưa có bản ghi khai báo
-        if (!alreadyKnownLocally) {
-          const chunkTotal = Math.max(1, Number(cachedWsManifest?.data?.accountChunkCount) || 1);
-          const accSnaps = await Promise.all(
-            Array.from({ length: chunkTotal }, (_, idx) => {
-              const cid = `accounts_${idx}`;
-              return safeGetDoc(
-                doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
-                `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`
-              );
-            })
-          );
-          const remoteUsers: User[] = [];
-          for (const snap of accSnaps) {
-            if (!snap.exists()) continue;
-            const rawItems = Array.isArray(snap.data().items) ? snap.data().items : [];
-            for (const raw of rawItems) {
-              if (raw && typeof raw === 'object') {
-                remoteUsers.push(deserializeAccountPublic(raw));
-              }
+        // Luôn tải danh sách tài khoản mới nhất từ Cloud (accounts_0..N) khi đăng nhập Google để nhận phân quyền kho mới nhất từ Admin
+        let accountChunkTotal = Number(cachedWsManifest?.data?.accountChunkCount) || 0;
+        if (!cachedWsManifest || accountChunkTotal <= 0) {
+          try {
+            const wsSnap = await safeGetDoc(
+              doc(db, 'workspaces', WORKSPACE_ID),
+              `workspaces/${WORKSPACE_ID}`
+            );
+            if (wsSnap.exists()) {
+              const wsManifest = wsSnap.data() as WorkspaceManifestDoc;
+              cachedWsManifest = { data: wsManifest, atMs: Date.now() };
+              accountChunkTotal = Number(wsManifest.accountChunkCount) || 1;
             }
-          }
-          if (remoteUsers.length > 0) {
-            StorageService.applyRemoteMeta({ users: remoteUsers });
-            localUsers = StorageService.getUsers();
+          } catch {
+            // fallback 1 chunk
           }
         }
+        accountChunkTotal = Math.max(1, accountChunkTotal);
+        const accSnaps = await Promise.all(
+          Array.from({ length: accountChunkTotal }, (_, idx) => {
+            const cid = `accounts_${idx}`;
+            return safeGetDoc(
+              doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
+              `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`
+            );
+          })
+        );
+        const remoteUsers: User[] = [];
+        for (const snap of accSnaps) {
+          if (!snap.exists()) continue;
+          const rawItems = Array.isArray(snap.data().items) ? snap.data().items : [];
+          for (const raw of rawItems) {
+            if (raw && typeof raw === 'object') {
+              remoteUsers.push(deserializeAccountPublic(raw));
+            }
+          }
+        }
+        if (remoteUsers.length > 0) {
+          StorageService.applyRemoteMeta({ users: remoteUsers });
+        }
+        const localUsers = StorageService.getUsers();
 
         if (timedOut) {
           return { handled: false, success: false, message: '' };
@@ -3806,23 +3938,30 @@ export const FirestoreSyncService = {
           knownExistingPaths.add(sessRef.path);
         }
 
-        const nextUserUpdatedAt = Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1);
+        const shouldSyncUserMetaToCloud = resolved.isNew || resolved.mutated || forceLogoutOtherDevice;
         const updatedFromStore =
-          StorageService.updateUser(matched.id, {
-            email: emailLower,
-            lastLogin: nowIso,
-            sessionRevokedAt: forceLogoutOtherDevice
-              ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
-              : matched.sessionRevokedAt,
-            updatedAt: nextUserUpdatedAt
-          }) || {
+          StorageService.updateUser(
+            matched.id,
+            {
+              email: emailLower,
+              lastLogin: nowIso,
+              sessionRevokedAt: forceLogoutOtherDevice
+                ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
+                : matched.sessionRevokedAt
+            },
+            {
+              preserveUpdatedAt: !shouldSyncUserMetaToCloud,
+              emitMutation: shouldSyncUserMetaToCloud
+            }
+          ) || {
             ...matched,
             email: emailLower,
-            lastLogin: nowIso,
-            updatedAt: nextUserUpdatedAt
+            lastLogin: nowIso
           };
 
-        cloudMetaDirty = true;
+        if (shouldSyncUserMetaToCloud) {
+          cloudMetaDirty = true;
+        }
         attachWorkspaceRealtimeListener();
         emitCloudState({ status: 'connected', errorMessage: null });
         this.watchActiveSession(userKey);

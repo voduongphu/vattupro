@@ -13,7 +13,12 @@ import { StorageService } from '../../services/storage';
 import { FirestoreSyncService } from '../../services/firestoreSync';
 import { SyncService } from '../../services/syncService';
 import { exportToExcel } from '../../services/excelService';
-import { generateNextOsdVoucherCode, roundQty } from '../../utils/additiveMerge';
+import {
+  generateNextOsdVoucherCode,
+  getAuthorizedWarehouses,
+  isWarehouseAuthorized,
+  roundQty
+} from '../../utils/additiveMerge';
 import { PaginationBar } from '../common/PaginationBar';
 import {
   FileWarning,
@@ -238,10 +243,45 @@ export const OsdManager: React.FC = () => {
     };
   }, []);
 
+  const authorizedWarehouses = useMemo(
+    () => getAuthorizedWarehouses(warehouses, currentUser),
+    [warehouses, currentUser]
+  );
+
+  const authorizedInbounds = useMemo(
+    () =>
+      isAdmin
+        ? inbounds
+        : inbounds.filter((inb) =>
+            isWarehouseAuthorized(inb.warehouseId, inb.warehouseName, warehouses, currentUser)
+          ),
+    [inbounds, warehouses, currentUser, isAdmin]
+  );
+
+  const authorizedOsdList = useMemo(
+    () =>
+      isAdmin
+        ? osdList
+        : osdList.filter((osd) =>
+            isWarehouseAuthorized(osd.warehouseId, osd.warehouseName, warehouses, currentUser)
+          ),
+    [osdList, warehouses, currentUser, isAdmin]
+  );
+
+  useEffect(() => {
+    if (
+      !isAdmin &&
+      filterWarehouse !== 'all' &&
+      !authorizedWarehouses.some((w) => w.id === filterWarehouse)
+    ) {
+      setFilterWarehouse('all');
+    }
+  }, [isAdmin, authorizedWarehouses, filterWarehouse]);
+
   // Filtered OSD list
   const filteredOsdList = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
-    return osdList.filter((osd) => {
+    return authorizedOsdList.filter((osd) => {
       if (filterStatus !== 'all' && osd.status !== filterStatus) return false;
       if (filterWarehouse !== 'all' && osd.warehouseId !== filterWarehouse) return false;
       if (startDate && osd.osdDate < startDate) return false;
@@ -282,7 +322,7 @@ export const OsdManager: React.FC = () => {
 
       return true;
     });
-  }, [osdList, deferredSearch, filterStatus, filterType, filterWarehouse, startDate, endDate]);
+  }, [authorizedOsdList, deferredSearch, filterStatus, filterType, filterWarehouse, startDate, endDate]);
 
   // Statistics KPI Summary
   const stats = useMemo(() => {
@@ -293,8 +333,8 @@ export const OsdManager: React.FC = () => {
     let damageItemsCount = 0;
     let totalAffectedQty = 0;
 
-    for (let i = 0; i < osdList.length; i++) {
-      const o = osdList[i];
+    for (let i = 0; i < authorizedOsdList.length; i++) {
+      const o = authorizedOsdList[i];
       if (o.status === 'open') openCount++;
       else if (o.status === 'closed') closedCount++;
 
@@ -308,7 +348,7 @@ export const OsdManager: React.FC = () => {
     }
 
     return {
-      totalReceipts: osdList.length,
+      totalReceipts: authorizedOsdList.length,
       openCount,
       closedCount,
       overageItemsCount,
@@ -316,7 +356,7 @@ export const OsdManager: React.FC = () => {
       damageItemsCount,
       totalAffectedQty: roundQty(totalAffectedQty)
     };
-  }, [osdList]);
+  }, [authorizedOsdList]);
 
   // Pagination calculation
   const totalPages = Math.max(1, Math.ceil(filteredOsdList.length / pageSize));
@@ -366,14 +406,19 @@ export const OsdManager: React.FC = () => {
 
   // Open Create Modal
   const openCreateModal = () => {
+    if (!isAdmin && authorizedWarehouses.length === 0) {
+      showToast('Tài khoản của bạn chưa được phân quyền thao tác trên kho bãi nào.', 'error');
+      return;
+    }
     const today = new Date().toISOString().slice(0, 10);
     const nextCode = generateNextOsdVoucherCode(osdList, today);
+    const defaultWh = authorizedWarehouses[0] || warehouses[0];
     setEditingOsd(null);
     setFormOsdCode(nextCode);
     setFormOsdDate(today);
     setSelectedInboundId('');
-    setFormWarehouseId(warehouses[0]?.id || '');
-    setFormWarehouseName(warehouses[0]?.name || '');
+    setFormWarehouseId(defaultWh?.id || '');
+    setFormWarehouseName(defaultWh?.name || '');
     setFormSupplier('');
     setFormPackingListNo('');
     setFormShipment('');
@@ -793,6 +838,24 @@ export const OsdManager: React.FC = () => {
         </div>
       </div>
 
+      {!isAdmin && authorizedWarehouses.length === 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start gap-3 text-xs text-amber-950 shadow-xs">
+          <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold text-sm text-amber-900">
+              {warehouses.length === 0
+                ? 'Chưa tải được dữ liệu kho từ Cloud Firestore'
+                : 'Tài khoản chưa được phân quyền thao tác kho nào'}
+            </div>
+            <p className="mt-1 text-amber-800 leading-relaxed">
+              {warehouses.length === 0
+                ? 'Vui lòng nhấn nút "Đồng Bộ Cloud" trên thanh tiêu đề để tải danh mục kho và biên bản OSD mới nhất.'
+                : 'Vui lòng liên hệ Admin để cấp quyền các kho bãi bạn được phép thao tác.'}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Cảnh báo trạng thái mạng ngắt kết nối (Offline) */}
       {isOffline && (
         <div className="bg-amber-50 border border-amber-300/80 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs animate-in fade-in duration-200">
@@ -984,7 +1047,7 @@ export const OsdManager: React.FC = () => {
               onChange={(e) => setFilterStatus(e.target.value as any)}
               className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none"
             >
-              <option value="all">Tất cả ({osdList.length})</option>
+              <option value="all">Tất cả ({authorizedOsdList.length})</option>
               <option value="open">Đang Mở ({stats.openCount})</option>
               <option value="closed">Đã Đóng ({stats.closedCount})</option>
             </select>
@@ -1017,8 +1080,8 @@ export const OsdManager: React.FC = () => {
               onChange={(e) => setFilterWarehouse(e.target.value)}
               className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none"
             >
-              <option value="all">Tất cả kho ({warehouses.length})</option>
-              {warehouses.map((w) => (
+              <option value="all">Tất cả kho ({authorizedWarehouses.length})</option>
+              {authorizedWarehouses.map((w) => (
                 <option key={w.id} value={w.id}>
                   {w.name}
                 </option>
@@ -1341,8 +1404,8 @@ export const OsdManager: React.FC = () => {
                       className="w-full px-2.5 py-1.5 bg-white border border-blue-400 rounded-lg outline-none font-medium text-slate-800 focus:ring-2 focus:ring-blue-500"
                       required
                     >
-                      <option value="">-- Bấm để chọn Phiếu Nhập Kho ({inbounds.length} phiếu) --</option>
-                      {inbounds.map((inb) => (
+                      <option value="">-- Bấm để chọn Phiếu Nhập Kho ({authorizedInbounds.length} phiếu) --</option>
+                      {authorizedInbounds.map((inb) => (
                         <option key={inb.id} value={inb.id}>
                           {inb.receiptCode} - {inb.receiptDate} | {inb.warehouseName} | {inb.supplier || inb.delivererName} ({inb.items.length} vật tư)
                         </option>

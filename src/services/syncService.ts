@@ -126,6 +126,15 @@ const PULL_MATERIAL_PAGE_SIZE = 3500;
 let isStarted = false;
 let isReconciling = false;
 let pendingReconcile = false;
+let pendingForceManifestRefresh = false;
+let activeReconcilePromise: Promise<{
+  cloudSuccess: boolean;
+  localSuccess: boolean;
+  pulledChanges?: boolean;
+  pushedChanges?: boolean;
+  cloudQuotaExceeded?: boolean;
+  error?: string;
+}> | null = null;
 let isVerifyingSession = false;
 let authTransitionCount = 0;
 let metaDirty = false;
@@ -1292,7 +1301,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   return pulledChanges;
 }
 
-async function reconcileInternal(): Promise<{
+async function reconcileInternal(options?: { forceManifestRefresh?: boolean }): Promise<{
   cloudSuccess: boolean;
   localSuccess: boolean;
   pulledChanges?: boolean;
@@ -1302,18 +1311,28 @@ async function reconcileInternal(): Promise<{
 }> {
   // Chỉ chạy đồng bộ khi người dùng đã đăng nhập (tránh việc thiết bị vừa xóa cache chưa login đẩy data rỗng)
   if (!getStoredUnifiedSession() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
-    return { cloudSuccess: false, localSuccess: false };
+    return {
+      cloudSuccess: false,
+      localSuccess: false,
+      error: 'Chưa đăng nhập phiên làm việc.'
+    };
   }
 
   // Không bao giờ chạy đồng bộ dữ liệu nặng tranh chấp băng thông khi người dùng đang thực hiện đăng nhập
   if (authTransitionCount > 0) {
     pendingReconcile = true;
-    return { cloudSuccess: false, localSuccess: false };
+    if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    return {
+      cloudSuccess: false,
+      localSuccess: false,
+      error: 'Đang hoàn tất xác thực đăng nhập, vui lòng thử lại sau giây lát.'
+    };
   }
 
-  if (isReconciling) {
+  if (isReconciling && activeReconcilePromise) {
     pendingReconcile = true;
-    return { cloudSuccess: false, localSuccess: false };
+    if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    return await activeReconcilePromise;
   }
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -1328,83 +1347,93 @@ async function reconcileInternal(): Promise<{
   isReconciling = true;
   notifySyncState(true);
 
-  let cloudSuccess = false;
-  let localSuccess = false;
-  let pulledChanges = false;
-  let pushedChanges = false;
-  let cloudQuotaExceeded = false;
-  let syncError: string | undefined;
+  const runPromise = (async () => {
+    let cloudSuccess = false;
+    let localSuccess = false;
+    let pulledChanges = false;
+    let pushedChanges = false;
+    let cloudQuotaExceeded = false;
+    let syncError: string | undefined;
 
-  try {
-    // Đảm bảo xả sạch hàng đợi ghi đĩa cục bộ IndexedDB trước khi đọc và đẩy dữ liệu
-    await StorageService.flush();
+    try {
+      // Đảm bảo xả sạch hàng đợi ghi đĩa cục bộ IndexedDB trước khi đọc và đẩy dữ liệu
+      await StorageService.flush();
 
-    // 1. Ưu tiên đồng bộ 2 chiều thời gian thực qua Cloud Firestore cho mọi tài khoản Google đã xác thực (Admin & Nhân sự)
-    if (
-      authTransitionCount === 0 &&
-      (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())
-    ) {
-      const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed();
-      cloudSuccess = cloudRes.ok;
-      pulledChanges = Boolean(cloudRes.pulledChanges);
-      pushedChanges = Boolean(cloudRes.pushedChanges);
-      cloudQuotaExceeded = Boolean(cloudRes.quotaExceeded || FirestoreSyncService.isQuotaExhausted());
-      if (cloudRes.ok) {
-        updateNetworkStatus(true);
-      } else if (cloudRes.errorMessage) {
-        syncError = cloudRes.errorMessage;
+      // 1. Ưu tiên đồng bộ 2 chiều thời gian thực qua Cloud Firestore cho mọi tài khoản Google đã xác thực (Admin & Nhân sự)
+      if (
+        authTransitionCount === 0 &&
+        (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())
+      ) {
+        const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed({
+          forceManifestRefresh: Boolean(options?.forceManifestRefresh)
+        });
+        cloudSuccess = cloudRes.ok;
+        pulledChanges = Boolean(cloudRes.pulledChanges);
+        pushedChanges = Boolean(cloudRes.pushedChanges);
+        cloudQuotaExceeded = Boolean(cloudRes.quotaExceeded || FirestoreSyncService.isQuotaExhausted());
+        if (cloudRes.ok) {
+          updateNetworkStatus(true);
+        } else if (cloudRes.errorMessage) {
+          syncError = cloudRes.errorMessage;
+        }
+        // Bắc cầu đồng bộ OSD và Meta xuống máy chủ cục bộ /api/sync để thiết bị khác dùng tài khoản nội bộ cũng nhận được
+        try {
+          await reconcileLocalServerOnly();
+          localSuccess = true;
+        } catch {
+          // bỏ qua nếu máy chủ cục bộ không khả dụng
+        }
+      } else {
+        if (FirestoreSyncService.isQuotaExhausted()) {
+          cloudQuotaExceeded = true;
+          syncError = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
+        }
+        // 2. Fallback đồng bộ máy chủ cục bộ /api/sync khi chưa kết nối Google Cloud
+        try {
+          await reconcileLocalServerOnly();
+          localSuccess = true;
+          updateNetworkStatus(true);
+        } catch (localErr) {
+          syncError = syncError || (localErr instanceof Error ? localErr.message : String(localErr));
+          if (!FirestoreSyncService.isCloudConnected()) {
+            console.warn('Local server sync unavailable:', localErr);
+          }
+        }
       }
-      // Bắc cầu đồng bộ OSD và Meta xuống máy chủ cục bộ /api/sync để thiết bị khác dùng tài khoản nội bộ cũng nhận được
-      try {
-        await reconcileLocalServerOnly();
-        localSuccess = true;
-      } catch {
-        // bỏ qua nếu máy chủ cục bộ không khả dụng
-      }
-    } else {
-      if (FirestoreSyncService.isQuotaExhausted()) {
-        cloudQuotaExceeded = true;
-        syncError = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
-      }
-      // 2. Fallback đồng bộ máy chủ cục bộ /api/sync khi chưa kết nối Google Cloud
-      try {
-        await reconcileLocalServerOnly();
-        localSuccess = true;
-        updateNetworkStatus(true);
-      } catch (localErr) {
-        syncError = syncError || (localErr instanceof Error ? localErr.message : String(localErr));
-        if (!FirestoreSyncService.isCloudConnected()) {
-          console.warn('Local server sync unavailable:', localErr);
+
+      await StorageService.flush();
+    } catch (err) {
+      syncError = err instanceof Error ? err.message : String(err);
+      console.warn('Background sync skipped or deferred:', err);
+    } finally {
+      isReconciling = false;
+      activeReconcilePromise = null;
+      notifySyncState(false);
+
+      if (pendingReconcile) {
+        const followUpForce = pendingForceManifestRefresh;
+        if (authTransitionCount === 0) {
+          pendingReconcile = false;
+          pendingForceManifestRefresh = false;
+          void reconcileInternal({ forceManifestRefresh: followUpForce });
+        } else {
+          schedulePush(180);
         }
       }
     }
 
-    await StorageService.flush();
-  } catch (err) {
-    syncError = err instanceof Error ? err.message : String(err);
-    console.warn('Background sync skipped or deferred:', err);
-  } finally {
-    isReconciling = false;
-    notifySyncState(false);
+    return {
+      cloudSuccess,
+      localSuccess,
+      pulledChanges,
+      pushedChanges,
+      cloudQuotaExceeded,
+      error: syncError
+    };
+  })();
 
-    if (pendingReconcile) {
-      if (authTransitionCount === 0) {
-        pendingReconcile = false;
-        void reconcileInternal();
-      } else {
-        schedulePush(180);
-      }
-    }
-  }
-
-  return {
-    cloudSuccess,
-    localSuccess,
-    pulledChanges,
-    pushedChanges,
-    cloudQuotaExceeded,
-    error: syncError
-  };
+  activeReconcilePromise = runPromise;
+  return await runPromise;
 }
 
 function schedulePush(delayMs = 350): void {
@@ -1910,7 +1939,7 @@ export const SyncService = {
     ]);
   },
 
-  async syncNow(): Promise<SyncResult> {
+  async syncNow(options?: { forceManifestRefresh?: boolean; requireCloud?: boolean }): Promise<SyncResult> {
     const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : this.isOnline();
     if (!isOnline) {
       return {
@@ -2004,7 +2033,9 @@ export const SyncService = {
         // 2. Đồng bộ dữ liệu thay đổi (Người dùng, Kho bãi, Vật tư, Phiếu nhập xuất)
         (async () => {
           try {
-            const reconRes = await reconcileInternal();
+            const reconRes = await reconcileInternal({
+              forceManifestRefresh: Boolean(options?.forceManifestRefresh)
+            });
             if (reconRes.cloudSuccess) cloudOk = true;
             if (reconRes.localSuccess) serverOk = true;
             if (reconRes.pulledChanges) pulledChanges = true;
@@ -2059,11 +2090,11 @@ export const SyncService = {
         };
       }
 
-      if (!cloudOk && isCloudSessionMode && (cloudErrorMsg || latestCloudState.status === 'error')) {
+      if (!cloudOk && (isCloudSessionMode || options?.requireCloud)) {
         const errText =
           cloudErrorMsg ||
           latestCloudState.errorMessage ||
-          'Không thể đồng bộ với Google Cloud Firestore. Vui lòng thử lại.';
+          'Chưa thể đồng bộ với Google Cloud Firestore. Vui lòng kết nối tài khoản Google và thử lại.';
         return {
           success: false,
           cloudSynced: false,
@@ -2133,42 +2164,50 @@ export const SyncService = {
           error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
         };
       }
+      await StorageService.flush();
       return {
         success: true,
         cloudSynced: true,
-        message: 'Đã kết nối & đồng bộ các dữ liệu thay đổi với Cloud Firestore thành công!',
+        message: 'Đã kết nối & đồng bộ dữ liệu từ Cloud Firestore thành công!',
         osdCount: StorageService.getOsdReceipts().length
       };
     }
 
-    const res = await this.syncNow();
-    if (!res.success) {
-      return res;
-    }
-
-    if (res.cloudSynced) {
-      const hasDelta = Boolean(res.pulledChanges || res.pushedChanges);
-      return {
-        ...res,
-        message: hasDelta
-          ? `Đã đồng bộ các dữ liệu thay đổi lên/từ Cloud Firestore thành công (${StorageService.getMaterials().length} vật tư, ${res.osdCount ?? 0} OSD).`
-          : 'Dữ liệu đã khớp với Cloud Firestore (không có thay đổi mới, không phát sinh lượt đồng bộ thừa).'
-      };
-    }
-
-    const cloudState = FirestoreSyncService.getState();
-    if (cloudState.quotaExceeded || FirestoreSyncService.isQuotaExhausted()) {
+    const res = await this.syncNow({ forceManifestRefresh: true, requireCloud: true });
+    if (!res.success || !res.cloudSynced) {
+      const cloudState = FirestoreSyncService.getState();
+      if (res.quotaExceeded || cloudState.quotaExceeded || FirestoreSyncService.isQuotaExhausted()) {
+        return {
+          success: false,
+          quotaExceeded: true,
+          cloudSynced: false,
+          localSynced: res.localSynced,
+          error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
+          message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+        };
+      }
+      const errMsg =
+        res.error ||
+        res.message ||
+        cloudState.errorMessage ||
+        'Chưa thể đồng bộ với Google Cloud Firestore. Vui lòng thử lại.';
       return {
         success: false,
-        quotaExceeded: true,
         cloudSynced: false,
         localSynced: res.localSynced,
-        error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
-        message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+        error: errMsg,
+        message: errMsg,
+        osdCount: res.osdCount
       };
     }
 
-    return res;
+    const hasDelta = Boolean(res.pulledChanges || res.pushedChanges);
+    return {
+      ...res,
+      message: hasDelta
+        ? `Đã đồng bộ các dữ liệu thay đổi lên/từ Cloud Firestore thành công (${StorageService.getMaterials().length} vật tư, ${res.osdCount ?? 0} OSD).`
+        : 'Dữ liệu đã khớp với Cloud Firestore (không có thay đổi mới, không phát sinh lượt đồng bộ thừa).'
+    };
   },
 
   async syncOsd(): Promise<SyncResult> {
@@ -2255,7 +2294,14 @@ export const SyncService = {
         if (current) {
           await FirestoreSyncService.syncActiveSessionToCloudIfConnected(current.session);
         }
-        await reconcileInternal();
+        const reconRes = await reconcileInternal({ forceManifestRefresh: true });
+        if (!reconRes.cloudSuccess && authTransitionCount === 0 && reconRes.error) {
+          return {
+            success: false,
+            email: res.email,
+            message: reconRes.error
+          };
+        }
       }
       return res;
     } finally {

@@ -1,18 +1,21 @@
 import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import { useAuth } from '../../context/AuthContext';
 import { StockFilterParams, Warehouse } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
 import { exportToExcel } from '../../services/excelService';
-import { roundQty } from '../../utils/additiveMerge';
+import { getAuthorizedWarehouses, roundQty } from '../../utils/additiveMerge';
 import { PaginationBar } from '../common/PaginationBar';
 import { 
   BarChart3, 
   Download, 
   Search, 
   Filter, 
-  RotateCcw
+  RotateCcw,
+  ShieldAlert
 } from 'lucide-react';
 
 export const InventoryReport: React.FC = () => {
+  const { currentUser, isAdmin } = useAuth();
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
 
   // Filter States
@@ -54,9 +57,26 @@ export const InventoryReport: React.FC = () => {
     });
   }, []);
 
+  const authorizedWarehouses = useMemo(
+    () => getAuthorizedWarehouses(warehouses, currentUser),
+    [warehouses, currentUser]
+  );
+
+  const allowedWarehouseIds = useMemo(
+    () => (isAdmin ? undefined : authorizedWarehouses.map((w) => w.id)),
+    [isAdmin, authorizedWarehouses]
+  );
+
+  useEffect(() => {
+    if (!isAdmin && warehouseId !== 'all' && !authorizedWarehouses.some((w) => w.id === warehouseId)) {
+      setWarehouseId('all');
+    }
+  }, [isAdmin, authorizedWarehouses, warehouseId]);
+
   const records = useMemo(() => {
     const filter: StockFilterParams = {
       warehouseId: warehouseId === 'all' ? undefined : warehouseId,
+      allowedWarehouseIds,
       packingListNo: defPackingListNo || undefined,
       shipment: defShipment || undefined,
       manufacturer: defManufacturer || undefined,
@@ -73,6 +93,7 @@ export const InventoryReport: React.FC = () => {
   }, [
     syncTick,
     warehouseId,
+    allowedWarehouseIds,
     defPackingListNo,
     defShipment,
     defManufacturer,
@@ -93,7 +114,10 @@ export const InventoryReport: React.FC = () => {
     availableMakers,
     availableSuppliers,
     availableCategories
-  } = useMemo(() => StorageService.getInventoryFilterOptions(), [records]);
+  } = useMemo(
+    () => StorageService.getInventoryFilterOptions(allowedWarehouseIds),
+    [records, allowedWarehouseIds]
+  );
 
   useEffect(() => {
     setCurrentPage(1);
@@ -234,6 +258,24 @@ export const InventoryReport: React.FC = () => {
         </div>
       </div>
 
+      {!isAdmin && authorizedWarehouses.length === 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start gap-3 text-xs text-amber-950 shadow-xs">
+          <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold text-sm text-amber-900">
+              {warehouses.length === 0
+                ? 'Chưa tải được dữ liệu kho từ Cloud Firestore'
+                : 'Tài khoản chưa được phân quyền thao tác kho nào'}
+            </div>
+            <p className="mt-1 text-amber-800 leading-relaxed">
+              {warehouses.length === 0
+                ? 'Vui lòng nhấn nút "Đồng Bộ Cloud" trên thanh tiêu đề để tải danh mục kho và số liệu tồn kho mới nhất.'
+                : 'Vui lòng liên hệ Admin để cấp quyền các kho bãi bạn được phép xem và thao tác.'}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Bộ Lọc Đa Điều Kiện (Multi-criteria Filter Panel) */}
       <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-sm space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -272,8 +314,8 @@ export const InventoryReport: React.FC = () => {
               onChange={(e) => setWarehouseId(e.target.value)}
               className="w-full px-2.5 py-2 sm:py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none min-h-[38px] sm:min-h-0"
             >
-              <option value="all">Tất cả kho ({warehouses.length})</option>
-              {warehouses.map(w => (
+              <option value="all">Tất cả kho ({authorizedWarehouses.length})</option>
+              {authorizedWarehouses.map(w => (
                 <option key={w.id} value={w.id}>{w.name}</option>
               ))}
             </select>

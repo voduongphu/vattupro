@@ -31,7 +31,9 @@ import {
   voucherCodeHasDatePrecision,
   deriveWarehouseAbbrev,
   collectUsedMaterialCodeKeys,
-  generateUniqueMaterialCode
+  generateUniqueMaterialCode,
+  getAuthorizedWarehouses,
+  isWarehouseAuthorized
 } from '../../utils/additiveMerge';
 import {
   ArrowUpRight,
@@ -52,7 +54,8 @@ import {
   ArrowUp,
   ArrowDown,
   Package,
-  Check
+  Check,
+  ShieldAlert
 } from 'lucide-react';
 
 export type ReceiptSortField = 'date' | 'code';
@@ -218,6 +221,36 @@ export const OutboundManager: React.FC = () => {
     return StorageService.subscribe(loadData);
   }, []);
 
+  const authorizedWarehouses = useMemo(
+    () => getAuthorizedWarehouses(warehouses, currentUser),
+    [warehouses, currentUser]
+  );
+
+  const allowedWarehouseIds = useMemo(
+    () => (isAdmin ? undefined : authorizedWarehouses.map((w) => w.id)),
+    [isAdmin, authorizedWarehouses]
+  );
+
+  const authorizedReceipts = useMemo(
+    () =>
+      isAdmin
+        ? receipts
+        : receipts.filter((r) =>
+            isWarehouseAuthorized(r.warehouseId, r.warehouseName, warehouses, currentUser)
+          ),
+    [receipts, warehouses, currentUser, isAdmin]
+  );
+
+  useEffect(() => {
+    if (
+      !isAdmin &&
+      filterWarehouse !== 'all' &&
+      !authorizedWarehouses.some((w) => w.id === filterWarehouse)
+    ) {
+      setFilterWarehouse('all');
+    }
+  }, [isAdmin, authorizedWarehouses, filterWarehouse]);
+
   useEffect(() => {
     setCurrentPage(1);
   }, [deferredSearch, filterWarehouse, startDate, endDate]);
@@ -267,7 +300,8 @@ export const OutboundManager: React.FC = () => {
     const parsedYear = parseInt((normDate || '').slice(0, 4), 10);
     if (!normDate || isNaN(parsedYear) || parsedYear < 1990 || parsedYear > 2099) return;
 
-    const targetWh = warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
+    const activeWhList = isAdmin ? warehouses : authorizedWarehouses;
+    const targetWh = activeWhList.find((w) => w.id === selectedWarehouseId) || activeWhList[0];
     const curYear = String(parsedYear);
     const curWhId = targetWh?.id || selectedWarehouseId || '';
 
@@ -304,6 +338,8 @@ export const OutboundManager: React.FC = () => {
   }, [
     receipts,
     warehouses,
+    authorizedWarehouses,
+    isAdmin,
     selectedWarehouseId,
     isCreateModalOpen,
     editingReceipt,
@@ -312,7 +348,9 @@ export const OutboundManager: React.FC = () => {
   ]);
 
   const openStockPicker = () => {
-    const baseStock = StorageService.calculateInventoryRecords().map((r) => ({ ...r }));
+    const baseStock = StorageService.calculateInventoryRecords(
+      isAdmin ? undefined : { allowedWarehouseIds }
+    ).map((r) => ({ ...r }));
     // Khi Admin đang sửa một phiếu xuất cũ, cộng hoàn tạm thời số lượng/khối lượng của chính phiếu đó
     // để mặt hàng đã xuất bởi phiếu này vẫn hiển thị đúng tồn kho khả dụng trước khi xuất
     if (editingReceipt) {
@@ -345,14 +383,23 @@ export const OutboundManager: React.FC = () => {
   const openCreateModal = () => {
     const currentReceipts = StorageService.getOutboundReceipts();
     const whList = StorageService.getWarehouses();
-    const defaultWhObj = whList[0] || null;
+    const allowedWhList = getAuthorizedWarehouses(whList, currentUser);
+    if (!isAdmin && allowedWhList.length === 0) {
+      showToast('Tài khoản của bạn chưa được Admin phân quyền thao tác trên kho bãi nào.', 'error');
+      return;
+    }
+    const defaultWhObj = allowedWhList[0] || null;
     const todayDate = new Date().toISOString().slice(0, 10);
     lastEditScopeRef.current = null;
     setReceipts(currentReceipts);
     setWarehouses(whList);
     setEditingReceipt(null);
     setMaterials(StorageService.getMaterials());
-    setStockRecords(StorageService.calculateInventoryRecords().map((r) => ({ ...r })));
+    setStockRecords(
+      StorageService.calculateInventoryRecords(
+        isAdmin ? undefined : { allowedWarehouseIds: allowedWhList.map((w) => w.id) }
+      ).map((r) => ({ ...r }))
+    );
     setIsCodeManuallyEdited(false);
     setSelectedWarehouseId(defaultWhObj?.id || '');
     setIssueDate(todayDate);
@@ -652,7 +699,13 @@ export const OutboundManager: React.FC = () => {
     if (imported.length === 0) return;
 
     const allWh = StorageService.getWarehouses();
-    const fallbackWh: Warehouse = allWh[0] || {
+    const scopedWhList = getAuthorizedWarehouses(allWh, currentUser);
+    if (!isAdmin && scopedWhList.length === 0) {
+      showToast('Tài khoản của bạn chưa được Admin phân quyền thao tác trên kho bãi nào.', 'error');
+      return;
+    }
+
+    const fallbackWh: Warehouse = scopedWhList[0] || {
       id: 'wh-01',
       name: 'Kho Tổng Trung Tâm',
       code: 'WH-01',
@@ -664,10 +717,11 @@ export const OutboundManager: React.FC = () => {
 
     const selectedDefaultWh =
       defaultWhId && defaultWhId !== 'auto'
-        ? allWh.find((w) => w.id === defaultWhId) || fallbackWh
+        ? scopedWhList.find((w) => w.id === defaultWhId) || fallbackWh
         : fallbackWh;
 
     const whResolveCache = new Map<string, Warehouse>();
+    let unauthorizedWarehouseName: string | null = null;
     const resolveWarehouse = (itemWhName?: string): Warehouse => {
       if (!itemWhName) return selectedDefaultWh;
       const trimmed = itemWhName.trim().toLowerCase();
@@ -676,8 +730,19 @@ export const OutboundManager: React.FC = () => {
       const cached = whResolveCache.get(trimmed);
       if (cached) return cached;
 
-      const matched =
-        allWh.find((w) => {
+      const matchedAllowed = scopedWhList.find((w) => {
+        const wName = w.name.toLowerCase();
+        const wCode = w.code.toLowerCase();
+        return (
+          wName === trimmed ||
+          wCode === trimmed ||
+          wName.includes(trimmed) ||
+          trimmed.includes(wName)
+        );
+      });
+
+      if (!matchedAllowed && !isAdmin) {
+        const matchesOtherWh = allWh.find((w) => {
           const wName = w.name.toLowerCase();
           const wCode = w.code.toLowerCase();
           return (
@@ -686,8 +751,13 @@ export const OutboundManager: React.FC = () => {
             wName.includes(trimmed) ||
             trimmed.includes(wName)
           );
-        }) || selectedDefaultWh;
+        });
+        if (matchesOtherWh) {
+          unauthorizedWarehouseName = matchesOtherWh.name;
+        }
+      }
 
+      const matched = matchedAllowed || selectedDefaultWh;
       whResolveCache.set(trimmed, matched);
       return matched;
     };
@@ -712,6 +782,13 @@ export const OutboundManager: React.FC = () => {
     for (let i = 0; i < imported.length; i++) {
       const item = imported[i] as any;
       const wh = resolveWarehouse(item.warehouseName);
+      if (unauthorizedWarehouseName) {
+        showToast(
+          `Bạn không có quyền import phiếu xuất cho kho "${unauthorizedWarehouseName}". Vui lòng kiểm tra lại file Excel hoặc liên hệ Admin.`,
+          'error'
+        );
+        return;
+      }
       const rawCode = (item.issueCode || '').trim();
       const customCode = rawCode || (item.packingListNo ? `PXK-${item.packingListNo.trim()}` : '');
       const rowType: 'issue' | 'transfer' = item.outboundType === 'transfer' ? 'transfer' : 'issue';
@@ -932,7 +1009,12 @@ export const OutboundManager: React.FC = () => {
       }
     }
 
-    const wh = warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
+    const availableWhList = isAdmin ? warehouses : authorizedWarehouses;
+    const wh = availableWhList.find((w) => w.id === selectedWarehouseId) || availableWhList[0];
+    if (!wh && !isAdmin) {
+      setFormError('Tài khoản của bạn chưa được phân quyền thao tác trên kho bãi này.');
+      return;
+    }
     const usedMaterialCodes = collectUsedMaterialCodeKeys({
       materials: StorageService.getMaterials(),
       inbounds: StorageService.getInboundReceipts(),
@@ -1091,8 +1173,8 @@ export const OutboundManager: React.FC = () => {
 
     const filtered =
       !q && !checkWh && !startDate && !endDate
-        ? receipts
-        : receipts.filter((r) => {
+        ? authorizedReceipts
+        : authorizedReceipts.filter((r) => {
             if (checkWh && r.warehouseId !== filterWarehouse) return false;
             const normDate = formatExcelDate(r.issueDate);
             if (startDate && normDate < startDate) return false;
@@ -1158,7 +1240,7 @@ export const OutboundManager: React.FC = () => {
     });
 
     return sorted;
-  }, [receipts, deferredSearch, filterWarehouse, startDate, endDate, sortField, sortOrder]);
+  }, [authorizedReceipts, deferredSearch, filterWarehouse, startDate, endDate, sortField, sortOrder]);
 
   const pagedReceipts = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
@@ -1269,9 +1351,17 @@ export const OutboundManager: React.FC = () => {
   const quickStockSuggestions = useMemo(() => {
     if (!isCreateModalOpen) return [];
     const q = quickStockQuery.trim().toLowerCase();
-    const records = stockRecords.length > 0 ? stockRecords : StorageService.calculateInventoryRecords();
+    const records =
+      stockRecords.length > 0
+        ? stockRecords
+        : StorageService.calculateInventoryRecords(
+            isAdmin ? undefined : { allowedWarehouseIds }
+          );
     return records
       .filter((st) => {
+        if (!isAdmin && !isWarehouseAuthorized(st.warehouseId, st.warehouseName, warehouses, currentUser)) {
+          return false;
+        }
         if (selectedWarehouseId && st.warehouseId !== selectedWarehouseId) return false;
         if (st.currentQuantity <= 0 && st.currentWeightKg <= 0) return false;
         if (!q) return true;
@@ -1285,7 +1375,7 @@ export const OutboundManager: React.FC = () => {
         );
       })
       .slice(0, 10);
-  }, [isCreateModalOpen, quickStockQuery, stockRecords, selectedWarehouseId]);
+  }, [isCreateModalOpen, quickStockQuery, stockRecords, selectedWarehouseId, isAdmin, allowedWarehouseIds, warehouses, currentUser]);
 
   const pagedStockForPicker = useMemo(() => {
     const start = (stockPage - 1) * stockPageSize;
@@ -1526,7 +1616,13 @@ export const OutboundManager: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setIsExcelModalOpen(true)}
+            onClick={() => {
+              if (!isAdmin && authorizedWarehouses.length === 0) {
+                showToast('Tài khoản của bạn chưa được Admin phân quyền thao tác trên kho bãi nào.', 'error');
+                return;
+              }
+              setIsExcelModalOpen(true);
+            }}
             className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-semibold text-xs shadow-md shadow-emerald-700/20 transition active:scale-95 min-h-[42px]"
           >
             <FileSpreadsheet className="w-4 h-4 shrink-0" />
@@ -1542,6 +1638,24 @@ export const OutboundManager: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {!isAdmin && authorizedWarehouses.length === 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start gap-3 text-xs text-amber-950 shadow-xs">
+          <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold text-sm text-amber-900">
+              {warehouses.length === 0
+                ? 'Chưa tải được dữ liệu kho từ Cloud Firestore'
+                : 'Tài khoản chưa được phân quyền thao tác kho nào'}
+            </div>
+            <p className="mt-1 text-amber-800 leading-relaxed">
+              {warehouses.length === 0
+                ? 'Vui lòng nhấn nút "Đồng Bộ Cloud" trên thanh tiêu đề để tải danh mục kho và phiếu xuất kho mới nhất.'
+                : 'Vui lòng liên hệ Admin để cấp quyền các kho bãi bạn được phép xem và thao tác.'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-sm flex flex-col md:flex-row items-center gap-3">
@@ -1562,8 +1676,8 @@ export const OutboundManager: React.FC = () => {
             onChange={(e) => setFilterWarehouse(e.target.value)}
             className="w-full sm:w-auto px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[40px]"
           >
-            <option value="all">Tất cả kho xuất</option>
-            {warehouses.map((w) => (
+            <option value="all">Tất cả kho xuất ({authorizedWarehouses.length})</option>
+            {authorizedWarehouses.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.name}
               </option>
@@ -2077,7 +2191,7 @@ export const OutboundManager: React.FC = () => {
                       onChange={(e) => setSelectedWarehouseId(e.target.value)}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg outline-none focus:border-blue-500"
                     >
-                      {warehouses.map((w) => (
+                      {authorizedWarehouses.map((w) => (
                         <option key={w.id} value={w.id}>
                           {w.name}
                         </option>
@@ -2611,8 +2725,12 @@ export const OutboundManager: React.FC = () => {
                   }}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 >
-                  <option value="all">🌐 Tất cả các kho</option>
-                  {warehouses.map((w) => (
+                  <option value="all">
+                    {isAdmin
+                      ? '🌐 Tất cả các kho'
+                      : `Tất cả kho được phép (${authorizedWarehouses.length})`}
+                  </option>
+                  {authorizedWarehouses.map((w) => (
                     <option key={w.id} value={w.id}>
                       Kho: {w.name} {w.id === selectedWarehouseId ? ' (Đang chọn)' : ''}
                     </option>
@@ -3080,7 +3198,7 @@ export const OutboundManager: React.FC = () => {
         isOpen={isExcelModalOpen}
         onClose={() => setIsExcelModalOpen(false)}
         type="outbound"
-        warehouses={warehouses}
+        warehouses={authorizedWarehouses}
         onImportSuccess={handleExcelImportSuccess}
       />
 
