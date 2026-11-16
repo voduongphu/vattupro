@@ -78,6 +78,12 @@ export const MaterialCatalog: React.FC = () => {
     return StorageService.subscribe(loadMaterials);
   }, []);
 
+  useEffect(() => {
+    if (!isAdmin && selectedIds.size > 0) {
+      setSelectedIds(new Set());
+    }
+  }, [isAdmin, selectedIds.size]);
+
   const openAddModal = () => {
     setCode('');
     setName('');
@@ -501,7 +507,7 @@ export const MaterialCatalog: React.FC = () => {
       </div>
 
       {/* Banner thao tác khi chọn nhiều vật tư */}
-      {selectedIds.size > 0 && (
+      {isAdmin && selectedIds.size > 0 && (
         <div className="bg-blue-50/90 border border-blue-200 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm animate-in slide-in-from-top-2">
           <div className="flex items-center gap-3">
             <div className="min-w-8 px-2 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-xs shadow-inner">
@@ -569,18 +575,20 @@ export const MaterialCatalog: React.FC = () => {
           <table className="w-full min-w-[820px] text-left text-sm">
             <thead className="bg-slate-50/80 text-slate-600 border-b border-slate-200 text-xs font-semibold uppercase tracking-wider">
               <tr>
-                <th className="w-12 px-4 py-3.5 text-center">
-                  <input
-                    type="checkbox"
-                    checked={isAllPageSelected}
-                    ref={el => {
-                      if (el) el.indeterminate = isSomePageSelected;
-                    }}
-                    onChange={toggleSelectCurrentPage}
-                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
-                    title={isAllPageSelected ? "Bỏ chọn các dòng trên trang này" : "Chọn tất cả các dòng trên trang này"}
-                  />
-                </th>
+                {isAdmin && (
+                  <th className="w-12 px-4 py-3.5 text-center">
+                    <input
+                      type="checkbox"
+                      checked={isAllPageSelected}
+                      ref={el => {
+                        if (el) el.indeterminate = isSomePageSelected;
+                      }}
+                      onChange={toggleSelectCurrentPage}
+                      className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                      title={isAllPageSelected ? "Bỏ chọn các dòng trên trang này" : "Chọn tất cả các dòng trên trang này"}
+                    />
+                  </th>
+                )}
                 <th className="px-5 py-3.5">Mã & Tên Vật Tư Thiết Bị</th>
                 <th className="px-5 py-3.5">Hạng Mục</th>
                 <th className="px-5 py-3.5">Package No.</th>
@@ -593,22 +601,24 @@ export const MaterialCatalog: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {pagedMaterials.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center text-slate-400">
+                  <td colSpan={isAdmin ? 8 : 7} className="px-6 py-12 text-center text-slate-400">
                     Không có vật tư nào khớp với từ khóa tìm kiếm.
                   </td>
                 </tr>
               ) : (
                 pagedMaterials.map(m => (
-                  <tr key={m.id} className={`hover:bg-slate-50/60 transition ${selectedIds.has(m.id) ? 'bg-blue-50/40' : ''}`}>
-                    <td className="w-12 px-4 py-4 text-center">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(m.id)}
-                        onChange={() => toggleSelectItem(m.id)}
-                        className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
-                        title={`Chọn vật tư ${m.code}`}
-                      />
-                    </td>
+                  <tr key={m.id} className={`hover:bg-slate-50/60 transition ${isAdmin && selectedIds.has(m.id) ? 'bg-blue-50/40' : ''}`}>
+                    {isAdmin && (
+                      <td className="w-12 px-4 py-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(m.id)}
+                          onChange={() => toggleSelectItem(m.id)}
+                          className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                          title={`Chọn vật tư ${m.code}`}
+                        />
+                      </td>
+                    )}
                     <td className="px-5 py-4">
                       <div>
                         <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200/70 inline-block mb-1">
