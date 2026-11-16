@@ -130,7 +130,6 @@ let currentState: CloudSyncSnapshotState = {
 
 let workspaceUnsub: Unsubscribe | null = null;
 let sessionUnsub: Unsubscribe | null = null;
-let sessionHeartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let osdUnsub: Unsubscribe | null = null;
 let watchedSessionDocId: string | null = null;
 let workspaceReadyPromise: Promise<boolean> | null = null;
@@ -143,8 +142,62 @@ let lastAppliedCloudServerRev = -1;
 let lastAppliedCloudMetaRev = -1;
 let isCloudReconciling = false;
 let pendingCloudReconcile = false;
+let isPushingOsd = false;
+let pendingOsdPush = false;
 let cloudMetaDirty = false;
+let cloudOsdDirty = false;
 let cloudMaterialsDirty = false;
+let cloudInboundDirty = false;
+let cloudOutboundDirty = false;
+let lastSyncedOsdDigest = '';
+const syncedAttachmentSignatures = new Set<string>();
+
+interface CloudSyncCheckpoint {
+  uid: string;
+  serverRevision: number;
+  metaRevision: number;
+  metaDigest: string;
+  materialsDigest: string;
+  inboundDigest: string;
+  outboundDigest: string;
+  osdDigest: string;
+  inboundCount: number;
+  outboundCount: number;
+  materialsCount: number;
+}
+
+const CLOUD_CHECKPOINT_KEY = `vtp_cloud_sync_checkpoint_v1_${WORKSPACE_ID}`;
+
+function readCloudSyncCheckpoint(uid?: string | null): CloudSyncCheckpoint | null {
+  if (typeof window === 'undefined' || !uid) return null;
+  try {
+    const raw = window.localStorage.getItem(CLOUD_CHECKPOINT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CloudSyncCheckpoint;
+    if (!parsed || parsed.uid !== uid) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCloudSyncCheckpoint(cp: CloudSyncCheckpoint): void {
+  if (typeof window === 'undefined' || !cp.uid) return;
+  try {
+    window.localStorage.setItem(CLOUD_CHECKPOINT_KEY, JSON.stringify(cp));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function clearCloudSyncCheckpoint(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(CLOUD_CHECKPOINT_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 let externalOnRemoteWorkspaceChange: (() => void) | null = null;
 let externalOnRemoteSessionSnapshot: ((remoteData: Record<string, any>) => void) | null = null;
@@ -368,6 +421,50 @@ function computeCloudSharedMetaDigest(
   }
 
   return `${users.length}.${warehouses.length}.${osdList.length}.${tombCount}:${sum1.toString(36)}:${sum2.toString(36)}:${xor1.toString(36)}`;
+}
+
+function computeInboundListDigest(list: InboundReceipt[]): string {
+  let sum1 = 0;
+  let sum2 = 0;
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    const d = computeInboundReceiptDigest(r);
+    const [h1, h2] = hash32Pair(`${normKey(r.receiptCode || r.id)}|${d}`);
+    sum1 = (sum1 + h1) >>> 0;
+    sum2 = (sum2 + h2) >>> 0;
+  }
+  return `${list.length}:${sum1.toString(36)}:${sum2.toString(36)}`;
+}
+
+function computeOutboundListDigest(list: OutboundReceipt[]): string {
+  let sum1 = 0;
+  let sum2 = 0;
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    const d = computeOutboundReceiptDigest(r);
+    const [h1, h2] = hash32Pair(`${normKey(r.issueCode || r.id)}|${d}`);
+    sum1 = (sum1 + h1) >>> 0;
+    sum2 = (sum2 + h2) >>> 0;
+  }
+  return `${list.length}:${sum1.toString(36)}:${sum2.toString(36)}`;
+}
+
+function computeOsdOnlyDigest(osdList: OsdReceipt[], tombstones: TombstoneMap): string {
+  const baseOsdDigest = computeOsdDigest(osdList);
+  let sum1 = 0;
+  let sum2 = 0;
+  let tombCount = 0;
+  const osdTombs = tombstones.osd || {};
+  for (const [k, ts] of Object.entries(osdTombs)) {
+    const numTs = Number(ts) || 0;
+    if (k && numTs > 0) {
+      tombCount++;
+      const [h1, h2] = hash32Pair(`OSDT|${k}|${numTs}`);
+      sum1 = (sum1 + h1) >>> 0;
+      sum2 = (sum2 + h2) >>> 0;
+    }
+  }
+  return `${baseOsdDigest}|${tombCount}:${sum1.toString(36)}:${sum2.toString(36)}`;
 }
 
 // ============================================================================
@@ -725,6 +822,9 @@ async function pushSingleOsdAttachment(osdId: string, pdf: OsdPdfAttachment): Pr
   const fbUser = auth.currentUser;
   if (!fbUser || !fbUser.emailVerified) return;
 
+  const attSig = `${osdId}|${pdf.fileName || ''}|${pdf.fileSize || 0}|${pdf.uploadedAt || ''}|${dataUrl.length}|${dataUrl.slice(0, 48)}`;
+  if (syncedAttachmentSignatures.has(attSig)) return;
+
   try {
     const CHUNK_CHAR_LIMIT = 600_000;
     const totalChunks = Math.max(1, Math.ceil(dataUrl.length / CHUNK_CHAR_LIMIT));
@@ -756,6 +856,8 @@ async function pushSingleOsdAttachment(osdId: string, pdf: OsdPdfAttachment): Pr
         }
       );
     }
+
+    syncedAttachmentSignatures.add(attSig);
 
     void fetch('/api/osd/attachment', {
       method: 'POST',
@@ -1070,8 +1172,17 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
       if (localUsers.length > 0 || localWhs.length > 0 || Object.keys(localTomb.inbound).length > 0) {
         cloudMetaDirty = true;
       }
+      if (StorageService.getOsdReceipts().length > 0) {
+        cloudOsdDirty = true;
+      }
       if (localMats.length > 0) {
         cloudMaterialsDirty = true;
+      }
+      if (StorageService.getInboundReceipts().length > 0) {
+        cloudInboundDirty = true;
+      }
+      if (StorageService.getOutboundReceipts().length > 0) {
+        cloudOutboundDirty = true;
       }
       try {
         await batch.commit();
@@ -1261,10 +1372,12 @@ function attachOsdRealtimeListener(): void {
           remoteOsd.push(deserializeOsdPublic(raw));
         }
       }
-      StorageService.applyRemoteOsdReceipts(remoteOsd);
-      void preloadOsdAttachments(remoteOsd);
-      externalOnRemoteOsdChange?.(remoteOsd);
-      externalOnRemoteWorkspaceChange?.();
+      const changed = StorageService.applyRemoteOsdReceipts(remoteOsd);
+      lastSyncedOsdDigest = computeOsdOnlyDigest(StorageService.getOsdReceipts(), StorageService.getTombstones());
+      if (changed) {
+        void preloadOsdAttachments(remoteOsd);
+        externalOnRemoteOsdChange?.(remoteOsd);
+      }
     },
     (err) => {
       try {
@@ -1288,6 +1401,7 @@ function attachWorkspaceRealtimeListener(): void {
       if (!snap.exists()) return;
       knownExistingPaths.add(wsRef.path);
       const data = snap.data() as WorkspaceManifestDoc;
+      cachedWsManifest = { data, atMs: Date.now() };
       if (Number(data.serverRevision) !== lastAppliedCloudServerRev) {
         externalOnRemoteWorkspaceChange?.();
       }
@@ -1317,10 +1431,6 @@ function detachAllListeners(): void {
   if (sessionUnsub) {
     sessionUnsub();
     sessionUnsub = null;
-  }
-  if (sessionHeartbeatInterval) {
-    clearInterval(sessionHeartbeatInterval);
-    sessionHeartbeatInterval = null;
   }
   watchedSessionDocId = null;
 }
@@ -1611,6 +1721,8 @@ async function pushMetaToCloud(fbUser: FirebaseUser): Promise<{
 
   await commitStagedWrites(staged);
   cloudMetaDirty = false;
+  cloudOsdDirty = false;
+  lastSyncedOsdDigest = computeOsdOnlyDigest(osdList, tombstones);
 
   for (const o of osdList) {
     if (o.pdfAttachment?.dataUrl && o.pdfAttachment.dataUrl.length > 50) {
@@ -1623,6 +1735,82 @@ async function pushMetaToCloud(fbUser: FirebaseUser): Promise<{
     warehouseChunkCount: whChunks.length,
     tombstoneChunkCount: tombChunks.length,
     metaDigest: cleanStr(computeCloudSharedMetaDigest(users, warehouses, tombstones), 128, '0.0.0:0:0:0')
+  };
+}
+
+async function pushOsdOnlyChunksToCloud(): Promise<{
+  tombstoneChunkCount: number;
+  metaDigest: string;
+}> {
+  const osdList = StorageService.getOsdReceipts();
+  const tombstones = StorageService.getTombstones();
+  const users = StorageService.getUsers();
+  const warehouses = StorageService.getWarehouses();
+  const staged: StagedDocWrite[] = [];
+
+  const osdChunks = chunkArray(osdList.map(serializeOsdPublic), CLOUD_CHUNK_SIZE);
+  const effectiveOsdChunks = osdChunks.length > 0 ? osdChunks : [[]];
+  for (let i = 0; i < effectiveOsdChunks.length; i++) {
+    const cid = `osd_${i}`;
+    staged.push({
+      ref: doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
+      pathLabel: `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`,
+      immutableCreateFields: {
+        workspaceId: WORKSPACE_ID,
+        chunkType: 'osd',
+        chunkIndex: i
+      },
+      mutableFields: {
+        items: effectiveOsdChunks[i]
+      }
+    });
+  }
+
+  const flatTombItems: Array<{ bucket: string; key: string; deletedAtMs: number }> = [];
+  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users', 'osd'];
+  for (const b of buckets) {
+    const map = tombstones[b] || {};
+    for (const [k, ts] of Object.entries(map)) {
+      const numTs = Number(ts) || 0;
+      if (k && numTs > 0) {
+        flatTombItems.push({
+          bucket: b,
+          key: cleanStr(k, 160, 'k'),
+          deletedAtMs: cleanNum(numTs, 1)
+        });
+      }
+    }
+  }
+
+  const tombChunks = chunkArray(flatTombItems, CLOUD_CHUNK_SIZE);
+  for (let i = 0; i < tombChunks.length; i++) {
+    const cid = `tomb_${i}`;
+    staged.push({
+      ref: doc(db, 'workspaces', WORKSPACE_ID, 'tombstoneChunks', cid),
+      pathLabel: `workspaces/${WORKSPACE_ID}/tombstoneChunks/${cid}`,
+      immutableCreateFields: {
+        workspaceId: WORKSPACE_ID,
+        chunkIndex: i
+      },
+      mutableFields: {
+        items: tombChunks[i]
+      }
+    });
+  }
+
+  await commitStagedWrites(staged);
+  cloudOsdDirty = false;
+  lastSyncedOsdDigest = computeOsdOnlyDigest(osdList, tombstones);
+
+  for (const o of osdList) {
+    if (o.pdfAttachment?.dataUrl && o.pdfAttachment.dataUrl.length > 50) {
+      void pushSingleOsdAttachment(o.id, o.pdfAttachment).catch(() => {});
+    }
+  }
+
+  return {
+    tombstoneChunkCount: tombChunks.length,
+    metaDigest: cleanStr(computeCloudSharedMetaDigest(users, warehouses, tombstones, osdList), 128, '0.0.0:0:0:0')
   };
 }
 
@@ -2181,9 +2369,8 @@ export const FirestoreSyncService = {
         if (fbUser.email) {
           this.watchActiveSession(fbUser.email);
         }
-        // Tự động kích hoạt đồng bộ dữ liệu hai chiều lên Google Cloud Firestore ngay khi khôi phục phiên Google
+        // Kiểm tra & đồng bộ thay đổi (nếu có) ngay khi khôi phục phiên Google
         void this.reconcileWithCloud();
-        externalOnRemoteWorkspaceChange?.();
       } catch (err) {
         console.warn('Cloud workspace bootstrap warning:', err);
         emitCloudState({
@@ -2257,8 +2444,22 @@ export const FirestoreSyncService = {
   },
 
   markLocalMutation(kind: 'meta' | 'materials' | 'inbound' | 'outbound' | 'osd'): void {
-    if (kind === 'meta' || kind === 'osd') cloudMetaDirty = true;
+    if (kind === 'meta') cloudMetaDirty = true;
+    if (kind === 'osd') cloudOsdDirty = true;
     if (kind === 'materials') cloudMaterialsDirty = true;
+    if (kind === 'inbound') cloudInboundDirty = true;
+    if (kind === 'outbound') cloudOutboundDirty = true;
+  },
+
+  hasPendingOsdPush(): boolean {
+    return cloudOsdDirty;
+  },
+
+  isWatchingSession(userKey?: string | null): boolean {
+    if (!sessionUnsub) return false;
+    if (!userKey) return true;
+    const canonicalKey = canonicalUserSessionKey(userKey);
+    return watchedSessionDocId === makeSafeDocId('sess', canonicalKey);
   },
 
   getCurrentFirebaseUser(): FirebaseUser | null {
@@ -2431,6 +2632,9 @@ export const FirestoreSyncService = {
     adminPiiLoadedForMetaRev = -1;
     lastAppliedCloudServerRev = -1;
     lastAppliedCloudMetaRev = -1;
+    lastSyncedOsdDigest = '';
+    syncedAttachmentSignatures.clear();
+    clearCloudSyncCheckpoint();
     await signOutAndPurgeFirebaseAuth();
     emitCloudState({
       authReady: true,
@@ -2449,10 +2653,6 @@ export const FirestoreSyncService = {
         sessionUnsub();
         sessionUnsub = null;
       }
-      if (sessionHeartbeatInterval) {
-        clearInterval(sessionHeartbeatInterval);
-        sessionHeartbeatInterval = null;
-      }
       watchedSessionDocId = null;
       return;
     }
@@ -2464,10 +2664,6 @@ export const FirestoreSyncService = {
     if (sessionUnsub) {
       sessionUnsub();
       sessionUnsub = null;
-    }
-    if (sessionHeartbeatInterval) {
-      clearInterval(sessionHeartbeatInterval);
-      sessionHeartbeatInterval = null;
     }
     watchedSessionDocId = sessionDocId;
     const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
@@ -2488,23 +2684,6 @@ export const FirestoreSyncService = {
         }
       }
     );
-
-    // Duy trì nhịp tim định kỳ cập nhật lastSeenAt mỗi 20 giây nếu thiết bị này đang có phiên hoạt động
-    sessionHeartbeatInterval = setInterval(async () => {
-      try {
-        const u = auth.currentUser;
-        if (!u || !u.emailVerified) return;
-        // Không gửi heartbeat nếu máy này đã đăng xuất (đang ở màn hình login)
-        if (externalIsLocalSessionStillActive && !externalIsLocalSessionStillActive('')) return;
-        await updateDoc(sessRef, {
-          lastSeenAt: Date.now(),
-          updatedByUid: u.uid,
-          updatedAt: serverTimestamp()
-        });
-      } catch {
-        // ignore heartbeat error
-      }
-    }, 20_000);
   },
 
   async reconcileWithCloud(): Promise<boolean> {
@@ -2536,13 +2715,20 @@ export const FirestoreSyncService = {
       const wsPath = `workspaces/${WORKSPACE_ID}`;
       const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
       let wsData: WorkspaceManifestDoc | null = null;
-      if (cachedWsManifest && Date.now() - cachedWsManifest.atMs < 2500) {
+      if (cachedWsManifest && Date.now() - cachedWsManifest.atMs < 5000) {
         wsData = cachedWsManifest.data;
         cachedWsManifest = null;
       } else {
         const wsSnap = await safeGetDoc(wsRef, wsPath);
         if (!wsSnap.exists()) return { ok: false, pulledChanges: false };
         wsData = wsSnap.data() as WorkspaceManifestDoc;
+      }
+
+      const remoteServerRev = Number(wsData.serverRevision) || 0;
+      const checkpoint = readCloudSyncCheckpoint(fbUser.uid);
+      if (lastAppliedCloudServerRev < 0 && checkpoint && checkpoint.serverRevision === remoteServerRev) {
+        lastAppliedCloudServerRev = checkpoint.serverRevision;
+        lastAppliedCloudMetaRev = checkpoint.metaRevision;
       }
 
       let nextAccountChunkCount = Number(wsData.accountChunkCount) || 0;
@@ -2560,39 +2746,83 @@ export const FirestoreSyncService = {
       let nextOutboundIndexChunkCount = Number(wsData.outboundIndexChunkCount) || 0;
       let manifestMutated = false;
 
-      // Fast-path: Nếu ServerRevision trên Cloud không đổi và máy hiện tại không có thay đổi mới nào sau lần đồng bộ trước -> hoàn tất tức thì
+      const localUsers = StorageService.getUsers();
+      const localWhs = StorageService.getWarehouses();
+      const localTombs = StorageService.getTombstones();
+      const localOsd = StorageService.getOsdReceipts();
+      const localMats = StorageService.getMaterials();
+      const localInbounds = StorageService.getInboundReceipts();
+      const localOutbounds = StorageService.getOutboundReceipts();
+
+      const localMetaDigestBefore = computeCloudSharedMetaDigest(localUsers, localWhs, localTombs, localOsd);
+      const preMatDigest = computeMaterialsDigest(localMats);
+      const preInDigest = computeInboundListDigest(localInbounds);
+      const preOutDigest = computeOutboundListDigest(localOutbounds);
+      const preOsdDigest = computeOsdOnlyDigest(localOsd, localTombs);
+
+      const adminMissingPii =
+        isCloudAdmin(fbUser) && localUsers.some((u) => Boolean(u.emailDigest) && !u.email);
+
+      const serverChanged =
+        lastAppliedCloudServerRev < 0 ||
+        remoteServerRev !== lastAppliedCloudServerRev ||
+        !checkpoint ||
+        checkpoint.serverRevision !== remoteServerRev;
+
+      const metaLocalDirty =
+        cloudMetaDirty ||
+        cloudOsdDirty ||
+        localMetaDigestBefore !== nextMetaDigest ||
+        !checkpoint ||
+        preOsdDigest !== checkpoint.osdDigest;
+
+      const inboundLocalDirty =
+        cloudInboundDirty ||
+        cloudMetaDirty ||
+        !checkpoint ||
+        preInDigest !== checkpoint.inboundDigest;
+
+      const outboundLocalDirty =
+        cloudOutboundDirty ||
+        cloudMetaDirty ||
+        !checkpoint ||
+        preOutDigest !== checkpoint.outboundDigest;
+
+      const materialsLocalDirty =
+        cloudMaterialsDirty ||
+        !checkpoint ||
+        preMatDigest !== nextMaterialsDigest;
+
+      // Fast-path: Chỉ đồng bộ khi nhận thấy có sự thay đổi dữ liệu cục bộ hoặc từ Cloud
       if (
-        lastAppliedCloudServerRev >= 0 &&
-        Number(wsData.serverRevision) === lastAppliedCloudServerRev &&
-        !cloudMetaDirty &&
-        !cloudMaterialsDirty
+        !serverChanged &&
+        !metaLocalDirty &&
+        !inboundLocalDirty &&
+        !outboundLocalDirty &&
+        !materialsLocalDirty &&
+        !adminMissingPii &&
+        !(nextInboundIndexChunkCount > 0 && localInbounds.length === 0) &&
+        !(nextOutboundIndexChunkCount > 0 && localOutbounds.length === 0) &&
+        !(nextMaterialsChunkCount > 0 && localMats.length === 0)
       ) {
-        const quickMetaDigest = computeCloudSharedMetaDigest(
-          StorageService.getUsers(),
-          StorageService.getWarehouses(),
-          StorageService.getTombstones()
-        );
-        const quickMatDigest = computeMaterialsDigest(StorageService.getMaterials());
-        if (quickMetaDigest === nextMetaDigest && quickMatDigest === nextMaterialsDigest) {
-          emitCloudState({
-            status: 'connected',
-            lastSyncedAt: Date.now(),
-            errorMessage: null
-          });
-          return { ok: true, pulledChanges: false };
-        }
+        lastAppliedCloudServerRev = remoteServerRev;
+        lastAppliedCloudMetaRev = nextMetaRevision;
+        emitCloudState({
+          status: 'connected',
+          lastSyncedAt: Date.now(),
+          errorMessage: null
+        });
+        return { ok: true, pulledChanges: false };
       }
 
-      // 1. Đồng bộ Meta (Users + Warehouses + Tombstones)
-      const localMetaDigestBefore = computeCloudSharedMetaDigest(
-        StorageService.getUsers(),
-        StorageService.getWarehouses(),
-        StorageService.getTombstones()
-      );
-      if (
-        Number(wsData.metaRevision) !== lastAppliedCloudMetaRev ||
-        localMetaDigestBefore !== nextMetaDigest
-      ) {
+      // 1. Đồng bộ Meta (Users + Warehouses + OSD + Tombstones) chỉ khi có khác biệt
+      const shouldPullMeta =
+        localMetaDigestBefore !== nextMetaDigest ||
+        adminMissingPii ||
+        (Number(wsData.metaRevision) !== lastAppliedCloudMetaRev &&
+          (!checkpoint || checkpoint.metaRevision !== Number(wsData.metaRevision)));
+
+      if (shouldPullMeta) {
         await pullMetaFromCloud(wsData, fbUser);
         lastAppliedCloudMetaRev = Number(wsData.metaRevision) || 0;
         pulledChanges = true;
@@ -2607,228 +2837,298 @@ export const FirestoreSyncService = {
         nextMetaRevision = (Number(wsData.metaRevision) || 0) + 1;
         lastAppliedCloudMetaRev = nextMetaRevision;
         cloudMetaDirty = false;
+        cloudOsdDirty = false;
         manifestMutated = true;
+      } else if (cloudOsdDirty) {
+        const currentOsdDigest = computeOsdOnlyDigest(
+          StorageService.getOsdReceipts(),
+          StorageService.getTombstones()
+        );
+        if (currentOsdDigest !== lastSyncedOsdDigest) {
+          const pushedOsd = await pushOsdOnlyChunksToCloud();
+          nextTombstoneChunkCount = pushedOsd.tombstoneChunkCount;
+          nextMetaDigest = pushedOsd.metaDigest;
+          nextMetaRevision = (Number(wsData.metaRevision) || 0) + 1;
+          lastAppliedCloudMetaRev = nextMetaRevision;
+          manifestMutated = true;
+        }
+        cloudOsdDirty = false;
       }
 
       const tombstones = StorageService.getTombstones();
 
-      // 2 & 3. Tải song song chỉ mục Phiếu Nhập & Phiếu Xuất từ Cloud
+      // 2 & 3. Chỉ tải chỉ mục Phiếu Nhập / Phiếu Xuất khi phía Cloud thay đổi hoặc phía cục bộ có sửa đổi tương ứng
+      const shouldSyncInbound =
+        serverChanged ||
+        inboundLocalDirty ||
+        (nextInboundIndexChunkCount > 0 && StorageService.getInboundReceipts().length === 0);
+
+      const shouldSyncOutbound =
+        serverChanged ||
+        outboundLocalDirty ||
+        (nextOutboundIndexChunkCount > 0 && StorageService.getOutboundReceipts().length === 0);
+
       const [cloudInMap, cloudOutMap] = await Promise.all([
-        pullReceiptIndexMap('inbound', nextInboundIndexChunkCount),
-        pullReceiptIndexMap('outbound', nextOutboundIndexChunkCount)
+        shouldSyncInbound
+          ? pullReceiptIndexMap('inbound', nextInboundIndexChunkCount)
+          : Promise.resolve(null),
+        shouldSyncOutbound
+          ? pullReceiptIndexMap('outbound', nextOutboundIndexChunkCount)
+          : Promise.resolve(null)
       ]);
 
-      for (const entry of Array.from(cloudInMap.values())) {
-        knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'inboundReceipts', entry.docId).path);
-        for (let c = 0; c < entry.chunkCount; c++) {
-          knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'inboundItems', `${entry.docId}_c${c}`).path);
+      if (cloudInMap) {
+        for (const entry of Array.from(cloudInMap.values())) {
+          knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'inboundReceipts', entry.docId).path);
+          for (let c = 0; c < entry.chunkCount; c++) {
+            knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'inboundItems', `${entry.docId}_c${c}`).path);
+          }
         }
-      }
-      for (const entry of Array.from(cloudOutMap.values())) {
-        knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'outboundReceipts', entry.docId).path);
-        for (let c = 0; c < entry.chunkCount; c++) {
-          knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'outboundItems', `${entry.docId}_c${c}`).path);
+
+        const curInbounds = StorageService.getInboundReceipts();
+        const localInMap = new Map<string, InboundReceipt>();
+        for (const r of curInbounds) {
+          localInMap.set(normKey(r.receiptCode || r.id), r);
         }
-      }
 
-      const localInbounds = StorageService.getInboundReceipts();
-      const localInMap = new Map<string, InboundReceipt>();
-      for (const r of localInbounds) {
-        localInMap.set(normKey(r.receiptCode || r.id), r);
-      }
+        const inEntriesToPull: CloudReceiptIndexEntry[] = [];
+        let inboundIndexChanged = false;
 
-      const inEntriesToPull: CloudReceiptIndexEntry[] = [];
-      let inboundIndexChanged = false;
+        for (const [code, entry] of Array.from(cloudInMap.entries())) {
+          if (isRecordDeleted(tombstones.inbound, [entry.id, code, entry.code], entry.appUpdatedAt)) {
+            cloudInMap.delete(code);
+            inboundIndexChanged = true;
+            continue;
+          }
+          const localRcp = localInMap.get(code);
+          const localRep = Number(localRcp?.itemsReplacedAt) || 0;
+          const cloudRep = Number(entry.itemsReplacedAt) || 0;
+          if (!localRcp) {
+            inEntriesToPull.push(entry);
+          } else if (localRep > cloudRep) {
+            continue;
+          } else if (
+            cloudRep > localRep ||
+            localRcp.items.length < entry.itemCount ||
+            computeInboundReceiptDigest(localRcp) !== entry.digest
+          ) {
+            inEntriesToPull.push(entry);
+          }
+        }
 
-      for (const [code, entry] of Array.from(cloudInMap.entries())) {
-        if (isRecordDeleted(tombstones.inbound, [entry.id, code, entry.code], entry.appUpdatedAt)) {
-          cloudInMap.delete(code);
+        if (inEntriesToPull.length > 0) {
+          for (let i = 0; i < inEntriesToPull.length; i += 12) {
+            const slice = inEntriesToPull.slice(i, i + 12);
+            const pulled = await Promise.all(slice.map((e) => pullSingleInboundFromCloud(e)));
+            const valid = pulled.filter((x): x is InboundReceipt => Boolean(x));
+            if (valid.length > 0) {
+              StorageService.applyRemoteInboundReceipts(valid);
+              pulledChanges = true;
+            }
+          }
+        }
+
+        const refreshedInbounds = StorageService.getInboundReceipts();
+        const inboundsToPush: Array<{ code: string; rcp: InboundReceipt }> = [];
+        for (const rcp of refreshedInbounds) {
+          const code = normKey(rcp.receiptCode || rcp.id);
+          const cloudEntry = cloudInMap.get(code);
+          const localRep = Number(rcp.itemsReplacedAt) || 0;
+          const cloudRep = Number(cloudEntry?.itemsReplacedAt) || 0;
+          if (
+            !cloudEntry ||
+            localRep > cloudRep ||
+            (localRep === cloudRep && rcp.items.length > cloudEntry.itemCount) ||
+            computeInboundReceiptDigest(rcp) !== cloudEntry.digest
+          ) {
+            inboundsToPush.push({ code, rcp });
+          }
+        }
+
+        if (inboundsToPush.length > 0) {
+          const updatedEntries = await pushBulkInboundsToCloud(inboundsToPush.map((x) => x.rcp), cloudInMap);
+          for (let j = 0; j < inboundsToPush.length; j++) {
+            cloudInMap.set(inboundsToPush[j].code, updatedEntries[j]);
+          }
           inboundIndexChanged = true;
-          continue;
         }
-        const localRcp = localInMap.get(code);
-        const localRep = Number(localRcp?.itemsReplacedAt) || 0;
-        const cloudRep = Number(entry.itemsReplacedAt) || 0;
-        if (!localRcp) {
-          inEntriesToPull.push(entry);
-        } else if (localRep > cloudRep) {
-          continue;
-        } else if (
-          cloudRep > localRep ||
-          localRcp.items.length < entry.itemCount ||
-          computeInboundReceiptDigest(localRcp) !== entry.digest
-        ) {
-          inEntriesToPull.push(entry);
+
+        if (inboundIndexChanged) {
+          nextInboundIndexChunkCount = await writeReceiptIndexChunks('inbound', cloudInMap);
+          manifestMutated = true;
         }
       }
+      cloudInboundDirty = false;
 
-      if (inEntriesToPull.length > 0) {
-        for (let i = 0; i < inEntriesToPull.length; i += 12) {
-          const slice = inEntriesToPull.slice(i, i + 12);
-          const pulled = await Promise.all(slice.map((e) => pullSingleInboundFromCloud(e)));
-          const valid = pulled.filter((x): x is InboundReceipt => Boolean(x));
-          if (valid.length > 0) {
-            StorageService.applyRemoteInboundReceipts(valid);
-            pulledChanges = true;
+      if (cloudOutMap) {
+        for (const entry of Array.from(cloudOutMap.values())) {
+          knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'outboundReceipts', entry.docId).path);
+          for (let c = 0; c < entry.chunkCount; c++) {
+            knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'outboundItems', `${entry.docId}_c${c}`).path);
           }
         }
-      }
 
-      const refreshedInbounds = StorageService.getInboundReceipts();
-      const inboundsToPush: Array<{ code: string; rcp: InboundReceipt }> = [];
-      for (const rcp of refreshedInbounds) {
-        const code = normKey(rcp.receiptCode || rcp.id);
-        const cloudEntry = cloudInMap.get(code);
-        const localRep = Number(rcp.itemsReplacedAt) || 0;
-        const cloudRep = Number(cloudEntry?.itemsReplacedAt) || 0;
-        if (
-          !cloudEntry ||
-          localRep > cloudRep ||
-          (localRep === cloudRep && rcp.items.length > cloudEntry.itemCount) ||
-          computeInboundReceiptDigest(rcp) !== cloudEntry.digest
-        ) {
-          inboundsToPush.push({ code, rcp });
+        const curOutbounds = StorageService.getOutboundReceipts();
+        const localOutMap = new Map<string, OutboundReceipt>();
+        for (const r of curOutbounds) {
+          localOutMap.set(normKey(r.issueCode || r.id), r);
         }
-      }
 
-      if (inboundsToPush.length > 0) {
-        const updatedEntries = await pushBulkInboundsToCloud(inboundsToPush.map((x) => x.rcp), cloudInMap);
-        for (let j = 0; j < inboundsToPush.length; j++) {
-          cloudInMap.set(inboundsToPush[j].code, updatedEntries[j]);
+        const outEntriesToPull: CloudReceiptIndexEntry[] = [];
+        let outboundIndexChanged = false;
+
+        for (const [code, entry] of Array.from(cloudOutMap.entries())) {
+          if (isRecordDeleted(tombstones.outbound, [entry.id, code, entry.code], entry.appUpdatedAt)) {
+            cloudOutMap.delete(code);
+            outboundIndexChanged = true;
+            continue;
+          }
+          const localRcp = localOutMap.get(code);
+          const localRep = Number(localRcp?.itemsReplacedAt) || 0;
+          const cloudRep = Number(entry.itemsReplacedAt) || 0;
+          if (!localRcp) {
+            outEntriesToPull.push(entry);
+          } else if (localRep > cloudRep) {
+            continue;
+          } else if (
+            cloudRep > localRep ||
+            localRcp.items.length < entry.itemCount ||
+            computeOutboundReceiptDigest(localRcp) !== entry.digest
+          ) {
+            outEntriesToPull.push(entry);
+          }
         }
-        inboundIndexChanged = true;
-      }
 
-      if (inboundIndexChanged) {
-        nextInboundIndexChunkCount = await writeReceiptIndexChunks('inbound', cloudInMap);
-        manifestMutated = true;
-      }
+        if (outEntriesToPull.length > 0) {
+          for (let i = 0; i < outEntriesToPull.length; i += 12) {
+            const slice = outEntriesToPull.slice(i, i + 12);
+            const pulled = await Promise.all(slice.map((e) => pullSingleOutboundFromCloud(e)));
+            const valid = pulled.filter((x): x is OutboundReceipt => Boolean(x));
+            if (valid.length > 0) {
+              StorageService.applyRemoteOutboundReceipts(valid);
+              pulledChanges = true;
+            }
+          }
+        }
 
-      // 3. Đồng bộ Phiếu Xuất Kho (Outbound Receipts)
-      const localOutbounds = StorageService.getOutboundReceipts();
-      const localOutMap = new Map<string, OutboundReceipt>();
-      for (const r of localOutbounds) {
-        localOutMap.set(normKey(r.issueCode || r.id), r);
-      }
+        const refreshedOutbounds = StorageService.getOutboundReceipts();
+        const outboundsToPush: Array<{ code: string; rcp: OutboundReceipt }> = [];
+        for (const rcp of refreshedOutbounds) {
+          const code = normKey(rcp.issueCode || rcp.id);
+          const cloudEntry = cloudOutMap.get(code);
+          const localRep = Number(rcp.itemsReplacedAt) || 0;
+          const cloudRep = Number(cloudEntry?.itemsReplacedAt) || 0;
+          if (
+            !cloudEntry ||
+            localRep > cloudRep ||
+            (localRep === cloudRep && rcp.items.length > cloudEntry.itemCount) ||
+            computeOutboundReceiptDigest(rcp) !== cloudEntry.digest
+          ) {
+            outboundsToPush.push({ code, rcp });
+          }
+        }
 
-      const outEntriesToPull: CloudReceiptIndexEntry[] = [];
-      let outboundIndexChanged = false;
-
-      for (const [code, entry] of Array.from(cloudOutMap.entries())) {
-        if (isRecordDeleted(tombstones.outbound, [entry.id, code, entry.code], entry.appUpdatedAt)) {
-          cloudOutMap.delete(code);
+        if (outboundsToPush.length > 0) {
+          const updatedEntries = await pushBulkOutboundsToCloud(outboundsToPush.map((x) => x.rcp), cloudOutMap);
+          for (let j = 0; j < outboundsToPush.length; j++) {
+            cloudOutMap.set(outboundsToPush[j].code, updatedEntries[j]);
+          }
           outboundIndexChanged = true;
-          continue;
         }
-        const localRcp = localOutMap.get(code);
-        const localRep = Number(localRcp?.itemsReplacedAt) || 0;
-        const cloudRep = Number(entry.itemsReplacedAt) || 0;
-        if (!localRcp) {
-          outEntriesToPull.push(entry);
-        } else if (localRep > cloudRep) {
-          continue;
-        } else if (
-          cloudRep > localRep ||
-          localRcp.items.length < entry.itemCount ||
-          computeOutboundReceiptDigest(localRcp) !== entry.digest
-        ) {
-          outEntriesToPull.push(entry);
+
+        if (outboundIndexChanged) {
+          nextOutboundIndexChunkCount = await writeReceiptIndexChunks('outbound', cloudOutMap);
+          manifestMutated = true;
         }
       }
+      cloudOutboundDirty = false;
 
-      if (outEntriesToPull.length > 0) {
-        for (let i = 0; i < outEntriesToPull.length; i += 12) {
-          const slice = outEntriesToPull.slice(i, i + 12);
-          const pulled = await Promise.all(slice.map((e) => pullSingleOutboundFromCloud(e)));
-          const valid = pulled.filter((x): x is OutboundReceipt => Boolean(x));
-          if (valid.length > 0) {
-            StorageService.applyRemoteOutboundReceipts(valid);
-            pulledChanges = true;
-          }
-        }
-      }
-
-      const refreshedOutbounds = StorageService.getOutboundReceipts();
-      const outboundsToPush: Array<{ code: string; rcp: OutboundReceipt }> = [];
-      for (const rcp of refreshedOutbounds) {
-        const code = normKey(rcp.issueCode || rcp.id);
-        const cloudEntry = cloudOutMap.get(code);
-        const localRep = Number(rcp.itemsReplacedAt) || 0;
-        const cloudRep = Number(cloudEntry?.itemsReplacedAt) || 0;
-        if (
-          !cloudEntry ||
-          localRep > cloudRep ||
-          (localRep === cloudRep && rcp.items.length > cloudEntry.itemCount) ||
-          computeOutboundReceiptDigest(rcp) !== cloudEntry.digest
-        ) {
-          outboundsToPush.push({ code, rcp });
-        }
-      }
-
-      if (outboundsToPush.length > 0) {
-        const updatedEntries = await pushBulkOutboundsToCloud(outboundsToPush.map((x) => x.rcp), cloudOutMap);
-        for (let j = 0; j < outboundsToPush.length; j++) {
-          cloudOutMap.set(outboundsToPush[j].code, updatedEntries[j]);
-        }
-        outboundIndexChanged = true;
-      }
-
-      if (outboundIndexChanged) {
-        nextOutboundIndexChunkCount = await writeReceiptIndexChunks('outbound', cloudOutMap);
-        manifestMutated = true;
-      }
-
-      // 4. Đồng bộ Danh Mục Vật Tư (Materials)
+      // 4. Đồng bộ Danh Mục Vật Tư (Materials) chỉ khi có thay đổi
       const currentMats = StorageService.getMaterials();
-      const preMatDigest = computeMaterialsDigest(currentMats);
-      if (nextMaterialsChunkCount > 0 && (currentMats.length === 0 || preMatDigest !== nextMaterialsDigest)) {
+      const matDigestBeforePull = computeMaterialsDigest(currentMats);
+      if (nextMaterialsChunkCount > 0 && (currentMats.length === 0 || matDigestBeforePull !== nextMaterialsDigest)) {
         await pullMaterialsFromCloud(nextMaterialsChunkCount);
         pulledChanges = true;
       }
 
       if (cloudMaterialsDirty) {
-        const pushedMats = await pushMaterialsToCloud();
-        nextMaterialsCount = pushedMats.materialsCount;
-        nextMaterialsChunkCount = pushedMats.materialsChunkCount;
-        nextMaterialsDigest = pushedMats.materialsDigest;
-        nextMaterialsRevision = (Number(wsData.materialsRevision) || 0) + 1;
+        const latestMats = StorageService.getMaterials();
+        const latestMatDigest = computeMaterialsDigest(latestMats);
+        if (latestMatDigest !== nextMaterialsDigest) {
+          const pushedMats = await pushMaterialsToCloud();
+          nextMaterialsCount = pushedMats.materialsCount;
+          nextMaterialsChunkCount = pushedMats.materialsChunkCount;
+          nextMaterialsDigest = pushedMats.materialsDigest;
+          nextMaterialsRevision = (Number(wsData.materialsRevision) || 0) + 1;
+          manifestMutated = true;
+        }
         cloudMaterialsDirty = false;
-        manifestMutated = true;
       }
 
-      // 5. Cập nhật WorkspaceManifest nếu có bất kỳ thay đổi mới đẩy lên Cloud
+      // 5. Cập nhật WorkspaceManifest chỉ khi có dữ liệu thay đổi mới đẩy lên Cloud
+      let finalServerRev = remoteServerRev;
       if (manifestMutated) {
-        const nextServerRev = (Number(wsData.serverRevision) || 0) + 1;
-        knownExistingPaths.add(wsRef.path);
-        await writeSingleProtectedDoc(
-          wsRef,
-          wsPath,
-          {
-            workspaceId: WORKSPACE_ID,
-            name: WORKSPACE_NAME,
-            ownerUid: cleanStr(wsData.ownerUid || fbUser.uid, 128),
-            status: 'active',
-            allowSelfJoin: true
-          },
-          {
-            serverRevision: nextServerRev,
-            metaRevision: nextMetaRevision,
-            materialsRevision: nextMaterialsRevision,
-            materialsCount: nextMaterialsCount,
-            materialsChunkCount: nextMaterialsChunkCount,
-            materialsDigest: nextMaterialsDigest,
-            metaDigest: nextMetaDigest,
-            accountChunkCount: nextAccountChunkCount,
-            warehouseChunkCount: nextWarehouseChunkCount,
-            tombstoneChunkCount: nextTombstoneChunkCount,
-            inboundIndexChunkCount: nextInboundIndexChunkCount,
-            outboundIndexChunkCount: nextOutboundIndexChunkCount
-          }
-        );
+        const nextServerRev = remoteServerRev + 1;
+        const prevAppliedServerRev = lastAppliedCloudServerRev;
         lastAppliedCloudServerRev = nextServerRev;
+        knownExistingPaths.add(wsRef.path);
+        try {
+          await writeSingleProtectedDoc(
+            wsRef,
+            wsPath,
+            {
+              workspaceId: WORKSPACE_ID,
+              name: WORKSPACE_NAME,
+              ownerUid: cleanStr(wsData.ownerUid || fbUser.uid, 128),
+              status: 'active',
+              allowSelfJoin: true
+            },
+            {
+              serverRevision: nextServerRev,
+              metaRevision: nextMetaRevision,
+              materialsRevision: nextMaterialsRevision,
+              materialsCount: nextMaterialsCount,
+              materialsChunkCount: nextMaterialsChunkCount,
+              materialsDigest: nextMaterialsDigest,
+              metaDigest: nextMetaDigest,
+              accountChunkCount: nextAccountChunkCount,
+              warehouseChunkCount: nextWarehouseChunkCount,
+              tombstoneChunkCount: nextTombstoneChunkCount,
+              inboundIndexChunkCount: nextInboundIndexChunkCount,
+              outboundIndexChunkCount: nextOutboundIndexChunkCount
+            }
+          );
+          finalServerRev = nextServerRev;
+        } catch (err) {
+          lastAppliedCloudServerRev = prevAppliedServerRev;
+          throw err;
+        }
       } else {
-        lastAppliedCloudServerRev = Number(wsData.serverRevision) || 0;
+        lastAppliedCloudServerRev = remoteServerRev;
       }
+
+      const finalUsers = StorageService.getUsers();
+      const finalWhs = StorageService.getWarehouses();
+      const finalTombs = StorageService.getTombstones();
+      const finalOsd = StorageService.getOsdReceipts();
+      const finalMats = StorageService.getMaterials();
+      const finalIn = StorageService.getInboundReceipts();
+      const finalOut = StorageService.getOutboundReceipts();
+
+      lastSyncedOsdDigest = computeOsdOnlyDigest(finalOsd, finalTombs);
+      writeCloudSyncCheckpoint({
+        uid: fbUser.uid,
+        serverRevision: finalServerRev,
+        metaRevision: nextMetaRevision,
+        metaDigest: computeCloudSharedMetaDigest(finalUsers, finalWhs, finalTombs, finalOsd),
+        materialsDigest: computeMaterialsDigest(finalMats),
+        inboundDigest: computeInboundListDigest(finalIn),
+        outboundDigest: computeOutboundListDigest(finalOut),
+        osdDigest: lastSyncedOsdDigest,
+        inboundCount: finalIn.length,
+        outboundCount: finalOut.length,
+        materialsCount: finalMats.length
+      });
 
       await StorageService.flush();
       emitCloudState({
@@ -3549,32 +3849,6 @@ export const FirestoreSyncService = {
       const myIssued = Number(mySession.issuedAtMs) || 0;
 
       if (remoteToken === mySession.sessionToken) {
-        // Gia hạn nhịp tim nếu đã quá 20 giây (hoặc lệch đồng hồ giữa các thiết bị) để tiết kiệm hạn mức ghi Firestore
-        const nowMs = Date.now();
-        if (Math.abs(nowMs - (Number(d.lastSeenAt) || 0)) >= 20_000 && isSessionStillValidLocally(mySession.sessionToken)) {
-          await writeSingleProtectedDoc(
-            sessRef,
-            sessPath,
-            {
-              workspaceId: WORKSPACE_ID,
-              sessionDocId,
-              userKey: cleanStr(userKey, 160, 'user')
-            },
-            {
-              userId: cleanStr(d.userId || mySession.userId, 160, 'user-0'),
-              username: cleanStr(d.username || mySession.username, 160, 'user'),
-              sessionToken: remoteToken,
-              issuedAtMs: remoteIssued || myIssued || nowMs,
-              deviceId: cleanStr(mySession.deviceId, 160, ''),
-              deviceLabel: cleanStr(mySession.deviceLabel, 200, 'Thiết bị Web'),
-              loginAt: cleanStr(d.loginAt || mySession.loginAt, 64, ''),
-              lastSeenAt: nowMs,
-              revokedBeforeMs: cleanNum(revokedBefore, 0),
-              forceLogoutDeviceLabel: cleanStr(d.forceLogoutDeviceLabel, 200, ''),
-              forceLogoutAt: cleanStr(d.forceLogoutAt, 64, '')
-            }
-          );
-        }
         return { handled: true, valid: true };
       }
 
@@ -3853,73 +4127,23 @@ export const FirestoreSyncService = {
     const ok = await ensureWorkspaceReady(fbUser);
     if (!ok) return false;
 
+    const osdList = StorageService.getOsdReceipts();
+    const tombstones = StorageService.getTombstones();
+    const currentOsdDigest = computeOsdOnlyDigest(osdList, tombstones);
+
+    // Chỉ đẩy lên Cloud Firestore khi thực sự có sự thay đổi dữ liệu OSD
+    if (!cloudOsdDirty && lastSyncedOsdDigest && currentOsdDigest === lastSyncedOsdDigest) {
+      return true;
+    }
+
+    if (isPushingOsd) {
+      pendingOsdPush = true;
+      return true;
+    }
+
+    isPushingOsd = true;
     try {
-      const osdList = StorageService.getOsdReceipts();
-      const tombstones = StorageService.getTombstones();
-      const users = StorageService.getUsers();
-      const warehouses = StorageService.getWarehouses();
-
-      const staged: StagedDocWrite[] = [];
-
-      const osdChunks = chunkArray(osdList.map(serializeOsdPublic), CLOUD_CHUNK_SIZE);
-      const effectiveOsdChunks = osdChunks.length > 0 ? osdChunks : [[]];
-      for (let i = 0; i < effectiveOsdChunks.length; i++) {
-        const cid = `osd_${i}`;
-        staged.push({
-          ref: doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
-          pathLabel: `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`,
-          immutableCreateFields: {
-            workspaceId: WORKSPACE_ID,
-            chunkType: 'osd',
-            chunkIndex: i
-          },
-          mutableFields: {
-            items: effectiveOsdChunks[i]
-          }
-        });
-      }
-
-      // Đẩy tombstones để các client khác nhận diện ngay vật tư OSD đã bị xóa
-      const flatTombItems: Array<{ bucket: string; key: string; deletedAtMs: number }> = [];
-      const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users', 'osd'];
-      for (const b of buckets) {
-        const map = tombstones[b] || {};
-        for (const [k, ts] of Object.entries(map)) {
-          const numTs = Number(ts) || 0;
-          if (k && numTs > 0) {
-            flatTombItems.push({
-              bucket: b,
-              key: cleanStr(k, 160, 'k'),
-              deletedAtMs: cleanNum(numTs, 1)
-            });
-          }
-        }
-      }
-
-      const tombChunks = chunkArray(flatTombItems, CLOUD_CHUNK_SIZE);
-      for (let i = 0; i < tombChunks.length; i++) {
-        const cid = `tomb_${i}`;
-        staged.push({
-          ref: doc(db, 'workspaces', WORKSPACE_ID, 'tombstoneChunks', cid),
-          pathLabel: `workspaces/${WORKSPACE_ID}/tombstoneChunks/${cid}`,
-          immutableCreateFields: {
-            workspaceId: WORKSPACE_ID,
-            chunkIndex: i
-          },
-          mutableFields: {
-            items: tombChunks[i]
-          }
-        });
-      }
-
-      await commitStagedWrites(staged);
-      cloudMetaDirty = false;
-
-      for (const o of osdList) {
-        if (o.pdfAttachment?.dataUrl && o.pdfAttachment.dataUrl.length > 50) {
-          void pushSingleOsdAttachment(o.id, o.pdfAttachment).catch(() => {});
-        }
-      }
+      const pushed = await pushOsdOnlyChunksToCloud();
 
       // Cập nhật WorkspaceManifest với serverRevision và metaRevision mới để kích hoạt realtime trên mọi thiết bị
       const wsPath = `workspaces/${WORKSPACE_ID}`;
@@ -3929,40 +4153,51 @@ export const FirestoreSyncService = {
         const wsData = wsSnap.data() as WorkspaceManifestDoc;
         const nextServerRev = (Number(wsData.serverRevision) || 0) + 1;
         const nextMetaRevision = (Number(wsData.metaRevision) || 0) + 1;
-        const nextMetaDigest = cleanStr(
-          computeCloudSharedMetaDigest(users, warehouses, tombstones),
-          128,
-          '0.0.0:0:0:0'
-        );
-
-        knownExistingPaths.add(wsRef.path);
-        await writeSingleProtectedDoc(
-          wsRef,
-          wsPath,
-          {
-            workspaceId: WORKSPACE_ID,
-            name: WORKSPACE_NAME,
-            ownerUid: cleanStr(wsData.ownerUid || fbUser.uid, 128),
-            status: 'active',
-            allowSelfJoin: true
-          },
-          {
-            serverRevision: nextServerRev,
-            metaRevision: nextMetaRevision,
-            materialsRevision: Number(wsData.materialsRevision) || 0,
-            materialsCount: Number(wsData.materialsCount) || 0,
-            materialsChunkCount: Number(wsData.materialsChunkCount) || 0,
-            materialsDigest: String(wsData.materialsDigest || '0:0:0:0'),
-            metaDigest: nextMetaDigest,
-            accountChunkCount: Number(wsData.accountChunkCount) || 0,
-            warehouseChunkCount: Number(wsData.warehouseChunkCount) || 0,
-            tombstoneChunkCount: tombChunks.length,
-            inboundIndexChunkCount: Number(wsData.inboundIndexChunkCount) || 0,
-            outboundIndexChunkCount: Number(wsData.outboundIndexChunkCount) || 0
-          }
-        );
+        const prevAppliedServerRev = lastAppliedCloudServerRev;
         lastAppliedCloudServerRev = nextServerRev;
         lastAppliedCloudMetaRev = nextMetaRevision;
+
+        knownExistingPaths.add(wsRef.path);
+        try {
+          await writeSingleProtectedDoc(
+            wsRef,
+            wsPath,
+            {
+              workspaceId: WORKSPACE_ID,
+              name: WORKSPACE_NAME,
+              ownerUid: cleanStr(wsData.ownerUid || fbUser.uid, 128),
+              status: 'active',
+              allowSelfJoin: true
+            },
+            {
+              serverRevision: nextServerRev,
+              metaRevision: nextMetaRevision,
+              materialsRevision: Number(wsData.materialsRevision) || 0,
+              materialsCount: Number(wsData.materialsCount) || 0,
+              materialsChunkCount: Number(wsData.materialsChunkCount) || 0,
+              materialsDigest: String(wsData.materialsDigest || '0:0:0:0'),
+              metaDigest: pushed.metaDigest,
+              accountChunkCount: Number(wsData.accountChunkCount) || 0,
+              warehouseChunkCount: Number(wsData.warehouseChunkCount) || 0,
+              tombstoneChunkCount: pushed.tombstoneChunkCount,
+              inboundIndexChunkCount: Number(wsData.inboundIndexChunkCount) || 0,
+              outboundIndexChunkCount: Number(wsData.outboundIndexChunkCount) || 0
+            }
+          );
+          const prevCp = readCloudSyncCheckpoint(fbUser.uid);
+          if (prevCp) {
+            writeCloudSyncCheckpoint({
+              ...prevCp,
+              serverRevision: nextServerRev,
+              metaRevision: nextMetaRevision,
+              metaDigest: pushed.metaDigest,
+              osdDigest: currentOsdDigest
+            });
+          }
+        } catch (err) {
+          lastAppliedCloudServerRev = prevAppliedServerRev;
+          throw err;
+        }
       }
 
       emitCloudState({
@@ -3975,6 +4210,12 @@ export const FirestoreSyncService = {
     } catch (err) {
       console.warn('pushOsdRealtimeToCloud failed:', err);
       return false;
+    } finally {
+      isPushingOsd = false;
+      if (pendingOsdPush) {
+        pendingOsdPush = false;
+        void this.pushOsdRealtimeToCloud();
+      }
     }
   },
 
@@ -4159,6 +4400,8 @@ export const FirestoreSyncService = {
       const nextMatRev = (Number(wsData.materialsRevision) || 0) + 1;
 
       knownExistingPaths.add(wsRef.path);
+      lastAppliedCloudServerRev = nextServerRev;
+      lastAppliedCloudMetaRev = nextMetaRev;
       await writeSingleProtectedDoc(
         wsRef,
         wsPath,
@@ -4184,8 +4427,31 @@ export const FirestoreSyncService = {
           outboundIndexChunkCount: nextOutboundIndexChunkCount
         }
       );
-      lastAppliedCloudServerRev = nextServerRev;
-      lastAppliedCloudMetaRev = nextMetaRev;
+      cloudMetaDirty = false;
+      cloudOsdDirty = false;
+      cloudMaterialsDirty = false;
+      cloudInboundDirty = false;
+      cloudOutboundDirty = false;
+
+      const finalUsers = StorageService.getUsers();
+      const finalWhs = StorageService.getWarehouses();
+      const finalTombs = StorageService.getTombstones();
+      const finalOsd = StorageService.getOsdReceipts();
+      const finalMats = StorageService.getMaterials();
+      lastSyncedOsdDigest = computeOsdOnlyDigest(finalOsd, finalTombs);
+      writeCloudSyncCheckpoint({
+        uid: fbUser.uid,
+        serverRevision: nextServerRev,
+        metaRevision: nextMetaRev,
+        metaDigest: computeCloudSharedMetaDigest(finalUsers, finalWhs, finalTombs, finalOsd),
+        materialsDigest: pushedMats.materialsDigest,
+        inboundDigest: computeInboundListDigest(localInbounds),
+        outboundDigest: computeOutboundListDigest(localOutbounds),
+        osdDigest: lastSyncedOsdDigest,
+        inboundCount: localInbounds.length,
+        outboundCount: localOutbounds.length,
+        materialsCount: finalMats.length
+      });
 
       // 6. Hoàn tất ghi dữ liệu lên Cloud Firestore
 
@@ -4196,9 +4462,9 @@ export const FirestoreSyncService = {
         errorMessage: null
       });
 
-      const users = StorageService.getUsers();
-      const whs = StorageService.getWarehouses();
-      const osd = StorageService.getOsdReceipts();
+      const users = finalUsers;
+      const whs = finalWhs;
+      const osd = finalOsd;
 
       return {
         success: true,

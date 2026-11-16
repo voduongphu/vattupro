@@ -569,7 +569,6 @@ function saveStaticSessionEntry(userKey: string, session: ActiveUserSession | nu
   }
 }
 
-let lastCloudHeartbeatCheckMs = 0;
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers || {});
@@ -678,18 +677,25 @@ async function verifySessionHeartbeat(forceImmediate = false): Promise<void> {
   if (!current) return;
 
   const watchKey = canonicalUserSessionKey(current.user) || current.session.userKey;
+  const isCloudSession =
+    FirestoreSyncService.isCloudConnected() || current.session.sessionToken.startsWith('cloud.');
 
-  // Khi Cloud Firestore đang kết nối, onSnapshot nhận thay đổi tức thì; chỉ kiểm tra định kỳ mỗi 15s để bảo toàn hạn mức đọc
-  if (FirestoreSyncService.isCloudConnected()) {
-    const now = Date.now();
-    if (!forceImmediate && now - lastCloudHeartbeatCheckMs < 15_000) {
+  // Khi dùng Cloud Firestore: lắng nghe thay đổi phiên tức thì qua onSnapshot, không chạy kiểm tra định kỳ theo thời gian
+  if (isCloudSession) {
+    if (FirestoreSyncService.hasAuthenticatedCloudUser()) {
       FirestoreSyncService.watchActiveSession(watchKey);
+    }
+    // Chỉ kiểm tra trực tiếp một lần khi ép buộc (lúc khởi tạo/kết nối lại) và onSnapshot phiên chưa được gắn
+    if (
+      !forceImmediate ||
+      !FirestoreSyncService.hasAuthenticatedCloudUser() ||
+      (FirestoreSyncService.isCloudConnected() && FirestoreSyncService.isWatchingSession(watchKey))
+    ) {
       return;
     }
-    lastCloudHeartbeatCheckMs = now;
+
     isVerifyingSession = true;
     try {
-      FirestoreSyncService.watchActiveSession(watchKey);
       const cloudRes = await FirestoreSyncService.verifySessionWithCloud(current.session);
       const latestLocal = getStoredUnifiedSession();
       if (
@@ -727,29 +733,6 @@ async function verifySessionHeartbeat(forceImmediate = false): Promise<void> {
   isVerifyingSession = true;
   try {
     const mySession = current.session;
-    if (mySession.sessionToken.startsWith('cloud.')) {
-      if (FirestoreSyncService.hasAuthenticatedCloudUser()) {
-        const cloudRes = await FirestoreSyncService.verifySessionWithCloud(current.session);
-        if (cloudRes.handled && !cloudRes.valid) {
-          if (cloudRes.reason === 'disabled') {
-            triggerLocalKickOut({ reason: 'disabled' });
-          } else if (cloudRes.reason === 'force_logout') {
-            triggerLocalKickOut({
-              reason: 'force_logout',
-              deviceLabel: cloudRes.forceLogoutBy?.deviceLabel,
-              loginAt: cloudRes.forceLogoutBy?.at
-            });
-          } else if (cloudRes.reason === 'replaced') {
-            triggerLocalKickOut({
-              reason: 'replaced',
-              deviceLabel: cloudRes.replacedBy?.deviceLabel,
-              loginAt: cloudRes.replacedBy?.loginAt
-            });
-          }
-        }
-      }
-      return;
-    }
 
     if (mySession.sessionToken.startsWith('static-')) {
       const staticMap = getStaticSessionsMap();
@@ -1653,7 +1636,6 @@ export const SyncService = {
             getStoredUnifiedSession()?.session.sessionToken === token
         ),
       onRemoteWorkspaceChange: () => {
-        void verifySessionHeartbeat(true);
         void reconcileInternal();
       },
       onRemoteOsdChange: (remoteOsd) => {
@@ -1779,6 +1761,20 @@ export const SyncService = {
 
     if (typeof window !== 'undefined') {
       const wakeCheck = () => {
+        const current = getStoredUnifiedSession();
+        const isCloudMode =
+          FirestoreSyncService.isCloudConnected() ||
+          Boolean(current?.session.sessionToken.startsWith('cloud.'));
+        if (isCloudMode) {
+          if (current && FirestoreSyncService.hasAuthenticatedCloudUser()) {
+            const watchKey = canonicalUserSessionKey(current.user) || current.session.userKey;
+            if (!FirestoreSyncService.isWatchingSession(watchKey)) {
+              FirestoreSyncService.watchActiveSession(watchKey);
+              void verifySessionHeartbeat(true);
+            }
+          }
+          return;
+        }
         connectWebSocket();
         sendWsAuthCheck();
         void verifySessionHeartbeat(true);
@@ -1811,23 +1807,26 @@ export const SyncService = {
         const now = Date.now();
         if (now - lastInteractionCheckMs < 2000) return;
         lastInteractionCheckMs = now;
-        if (getStoredUnifiedSession()) {
-          if (!FirestoreSyncService.isCloudConnected()) {
-            connectWebSocket();
-          }
-          void verifySessionHeartbeat();
+        const current = getStoredUnifiedSession();
+        if (!current) return;
+        if (FirestoreSyncService.isCloudConnected() || current.session.sessionToken.startsWith('cloud.')) {
+          return;
         }
+        connectWebSocket();
+        void verifySessionHeartbeat();
       };
       window.addEventListener('pointerdown', handleInteraction, { passive: true });
       window.addEventListener('keydown', handleInteraction, { passive: true });
 
       sessionHeartbeatTimer = setInterval(() => {
-        if (getStoredUnifiedSession() && authTransitionCount === 0) {
-          if (!FirestoreSyncService.isCloudConnected()) {
-            connectWebSocket();
-          }
-          void verifySessionHeartbeat();
+        const current = getStoredUnifiedSession();
+        if (!current || authTransitionCount > 0) return;
+        // Khi sử dụng Cloud Firestore: hoàn toàn đồng bộ theo sự kiện thay đổi (onSnapshot / mutation), không kiểm tra định kỳ
+        if (FirestoreSyncService.isCloudConnected() || current.session.sessionToken.startsWith('cloud.')) {
+          return;
         }
+        connectWebSocket();
+        void verifySessionHeartbeat();
       }, 5000);
     }
   },
@@ -1905,12 +1904,14 @@ export const SyncService = {
       let serverOk = false;
       let cloudOk = false;
 
+      const currentSess = getStoredUnifiedSession();
+      const isCloudSessionMode =
+        FirestoreSyncService.isCloudConnected() ||
+        Boolean(currentSess?.session.sessionToken.startsWith('cloud.'));
+
       // Chạy SONG SONG các luồng đồng bộ độc lập để TỐI ĐA HÓA TỐC ĐỘ:
       const syncTasks: Promise<any>[] = [
-        // 1. Đồng bộ nhịp tim phiên
-        verifySessionHeartbeat(true).catch(() => {}),
-
-        // 2. Đồng bộ chuyên biệt OSD 2 chiều qua /api/sync/osd
+        // 1. Đồng bộ chuyên biệt OSD 2 chiều qua /api/sync/osd
         (async () => {
           try {
             const localOsd = StorageService.getOsdReceipts();
@@ -1931,13 +1932,19 @@ export const SyncService = {
             });
 
             if (res.ok && Array.isArray(res.osd)) {
-              StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
+              const pulledFromLocal = StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
               if (res.tombstones && typeof res.tombstones === 'object') {
                 const tombs = StorageService.getTombstones();
                 tombs.osd = { ...(tombs.osd || {}), ...res.tombstones };
                 StorageService.saveTombstones(tombs);
               }
-              notifyOsdListeners(StorageService.getOsdReceipts());
+              if (pulledFromLocal) {
+                notifyOsdListeners(StorageService.getOsdReceipts());
+                FirestoreSyncService.markLocalMutation('osd');
+                if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+                  void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+                }
+              }
               serverOk = true;
               lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
             }
@@ -1946,15 +1953,21 @@ export const SyncService = {
             try {
               const fb = await fetchJson<{ ok: boolean; osd: OsdReceipt[] }>('/api/sync/osd');
               if (fb.ok && Array.isArray(fb.osd)) {
-                StorageService.applyRemoteOsdReceipts(fb.osd, this.getActorId());
-                notifyOsdListeners(StorageService.getOsdReceipts());
+                const pulledFromLocal = StorageService.applyRemoteOsdReceipts(fb.osd, this.getActorId());
+                if (pulledFromLocal) {
+                  notifyOsdListeners(StorageService.getOsdReceipts());
+                  FirestoreSyncService.markLocalMutation('osd');
+                  if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+                    void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+                  }
+                }
                 serverOk = true;
               }
             } catch {}
           }
         })(),
 
-        // 3. Đồng bộ toàn bộ dữ liệu hệ thống (Người dùng, Kho bãi, Vật tư, Phiếu nhập xuất)
+        // 2. Đồng bộ toàn bộ dữ liệu hệ thống (Người dùng, Kho bãi, Vật tư, Phiếu nhập xuất)
         (async () => {
           try {
             const reconRes = await reconcileInternal();
@@ -1964,8 +1977,16 @@ export const SyncService = {
         })()
       ];
 
-      // Nếu Cloud đang kết nối, kích hoạt đẩy OSD lên Cloud Firestore song song
-      if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+      // Chỉ kiểm tra nhịp tim phiên thủ công khi không dùng onSnapshot của Cloud Firestore
+      if (!isCloudSessionMode) {
+        syncTasks.push(verifySessionHeartbeat(true).catch(() => {}));
+      }
+
+      // Chỉ đẩy OSD lên Cloud Firestore khi thực sự có thay đổi OSD chưa đồng bộ
+      if (
+        (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) &&
+        FirestoreSyncService.hasPendingOsdPush()
+      ) {
         syncTasks.push(
           FirestoreSyncService.pushOsdRealtimeToCloud()
             .then((ok) => {
