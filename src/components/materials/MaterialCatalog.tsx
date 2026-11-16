@@ -3,6 +3,11 @@ import { useAuth } from '../../context/AuthContext';
 import { MaterialItem } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
 import { exportToExcel, downloadMaterialTemplate } from '../../services/excelService';
+import {
+  collectUsedMaterialCodeKeys,
+  generateUniqueMaterialCode,
+  normKey
+} from '../../utils/additiveMerge';
 import { 
   Package, 
   Plus, 
@@ -74,7 +79,7 @@ export const MaterialCatalog: React.FC = () => {
   }, []);
 
   const openAddModal = () => {
-    setCode(`VT-${Date.now().toString().slice(-4)}`);
+    setCode('');
     setName('');
     setUnit('Bộ');
     setCategory('Đường ống công nghệ P&ID');
@@ -107,18 +112,30 @@ export const MaterialCatalog: React.FC = () => {
 
   const handleSaveAdd = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!code.trim() || !name.trim()) {
-      setFormError('Mã vật tư và tên vật tư không được để trống.');
+    if (!name.trim()) {
+      setFormError('Tên vật tư không được để trống.');
       return;
     }
 
-    if (materials.some(m => m.code.toLowerCase() === code.trim().toLowerCase())) {
-      setFormError(`Mã vật tư "${code}" đã tồn tại. Vui lòng đặt mã khác.`);
+    const usedCodes = collectUsedMaterialCodeKeys({
+      materials,
+      inbounds: StorageService.getInboundReceipts(),
+      outbounds: StorageService.getOutboundReceipts(),
+      osd: StorageService.getOsdReceipts()
+    });
+
+    const trimmedCode = code.trim();
+    if (trimmedCode && usedCodes.has(normKey(trimmedCode))) {
+      setFormError(`Mã vật tư "${trimmedCode}" đã tồn tại. Vui lòng đặt mã khác hoặc để trống để hệ thống tự tạo.`);
       return;
     }
+
+    const finalCode = trimmedCode
+      ? trimmedCode.toUpperCase()
+      : generateUniqueMaterialCode(usedCodes, name);
 
     StorageService.addMaterial({
-      code: code.trim().toUpperCase(),
+      code: finalCode,
       name: name.trim(),
       unit: unit.trim() || 'Bộ',
       category: category.trim(),
@@ -709,14 +726,13 @@ export const MaterialCatalog: React.FC = () => {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Mã vật tư (*)</label>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Mã vật tư</label>
                   <input
                     type="text"
                     value={code}
                     onChange={(e) => setCode(e.target.value)}
-                    placeholder="ví dụ: TB-VAL-200H"
+                    placeholder="Tự tạo nếu để trống"
                     className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono font-medium"
-                    required
                   />
                 </div>
 

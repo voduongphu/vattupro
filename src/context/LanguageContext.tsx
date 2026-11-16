@@ -580,7 +580,13 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Chỉnh Sửa Kho Bãi': 'Edit Warehouse',
   'Chỉ quyền Admin mới có thể thêm/sửa/xóa kho bãi': 'Admin rights required to add/edit/delete warehouses',
   'Chỉ Admin (voduongphu@gmail.com) mới có quyền thêm/sửa/khóa người dùng': 'Only Admin (voduongphu@gmail.com) can add/edit/lock users',
-  'Chỉ Quản trị viên (Admin) mới có quyền import danh mục vật tư.': 'Only Administrators (Admin) can import materials catalog.'
+  'Chỉ Quản trị viên (Admin) mới có quyền import danh mục vật tư.': 'Only Administrators (Admin) can import materials catalog.',
+  'Số kiện (Package No.)': 'Package No.',
+  'Số Kiện (Package No.)': 'Package No.',
+  'Tự tạo nếu để trống': 'Auto if blank',
+  'Tự động tạo mã vật tư không trùng': 'Auto-generate unique material code',
+  'Tự sinh mã': 'Auto-generated',
+  'Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô trong phiếu...': 'Search Material Code, Name, Package No., Batch No. in receipt...'
 };
 
 // Merge all specialized and comprehensive phrases into one unified dictionary

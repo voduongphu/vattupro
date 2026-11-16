@@ -20,7 +20,9 @@ import {
   roundQty,
   sumInboundItems,
   buildDeterministicItemId,
-  generateNextInboundVoucherCode
+  generateNextInboundVoucherCode,
+  collectUsedMaterialCodeKeys,
+  generateUniqueMaterialCode
 } from '../../utils/additiveMerge';
 import {
   ArrowDownLeft,
@@ -37,6 +39,7 @@ import {
   AlertCircle,
   RefreshCw,
   PackageSearch,
+  Sparkles,
   ChevronDown,
   X,
   ArrowUpDown,
@@ -205,18 +208,18 @@ export const InboundManager: React.FC = () => {
     const defaultQty = 1;
     const unitW = Number(mat.unitWeightKg) || 0;
     const defaultWeight = unitW > 0 ? Math.round(unitW * defaultQty * 100) / 100 : 0;
-    const batch = (mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo : '').trim();
+    const matPkg = (mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo : '').trim();
 
     return {
       id: `item-${Date.now()}-${idxOffset}-${Math.random().toString(36).substring(2, 6)}`,
       materialCode: mat.code || '',
       materialName: mat.name || '',
       unit: mat.unit || 'Ống',
-      batchCode: batch,
+      batchCode: '',
       packingListNo: mat.packingListNo || formPackingListNo || '',
       shipment: mat.shipment || formShipment || '',
-      packageNo: batch,
-      packageName: batch ? `Kiện ${batch}` : '',
+      packageNo: matPkg,
+      packageName: matPkg ? `Kiện ${matPkg}` : '',
       category: mat.category && mat.category !== 'Chung' ? mat.category : '',
       drawingNo: mat.drawingNo && mat.drawingNo !== 'N/A' ? mat.drawingNo : '',
       manufacturer:
@@ -245,19 +248,19 @@ export const InboundManager: React.FC = () => {
       const qty = existing.quantity > 0 ? roundQty(existing.quantity) : 1;
       const uPrice = Math.max(0, Number(existing.unitPrice) || 0);
       const unitW = Number(mat.unitWeightKg) || 0;
-      const batch =
-        (existing.batchCode || '').trim() ||
-        (mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo.trim() : '');
+      const matPkg = (mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo : '').trim();
+      const resolvedPkg = (existing.packageNo || '').trim() || matPkg;
 
       copy[targetIdx] = {
         ...existing,
         materialCode: mat.code || '',
         materialName: mat.name || '',
         unit: mat.unit || existing.unit || 'Ống',
-        batchCode: batch,
+        batchCode: (existing.batchCode || '').trim(),
         packingListNo: existing.packingListNo || mat.packingListNo || formPackingListNo || '',
         shipment: existing.shipment || mat.shipment || formShipment || '',
-        packageNo: batch || existing.packageNo || '',
+        packageNo: resolvedPkg,
+        packageName: existing.packageName || (resolvedPkg ? `Kiện ${resolvedPkg}` : ''),
         category:
           (mat.category && mat.category !== 'Chung' ? mat.category : '') ||
           existing.category ||
@@ -480,6 +483,8 @@ export const InboundManager: React.FC = () => {
     const clonedItems: InboundItemDetail[] = (rcp.items || []).map((it, idx) => ({
       ...it,
       id: it.id || `item-edit-${Date.now()}-${idx}`,
+      packageNo: it.packageNo ?? '',
+      batchCode: it.batchCode ?? '',
       note: it.note ?? it.conditionNote ?? ''
     }));
     setFormItems(
@@ -577,8 +582,7 @@ export const InboundManager: React.FC = () => {
         if (found) {
           copy[idx].materialName = found.name;
           copy[idx].unit = found.unit;
-          if (found.packageNo && !copy[idx].batchCode) {
-            copy[idx].batchCode = found.packageNo;
+          if (found.packageNo && found.packageNo !== 'N/A' && !(copy[idx].packageNo || '').trim()) {
             copy[idx].packageNo = found.packageNo;
           }
           if (found.category) copy[idx].category = found.category;
@@ -589,10 +593,6 @@ export const InboundManager: React.FC = () => {
             copy[idx].weightKg = Math.round(found.unitWeightKg * roundQty(copy[idx].quantity) * 100) / 100;
           }
         }
-      }
-
-      if (field === 'batchCode') {
-        copy[idx].packageNo = String(val);
       }
 
       if (field === 'quantity') {
@@ -613,6 +613,23 @@ export const InboundManager: React.FC = () => {
         copy[idx].totalPrice = Math.round(qty * price * 100) / 100;
       }
 
+      return copy;
+    });
+  };
+
+  const handleAutoGenerateRowMaterialCode = (rowIdx: number) => {
+    setFormItems((prev) => {
+      if (rowIdx < 0 || rowIdx >= prev.length) return prev;
+      const usedCodes = collectUsedMaterialCodeKeys({
+        materials: StorageService.getMaterials(),
+        inbounds: StorageService.getInboundReceipts(),
+        outbounds: StorageService.getOutboundReceipts(),
+        osd: StorageService.getOsdReceipts(),
+        extraCodes: prev.map((it) => it.materialCode)
+      });
+      const generatedCode = generateUniqueMaterialCode(usedCodes, prev[rowIdx]?.materialName);
+      const copy = [...prev];
+      copy[rowIdx] = { ...copy[rowIdx], materialCode: generatedCode };
       return copy;
     });
   };
@@ -732,6 +749,13 @@ export const InboundManager: React.FC = () => {
     const userFullName = currentUser?.fullName || 'Võ Dương Phú';
     let createdCount = 0;
     const existingForAutoNumber = StorageService.getInboundReceipts();
+    const usedMaterialCodes = collectUsedMaterialCodeKeys({
+      materials: StorageService.getMaterials(),
+      inbounds: existingForAutoNumber,
+      outbounds: StorageService.getOutboundReceipts(),
+      osd: StorageService.getOsdReceipts(),
+      extraCodes: importedItems.map((it) => it.materialCode)
+    });
     const newReceipts: InboundReceipt[] = [];
 
     groups.forEach(
@@ -772,7 +796,10 @@ export const InboundManager: React.FC = () => {
               : Math.round(qty * uPrice * 100) / 100;
           const batchVal = String(item.batchCode || item.packageNo || '').trim();
           const pkgNo = String(item.packageNo || batchVal || `PKG-${idx + 1}`).trim();
-          const matCode = String(item.materialCode || `VT-AUTO-${idx + 1}`).trim().toUpperCase();
+          const rawMatCode = String(item.materialCode || '').trim().toUpperCase();
+          const matCode =
+            rawMatCode || generateUniqueMaterialCode(usedMaterialCodes, item.materialName);
+          usedMaterialCodes.add(normKey(matCode));
           const plNo = String(item.packingListNo || first?.packingListNo || 'PL-EXCEL-01').trim();
           const dwgNo = String(item.drawingNo || 'N/A').trim();
 
@@ -936,9 +963,18 @@ export const InboundManager: React.FC = () => {
     const headerMaker =
       formManufacturer.trim() || editingReceipt?.manufacturer || 'N/A';
 
-    const normalizedItems: InboundItemDetail[] = formItems.map((it, idx) => {
-      const batch = (it.batchCode || it.packageNo || '').trim();
-      const pkg = (it.packageNo || batch || `LO-${idx + 1}`).trim();
+    const usedMaterialCodes = collectUsedMaterialCodeKeys({
+      materials: StorageService.getMaterials(),
+      inbounds: StorageService.getInboundReceipts(),
+      outbounds: StorageService.getOutboundReceipts(),
+      osd: StorageService.getOsdReceipts(),
+      extraCodes: formItems.map((it) => it.materialCode)
+    });
+
+    const normalizedItems: InboundItemDetail[] = formItems.map((it) => {
+      const batch = (it.batchCode || '').trim();
+      const explicitPkg = (it.packageNo || '').trim();
+      const pkg = explicitPkg || batch;
       const qty = Math.max(0, roundQty(it.quantity));
       const uPrice = Math.max(0, Number(it.unitPrice) || 0);
       const tPrice =
@@ -947,6 +983,11 @@ export const InboundManager: React.FC = () => {
           : Math.round(qty * uPrice * 100) / 100;
       const noteText = (it.note ?? it.conditionNote ?? '').trim();
 
+      const rawMatCode = it.materialCode.trim();
+      const resolvedMaterialCode =
+        rawMatCode || generateUniqueMaterialCode(usedMaterialCodes, it.materialName);
+      usedMaterialCodes.add(normKey(resolvedMaterialCode));
+
       const itemPl = (it.packingListNo || '').trim();
       let resolvedPl = '';
       if (itemPl && !isVoucherLike(itemPl)) {
@@ -954,7 +995,7 @@ export const InboundManager: React.FC = () => {
       } else if (headerPl && !isVoucherLike(headerPl)) {
         resolvedPl = headerPl;
       } else {
-        const mat = materialMap.get(normKey(it.materialCode));
+        const mat = materialMap.get(normKey(resolvedMaterialCode));
         if (mat?.packingListNo && !isVoucherLike(mat.packingListNo)) {
           resolvedPl = mat.packingListNo;
         }
@@ -963,7 +1004,7 @@ export const InboundManager: React.FC = () => {
       const itemShp = (it.shipment || '').trim();
       let resolvedShp = itemShp && itemShp !== 'N/A' ? itemShp : headerShp;
       if (resolvedShp === 'N/A') {
-        const mat = materialMap.get(normKey(it.materialCode));
+        const mat = materialMap.get(normKey(resolvedMaterialCode));
         if (mat?.shipment && mat.shipment !== 'N/A') {
           resolvedShp = mat.shipment;
         }
@@ -971,14 +1012,12 @@ export const InboundManager: React.FC = () => {
 
       return {
         ...it,
-        materialCode:
-          it.materialCode.trim() ||
-          `VT-${it.materialName.trim().slice(0, 6).toUpperCase().replace(/\s+/g, '')}-${idx + 1}`,
+        materialCode: resolvedMaterialCode,
         materialName: it.materialName.trim(),
         unit: it.unit.trim() || 'Ống',
         batchCode: batch,
         packageNo: pkg,
-        packageName: it.packageName?.trim() || (batch ? `Lô ${batch}` : `Kiện ${pkg}`),
+        packageName: it.packageName?.trim() || (explicitPkg ? `Kiện ${explicitPkg}` : batch ? `Lô ${batch}` : ''),
         packingListNo: resolvedPl || '',
         shipment: resolvedShp || 'N/A',
         supplier: it.supplier?.trim() || headerSup,
@@ -2409,12 +2448,13 @@ export const InboundManager: React.FC = () => {
                 </div>
 
                 <div className="border border-slate-200 rounded-xl overflow-x-auto">
-                  <table className="w-full text-left text-xs min-w-[980px]">
+                  <table className="w-full text-left text-xs min-w-[1120px]">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
                       <tr>
                         <th className="p-2 w-10 text-center">STT</th>
-                        <th className="p-2 w-44">Mã vật tư</th>
-                        <th className="p-2 min-w-[220px]">Tên vật tư (*)</th>
+                        <th className="p-2 w-48">Mã vật tư</th>
+                        <th className="p-2 min-w-[210px]">Tên vật tư (*)</th>
+                        <th className="p-2 w-36">Số kiện (Package No.)</th>
                         <th className="p-2 w-32">Mã lô</th>
                         <th className="p-2 w-24 text-right">Số lượng (cây/tấm)</th>
                         <th className="p-2 w-20 text-center">ĐVT</th>
@@ -2430,7 +2470,7 @@ export const InboundManager: React.FC = () => {
                     <tbody className="divide-y divide-slate-100">
                       {visibleFormItems.length === 0 ? (
                         <tr>
-                          <td colSpan={11} className="p-6 text-center text-slate-400">
+                          <td colSpan={12} className="p-6 text-center text-slate-400">
                             Không có dòng vật tư nào khớp từ khóa lọc.
                           </td>
                         </tr>
@@ -2448,9 +2488,19 @@ export const InboundManager: React.FC = () => {
                                   onChange={(e) =>
                                     updateItemRow(realIdx, 'materialCode', e.target.value)
                                   }
-                                  placeholder="PI-P.AA.S..."
+                                  placeholder="Tự tạo nếu để trống"
                                   className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs focus:border-blue-500"
                                 />
+                                {!item.materialCode.trim() && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAutoGenerateRowMaterialCode(realIdx)}
+                                    className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded transition shrink-0"
+                                    title="Tự động tạo mã vật tư không trùng"
+                                  >
+                                    <Sparkles className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                                 {materials.length > 0 && (
                                   <button
                                     type="button"
@@ -2477,7 +2527,18 @@ export const InboundManager: React.FC = () => {
                             <td className="p-2">
                               <input
                                 type="text"
-                                value={item.batchCode ?? item.packageNo ?? ''}
+                                value={item.packageNo ?? ''}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'packageNo', e.target.value)
+                                }
+                                placeholder="PKG-01/15..."
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs focus:border-blue-500"
+                              />
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={item.batchCode ?? ''}
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'batchCode', e.target.value)
                                 }
@@ -3051,7 +3112,7 @@ export const InboundManager: React.FC = () => {
                     setDetailSearch(e.target.value);
                     setDetailPage(1);
                   }}
-                  placeholder="Tìm nhanh Mã vật tư, Tên vật tư, Mã lô trong phiếu..."
+                  placeholder="Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô trong phiếu..."
                   className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 sm:top-2.5" />
@@ -3059,12 +3120,13 @@ export const InboundManager: React.FC = () => {
 
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="max-h-96 overflow-x-auto overflow-y-auto">
-                  <table className="w-full min-w-[760px] text-left text-xs">
+                  <table className="w-full min-w-[860px] text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 sticky top-0">
                       <tr>
                         <th className="p-2.5 w-12 text-center">STT</th>
                         <th className="p-2.5">Mã Vật Tư</th>
                         <th className="p-2.5">Tên Vật Tư</th>
+                        <th className="p-2.5 text-center">Số Kiện (Package No.)</th>
                         <th className="p-2.5 text-center">Mã Lô</th>
                         <th className="p-2.5 text-right">Số Lượng</th>
                         <th className="p-2.5 text-center">ĐVT</th>
@@ -3076,14 +3138,15 @@ export const InboundManager: React.FC = () => {
                     <tbody className="divide-y divide-slate-100">
                       {pagedDetailItems.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="p-8 text-center text-slate-400">
+                          <td colSpan={10} className="p-8 text-center text-slate-400">
                             Không tìm thấy mặt hàng phù hợp từ khóa.
                           </td>
                         </tr>
                       ) : (
                         pagedDetailItems.map((it, idx) => {
                           const globalIdx = (detailPage - 1) * detailPageSize + idx;
-                          const batchText = it.batchCode || it.packageNo || '';
+                          const pkgText = it.packageNo && it.packageNo !== 'N/A' ? it.packageNo : '-';
+                          const batchText = it.batchCode || '';
                           const lineTotal =
                             it.totalPrice && it.totalPrice > 0
                               ? it.totalPrice
@@ -3099,8 +3162,11 @@ export const InboundManager: React.FC = () => {
                               <td className="p-2.5 font-medium text-slate-900">
                                 {it.materialName}
                               </td>
+                              <td className="p-2.5 text-center font-mono font-semibold text-indigo-700">
+                                {pkgText}
+                              </td>
                               <td className="p-2.5 text-center font-mono text-slate-800">
-                                {batchText}
+                                {batchText || '-'}
                               </td>
                               <td className="p-2.5 text-right font-bold font-mono text-slate-900 tabular-nums">
                                 {roundQty(it.quantity) > 0
@@ -3131,6 +3197,7 @@ export const InboundManager: React.FC = () => {
                         <td className="p-2.5 text-center uppercase whitespace-nowrap">
                           {deferredDetailSearch.trim() ? 'TỔNG CỘNG (LỌC)' : 'TỔNG CỘNG'}
                         </td>
+                        <td></td>
                         <td></td>
                         <td></td>
                         <td className="p-2.5 text-right text-blue-700 font-mono tabular-nums">

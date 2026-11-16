@@ -25,7 +25,9 @@ import {
   roundQty,
   sumOutboundItems,
   buildDeterministicItemId,
-  generateNextOutboundVoucherCode
+  generateNextOutboundVoucherCode,
+  collectUsedMaterialCodeKeys,
+  generateUniqueMaterialCode
 } from '../../utils/additiveMerge';
 import {
   ArrowUpRight,
@@ -685,6 +687,13 @@ export const OutboundManager: React.FC = () => {
     const userFullName = currentUser?.fullName || 'Võ Dương Phú';
     let createdCount = 0;
     const existingForAutoNumber = StorageService.getOutboundReceipts();
+    const usedMaterialCodes = collectUsedMaterialCodeKeys({
+      materials: StorageService.getMaterials(),
+      inbounds: StorageService.getInboundReceipts(),
+      outbounds: existingForAutoNumber,
+      osd: StorageService.getOsdReceipts(),
+      extraCodes: imported.map((x: any) => x?.materialCode)
+    });
     const newReceipts: OutboundReceipt[] = [];
 
     groups.forEach(
@@ -720,7 +729,10 @@ export const OutboundManager: React.FC = () => {
           const weight = Math.max(0, Math.round((Number(item.weightKg) || 0) * 100) / 100);
           const batchVal = String(item.batchCode || item.packageNo || '').trim();
           const pkgNo = String(item.packageNo || batchVal || `PKG-${idx + 1}`).trim();
-          const matCode = String(item.materialCode || `VT-OUT-${idx + 1}`).trim().toUpperCase();
+          const rawMatCode = String(item.materialCode || '').trim();
+          const matCode = rawMatCode
+            ? rawMatCode.toUpperCase()
+            : generateUniqueMaterialCode(usedMaterialCodes, item.materialName, 'VT');
           const plNo = String(item.packingListNo || 'PL-EXCEL-01').trim();
           const dwgNo = String(item.drawingNo || 'N/A').trim();
 
@@ -846,14 +858,22 @@ export const OutboundManager: React.FC = () => {
     }
 
     const wh = warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
-    const normalizedItems: OutboundItemDetail[] = formItems.map((it, idx) => {
+    const usedMaterialCodes = collectUsedMaterialCodeKeys({
+      materials: StorageService.getMaterials(),
+      inbounds: StorageService.getInboundReceipts(),
+      outbounds: receipts,
+      osd: StorageService.getOsdReceipts(),
+      extraCodes: formItems.map((it) => it.materialCode)
+    });
+    const normalizedItems: OutboundItemDetail[] = formItems.map((it) => {
       const batch = (it.batchCode || it.packageNo || '').trim();
       const noteText = (it.note ?? it.purpose ?? '').trim();
+      const rawMatCode = it.materialCode.trim();
       return {
         ...it,
-        materialCode:
-          it.materialCode.trim() ||
-          `VT-${it.materialName.trim().slice(0, 6).toUpperCase().replace(/\s+/g, '')}-${idx + 1}`,
+        materialCode: rawMatCode
+          ? rawMatCode
+          : generateUniqueMaterialCode(usedMaterialCodes, it.materialName, 'VT'),
         materialName: it.materialName.trim(),
         unit: it.unit.trim() || 'Ống',
         batchCode: batch,

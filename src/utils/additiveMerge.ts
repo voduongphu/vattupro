@@ -1460,6 +1460,103 @@ export function deriveCatalogMaterialCode(rawCode?: string | null, rawName?: str
   return `VT-${asciiSlug || 'ITEM'}-${suffix}`;
 }
 
+export function collectUsedMaterialCodeKeys(sources: {
+  materials?: Array<{ code?: string | null }>;
+  inbounds?: InboundReceipt[];
+  outbounds?: OutboundReceipt[];
+  osd?: OsdReceipt[];
+  extraCodes?: Array<string | null | undefined>;
+}): Set<string> {
+  const used = new Set<string>();
+  const addCode = (raw?: string | null) => {
+    const key = normKey(raw);
+    if (key) used.add(key);
+  };
+
+  if (Array.isArray(sources.materials)) {
+    for (let i = 0; i < sources.materials.length; i++) {
+      addCode(sources.materials[i]?.code);
+    }
+  }
+  if (Array.isArray(sources.inbounds)) {
+    for (let i = 0; i < sources.inbounds.length; i++) {
+      const items = sources.inbounds[i]?.items;
+      if (!Array.isArray(items)) continue;
+      for (let j = 0; j < items.length; j++) {
+        addCode(items[j]?.materialCode);
+      }
+    }
+  }
+  if (Array.isArray(sources.outbounds)) {
+    for (let i = 0; i < sources.outbounds.length; i++) {
+      const items = sources.outbounds[i]?.items;
+      if (!Array.isArray(items)) continue;
+      for (let j = 0; j < items.length; j++) {
+        addCode(items[j]?.materialCode);
+      }
+    }
+  }
+  if (Array.isArray(sources.osd)) {
+    for (let i = 0; i < sources.osd.length; i++) {
+      const items = sources.osd[i]?.items;
+      if (!Array.isArray(items)) continue;
+      for (let j = 0; j < items.length; j++) {
+        addCode(items[j]?.materialCode);
+      }
+    }
+  }
+  if (Array.isArray(sources.extraCodes)) {
+    for (let i = 0; i < sources.extraCodes.length; i++) {
+      addCode(sources.extraCodes[i]);
+    }
+  }
+  return used;
+}
+
+export function generateUniqueMaterialCode(
+  usedCodes: Set<string>,
+  materialName?: string | null,
+  prefix = 'VT'
+): string {
+  const cleanPrefix =
+    (prefix || 'VT')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[đĐ]/g, 'D')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '') || 'VT';
+
+  const asciiSlug = String(materialName || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'D')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '')
+    .slice(0, 6);
+
+  const stem = `${cleanPrefix}-${asciiSlug || 'ITEM'}`;
+  const stemPattern = new RegExp(`^${stem}-(\\d+)$`);
+  let maxSeq = 0;
+  usedCodes.forEach((code) => {
+    const m = code.match(stemPattern);
+    if (m) {
+      const num = parseInt(m[1], 10);
+      if (Number.isFinite(num) && num > maxSeq) {
+        maxSeq = num;
+      }
+    }
+  });
+
+  let seq = maxSeq + 1;
+  let candidate = `${stem}-${String(seq).padStart(3, '0')}`;
+  while (usedCodes.has(normKey(candidate))) {
+    seq++;
+    candidate = `${stem}-${String(seq).padStart(3, '0')}`;
+  }
+  usedCodes.add(normKey(candidate));
+  return candidate;
+}
+
 interface OrderedReceiptRef {
   kind: 'inbound' | 'outbound';
   primaryTs: number;

@@ -559,7 +559,15 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           return (
                             <tr key={r.id || globalIdx} className="hover:bg-slate-50">
                               <td className="p-2.5 font-mono text-slate-500">{(globalIdx + 1).toLocaleString('vi-VN')}</td>
-                              <td className="p-2.5 font-mono font-bold text-blue-700">{r.code}</td>
+                              <td className="p-2.5 font-mono font-bold text-blue-700">
+                                {r.code ? (
+                                  r.code
+                                ) : (
+                                  <span className="text-slate-400 italic font-sans font-normal text-[11px] bg-slate-100 px-1.5 py-0.5 rounded">
+                                    Tự sinh mã
+                                  </span>
+                                )}
+                              </td>
                               <td className="p-2.5 font-semibold text-slate-900">{r.name}</td>
                               <td className="p-2.5 text-slate-600 font-medium">{r.unit || 'Bộ'}</td>
                               <td className="p-2.5">
@@ -621,7 +629,14 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           const globalIdx = (previewPage - 1) * previewPageSize + i;
                           const rowAny = r as any;
                           const customCode = rowAny.receiptCode || rowAny.issueCode;
-                          const batchOrPkg = rowAny.batchCode || r.packageNo || '-';
+                          const batchCodeVal = String(rowAny.batchCode || '').trim();
+                          const packageNoVal = String(r.packageNo || '').trim();
+                          const batchOrPkg = batchCodeVal || packageNoVal || '-';
+                          const showSeparatePkg =
+                            packageNoVal &&
+                            packageNoVal !== 'N/A' &&
+                            packageNoVal !== batchCodeVal &&
+                            batchCodeVal;
                           const isReturnInbound = type === 'inbound' && rowAny.inboundType === 'return';
                           const isTransferOutbound = type === 'outbound' && rowAny.outboundType === 'transfer';
                           const lineAmount =
@@ -686,9 +701,24 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               </td>
                               <td className="p-2.5">
                                 <div className="font-semibold text-slate-900">{r.materialName}</div>
-                                <div className="text-[11px] font-mono text-blue-700">{r.materialCode}</div>
+                                <div className="text-[11px] font-mono text-blue-700">
+                                  {r.materialCode ? (
+                                    r.materialCode
+                                  ) : (
+                                    <span className="text-slate-400 italic font-sans font-normal text-[11px] bg-slate-100 px-1.5 py-0.5 rounded">
+                                      Tự sinh mã
+                                    </span>
+                                  )}
+                                </div>
                               </td>
-                              <td className="p-2.5 font-mono font-semibold text-indigo-700">{batchOrPkg}</td>
+                              <td className="p-2.5 font-mono font-semibold text-indigo-700">
+                                <div>{batchOrPkg}</div>
+                                {showSeparatePkg && (
+                                  <div className="text-[10px] font-sans font-medium text-teal-700">
+                                    Kiện: {packageNoVal}
+                                  </div>
+                                )}
+                              </td>
                               <td className="p-2.5 text-right font-bold text-slate-800">
                                 {Number(r.quantity || 0).toLocaleString('vi-VN')}
                               </td>

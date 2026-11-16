@@ -27,7 +27,9 @@ import {
   mergeInboundReceiptsAdditive,
   mergeOutboundReceiptsAdditive,
   mergeOsdReceiptsAdditive,
-  buildLatestMaterialsFromReceipts
+  buildLatestMaterialsFromReceipts,
+  collectUsedMaterialCodeKeys,
+  generateUniqueMaterialCode
 } from '../utils/additiveMerge';
 import { incrementVersionVector } from '../utils/versionVector';
 
@@ -1633,6 +1635,14 @@ export const StorageService = {
       codeIndexMap.set(materials[i].code.toUpperCase(), i);
     }
 
+    const usedCodes = collectUsedMaterialCodeKeys({
+      materials,
+      inbounds: this.getInboundReceipts(),
+      outbounds: this.getOutboundReceipts(),
+      osd: this.getOsdReceipts(),
+      extraCodes: imported.map((it) => it.code)
+    });
+
     let added = 0;
     let updated = 0;
     const baseTs = Date.now();
@@ -1644,7 +1654,8 @@ export const StorageService = {
       const trimmedName = (item.name || '').trim();
       if (!trimmedCode && !trimmedName) continue;
 
-      const code = trimmedCode || `VT-${trimmedName.slice(0, 6).toUpperCase().replace(/\s+/g, '')}`;
+      const code = trimmedCode || generateUniqueMaterialCode(usedCodes, trimmedName);
+      usedCodes.add(normKey(code));
       const existingIdx = codeIndexMap.get(code);
 
       if (existingIdx !== undefined) {

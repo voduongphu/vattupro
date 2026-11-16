@@ -1112,7 +1112,7 @@ export async function parseMaterialExcel(
     }
 
     if (!item.code && item.name) {
-      item.code = 'VT-' + item.name.slice(0, 6).toUpperCase().replace(/\s+/g, '');
+      item.code = '';
     }
     if (!item.unit) item.unit = 'Bộ';
     if (!item.category) item.category = 'Chung';
@@ -1309,7 +1309,7 @@ export async function parseInboundExcel(
       item.materialName = item.materialCode || item.packageName;
     }
     if (!item.materialCode && item.materialName) {
-      item.materialCode = 'VT-' + item.materialName.slice(0, 6).toUpperCase().replace(/\s+/g, '');
+      item.materialCode = '';
     }
     if (item.batchCode && !item.packageNo) item.packageNo = item.batchCode;
     if (item.packageNo && !item.batchCode) item.batchCode = item.packageNo;
