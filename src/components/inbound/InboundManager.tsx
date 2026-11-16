@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { InboundReceipt, InboundItemDetail, Warehouse, MaterialItem } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
@@ -16,11 +16,14 @@ import {
 } from '../../services/excelService';
 import {
   normKey,
+  normUserKey,
   foldVietnameseAscii,
   roundQty,
   sumInboundItems,
   buildDeterministicItemId,
   generateNextInboundVoucherCode,
+  resolveEditedInboundVoucherCode,
+  voucherCodeHasDatePrecision,
   deriveWarehouseAbbrev,
   collectUsedMaterialCodeKeys,
   generateUniqueMaterialCode
@@ -110,6 +113,12 @@ export const InboundManager: React.FC = () => {
 
   // Chế độ chỉnh sửa phiếu nhập kho (chỉ dành cho Admin; null = lập phiếu mới)
   const [editingReceipt, setEditingReceipt] = useState<InboundReceipt | null>(null);
+  const lastEditScopeRef = useRef<{
+    year: string;
+    whId: string;
+    date: string;
+    origWhId: string;
+  } | null>(null);
 
   // Danh sách dòng vật tư trong phiếu + tìm kiếm/phân trang cho phiếu lớn
   const [formItems, setFormItems] = useState<InboundItemDetail[]>([]);
@@ -358,11 +367,46 @@ export const InboundManager: React.FC = () => {
     return generateNextInboundVoucherCode(existingList, targetDateStr, targetWh);
   };
 
-  // Tự động nhảy sang số phiếu kế tiếp theo Kho đang chọn & Năm lập phiếu khi đang mở form lập mới
+  // Tự động nhảy sang số phiếu kế tiếp theo Kho đang chọn & Ngày/Tháng/Năm lập phiếu (cả khi lập mới và khi sửa phiếu)
   useEffect(() => {
-    if (!isCreateModalOpen || editingReceipt || isCodeManuallyEdited) return;
+    if (!isCreateModalOpen || isCodeManuallyEdited) return;
+    const normDate = formatExcelDate(receiptDate) || receiptDate;
+    const parsedYear = parseInt((normDate || '').slice(0, 4), 10);
+    if (!normDate || isNaN(parsedYear) || parsedYear < 1990 || parsedYear > 2099) return;
+
     const targetWh = warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
-    const nextCode = generateNextPnkCode(receipts, receiptDate, targetWh);
+    const curYear = String(parsedYear);
+    const curWhId = targetWh?.id || selectedWarehouseId || '';
+
+    if (!editingReceipt) {
+      const nextCode = generateNextPnkCode(receipts, normDate, targetWh);
+      setReceiptCode((prev) => (prev !== nextCode ? nextCode : prev));
+      return;
+    }
+
+    const prevScope = lastEditScopeRef.current;
+    const isDateGranular = voucherCodeHasDatePrecision(editingReceipt.receiptCode);
+    if (prevScope) {
+      const sameRelevantScope = isDateGranular
+        ? prevScope.date === normDate && prevScope.whId === curWhId
+        : prevScope.year === curYear && prevScope.whId === curWhId;
+      if (sameRelevantScope) return;
+    }
+
+    const origWhId = prevScope?.origWhId || curWhId;
+    lastEditScopeRef.current = {
+      year: curYear,
+      whId: curWhId,
+      date: normDate,
+      origWhId
+    };
+    const nextCode = resolveEditedInboundVoucherCode(
+      receipts,
+      editingReceipt,
+      normDate,
+      targetWh,
+      origWhId
+    );
     setReceiptCode((prev) => (prev !== nextCode ? nextCode : prev));
   }, [
     receipts,
@@ -381,6 +425,7 @@ export const InboundManager: React.FC = () => {
     const whList = StorageService.getWarehouses();
     const defaultWh = whList[0] || null;
     const todayDate = new Date().toISOString().slice(0, 10);
+    lastEditScopeRef.current = null;
     setReceipts(currentReceipts);
     setWarehouses(whList);
     setEditingReceipt(null);
@@ -446,13 +491,30 @@ export const InboundManager: React.FC = () => {
 
     StorageService.syncMaterialsFromReceipts();
     const mats = StorageService.getMaterials();
+    const currentReceipts = StorageService.getInboundReceipts();
     const whList = StorageService.getWarehouses();
+    const matchedWh =
+      whList.find((w) => w.id === rcp.warehouseId) ||
+      whList.find((w) => normUserKey(w.name) === normUserKey(rcp.warehouseName)) ||
+      whList[0] ||
+      null;
+    const initialWhId = matchedWh?.id || rcp.warehouseId || '';
+    const initialDate = formatExcelDate(rcp.receiptDate) || new Date().toISOString().slice(0, 10);
+
+    lastEditScopeRef.current = {
+      year: initialDate.slice(0, 4),
+      whId: initialWhId,
+      date: initialDate,
+      origWhId: initialWhId
+    };
+    setReceipts(currentReceipts);
+    setWarehouses(whList);
     setMaterials(mats);
     setEditingReceipt(rcp);
-    setIsCodeManuallyEdited(true);
+    setIsCodeManuallyEdited(false);
     setReceiptCode(rcp.receiptCode || '');
-    setReceiptDate(formatExcelDate(rcp.receiptDate) || new Date().toISOString().slice(0, 10));
-    setSelectedWarehouseId(rcp.warehouseId || whList[0]?.id || '');
+    setReceiptDate(initialDate);
+    setSelectedWarehouseId(initialWhId);
 
     setFormDepartmentName(
       rcp.departmentName && rcp.departmentName !== 'DỰ ÁN LTIA-4.9' ? rcp.departmentName : ''
@@ -2117,23 +2179,36 @@ export const InboundManager: React.FC = () => {
                       <label className="block font-semibold text-slate-700 uppercase">
                         Số phiếu (*)
                       </label>
-                      {!editingReceipt && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const latest = StorageService.getInboundReceipts();
-                            const activeWh =
-                              warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
-                            setIsCodeManuallyEdited(false);
-                            setReceiptCode(generateNextPnkCode(latest, receiptDate, activeWh));
-                          }}
-                          className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
-                          title="Tự động lấy số phiếu nhập kế tiếp theo kho và năm lập phiếu"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                          <span>Số kế tiếp</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const latest = StorageService.getInboundReceipts().filter(
+                            (r) => !editingReceipt || r.id !== editingReceipt.id
+                          );
+                          const activeWh =
+                            warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
+                          const normDate = formatExcelDate(receiptDate) || receiptDate;
+                          if (editingReceipt) {
+                            lastEditScopeRef.current = {
+                              year: normDate.slice(0, 4),
+                              whId: activeWh?.id || selectedWarehouseId || '',
+                              date: normDate,
+                              origWhId:
+                                lastEditScopeRef.current?.origWhId ||
+                                activeWh?.id ||
+                                selectedWarehouseId ||
+                                ''
+                            };
+                          }
+                          setIsCodeManuallyEdited(false);
+                          setReceiptCode(generateNextPnkCode(latest, normDate, activeWh));
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
+                        title="Tự động lấy số phiếu nhập kế tiếp theo kho và năm lập phiếu"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Số kế tiếp</span>
+                      </button>
                     </div>
                     <input
                       type="text"
@@ -2142,7 +2217,7 @@ export const InboundManager: React.FC = () => {
                         setIsCodeManuallyEdited(true);
                         setReceiptCode(e.target.value);
                       }}
-                      placeholder={`PN-${deriveWarehouseAbbrev(warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0])}-${(receiptDate || '').slice(0, 4) || new Date().getFullYear()}-001`}
+                      placeholder={`PN-${deriveWarehouseAbbrev(warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0])}-${(receiptDate || '').slice(0, 4) || new Date().getFullYear()}-0001`}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-blue-700 outline-none focus:border-blue-500"
                       required
                     />

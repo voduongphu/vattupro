@@ -27,7 +27,7 @@ export const MATERIAL_EXCEL_COLUMNS = [
 
 // Headers chuẩn cho file mẫu Nhập Kho
 export const INBOUND_EXCEL_COLUMNS = [
-  { key: 'receiptCode', label: 'Số phiếu nhập kho (*)', sample: 'PN-20261014-001' },
+  { key: 'receiptCode', label: 'Số phiếu nhập kho (*)', sample: 'PN-20261014-0001' },
   { key: 'receiptDate', label: 'Ngày nhập kho (YYYY-MM-DD)', sample: '2026-10-14' },
   { key: 'inboundType', label: 'Hình thức nhập (Nhập mới / Nhập trả kho)', sample: 'Nhập mới' },
   { key: 'warehouseName', label: 'Kho tiếp nhận / Nhập vào kho (*)', sample: 'Kho Tổng Trung Tâm Cát Lái' },
@@ -51,7 +51,7 @@ export const INBOUND_EXCEL_COLUMNS = [
 
 // Headers chuẩn cho file mẫu Xuất Kho
 export const OUTBOUND_EXCEL_COLUMNS = [
-  { key: 'issueCode', label: 'Số phiếu xuất kho (*)', sample: 'PX-20261014-001' },
+  { key: 'issueCode', label: 'Số phiếu xuất kho (*)', sample: 'PX-20261014-0001' },
   { key: 'issueDate', label: 'Ngày xuất kho (YYYY-MM-DD)', sample: '2026-10-14' },
   { key: 'outboundType', label: 'Hình thức xuất (Xuất mới / Xuất điều chuyển)', sample: 'Xuất mới' },
   { key: 'projectName', label: 'Tên dự án / Công trình (*)', sample: 'Dự Án Nhà Máy Lọc Hóa Dầu Long Sơn' },

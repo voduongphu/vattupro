@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import {
   OutboundReceipt,
@@ -22,10 +22,13 @@ import {
 } from '../../services/excelService';
 import {
   normKey,
+  normUserKey,
   roundQty,
   sumOutboundItems,
   buildDeterministicItemId,
   generateNextOutboundVoucherCode,
+  resolveEditedOutboundVoucherCode,
+  voucherCodeHasDatePrecision,
   deriveWarehouseAbbrev,
   collectUsedMaterialCodeKeys,
   generateUniqueMaterialCode
@@ -174,6 +177,12 @@ export const OutboundManager: React.FC = () => {
   const [formNotes, setFormNotes] = useState('');
   // Chế độ chỉnh sửa phiếu xuất kho (chỉ dành cho Admin; null = lập phiếu mới)
   const [editingReceipt, setEditingReceipt] = useState<OutboundReceipt | null>(null);
+  const lastEditScopeRef = useRef<{
+    year: string;
+    whId: string;
+    date: string;
+    origWhId: string;
+  } | null>(null);
 
   const [formOutboundType, setFormOutboundType] = useState<'issue' | 'transfer'>('issue');
   const [formItems, setFormItems] = useState<OutboundItemDetail[]>([]);
@@ -251,11 +260,46 @@ export const OutboundManager: React.FC = () => {
     return generateNextOutboundVoucherCode(existingList, targetDateStr, targetWh);
   };
 
-  // Tự động nhảy sang số phiếu kế tiếp theo Kho đang chọn & Năm lập phiếu khi đang mở form lập mới
+  // Tự động nhảy sang số phiếu kế tiếp theo Kho đang chọn & Ngày/Tháng/Năm lập phiếu (cả khi lập mới và khi sửa phiếu)
   useEffect(() => {
-    if (!isCreateModalOpen || editingReceipt || isCodeManuallyEdited) return;
+    if (!isCreateModalOpen || isCodeManuallyEdited) return;
+    const normDate = formatExcelDate(issueDate) || issueDate;
+    const parsedYear = parseInt((normDate || '').slice(0, 4), 10);
+    if (!normDate || isNaN(parsedYear) || parsedYear < 1990 || parsedYear > 2099) return;
+
     const targetWh = warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
-    const nextCode = generateNextPxkCode(receipts, issueDate, targetWh);
+    const curYear = String(parsedYear);
+    const curWhId = targetWh?.id || selectedWarehouseId || '';
+
+    if (!editingReceipt) {
+      const nextCode = generateNextPxkCode(receipts, normDate, targetWh);
+      setIssueCode((prev) => (prev !== nextCode ? nextCode : prev));
+      return;
+    }
+
+    const prevScope = lastEditScopeRef.current;
+    const isDateGranular = voucherCodeHasDatePrecision(editingReceipt.issueCode);
+    if (prevScope) {
+      const sameRelevantScope = isDateGranular
+        ? prevScope.date === normDate && prevScope.whId === curWhId
+        : prevScope.year === curYear && prevScope.whId === curWhId;
+      if (sameRelevantScope) return;
+    }
+
+    const origWhId = prevScope?.origWhId || curWhId;
+    lastEditScopeRef.current = {
+      year: curYear,
+      whId: curWhId,
+      date: normDate,
+      origWhId
+    };
+    const nextCode = resolveEditedOutboundVoucherCode(
+      receipts,
+      editingReceipt,
+      normDate,
+      targetWh,
+      origWhId
+    );
     setIssueCode((prev) => (prev !== nextCode ? nextCode : prev));
   }, [
     receipts,
@@ -303,6 +347,7 @@ export const OutboundManager: React.FC = () => {
     const whList = StorageService.getWarehouses();
     const defaultWhObj = whList[0] || null;
     const todayDate = new Date().toISOString().slice(0, 10);
+    lastEditScopeRef.current = null;
     setReceipts(currentReceipts);
     setWarehouses(whList);
     setEditingReceipt(null);
@@ -334,13 +379,30 @@ export const OutboundManager: React.FC = () => {
       return;
     }
 
+    const currentReceipts = StorageService.getOutboundReceipts();
     const whList = StorageService.getWarehouses();
+    const matchedWh =
+      whList.find((w) => w.id === rcp.warehouseId) ||
+      whList.find((w) => normUserKey(w.name) === normUserKey(rcp.warehouseName)) ||
+      whList[0] ||
+      null;
+    const initialWhId = matchedWh?.id || rcp.warehouseId || '';
+    const initialDate = formatExcelDate(rcp.issueDate) || new Date().toISOString().slice(0, 10);
+
+    lastEditScopeRef.current = {
+      year: initialDate.slice(0, 4),
+      whId: initialWhId,
+      date: initialDate,
+      origWhId: initialWhId
+    };
+    setReceipts(currentReceipts);
+    setWarehouses(whList);
     setMaterials(StorageService.getMaterials());
     setEditingReceipt(rcp);
-    setIsCodeManuallyEdited(true);
+    setIsCodeManuallyEdited(false);
     setIssueCode(rcp.issueCode || '');
-    setIssueDate(formatExcelDate(rcp.issueDate) || new Date().toISOString().slice(0, 10));
-    setSelectedWarehouseId(rcp.warehouseId || whList[0]?.id || '');
+    setIssueDate(initialDate);
+    setSelectedWarehouseId(initialWhId);
 
     // Chuẩn bị sẵn tồn kho cho Quick Combobox khi sửa
     const baseStock = StorageService.calculateInventoryRecords().map((r) => ({ ...r }));
@@ -1936,23 +1998,36 @@ export const OutboundManager: React.FC = () => {
                       <label className="block font-semibold text-slate-700 uppercase">
                         Số phiếu (*)
                       </label>
-                      {!editingReceipt && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const latest = StorageService.getOutboundReceipts();
-                            const activeWh =
-                              warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
-                            setIsCodeManuallyEdited(false);
-                            setIssueCode(generateNextPxkCode(latest, issueDate, activeWh));
-                          }}
-                          className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
-                          title="Tự động lấy số phiếu xuất kế tiếp theo kho và năm lập phiếu"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                          <span>Số kế tiếp</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const latest = StorageService.getOutboundReceipts().filter(
+                            (r) => !editingReceipt || r.id !== editingReceipt.id
+                          );
+                          const activeWh =
+                            warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
+                          const normDate = formatExcelDate(issueDate) || issueDate;
+                          if (editingReceipt) {
+                            lastEditScopeRef.current = {
+                              year: normDate.slice(0, 4),
+                              whId: activeWh?.id || selectedWarehouseId || '',
+                              date: normDate,
+                              origWhId:
+                                lastEditScopeRef.current?.origWhId ||
+                                activeWh?.id ||
+                                selectedWarehouseId ||
+                                ''
+                            };
+                          }
+                          setIsCodeManuallyEdited(false);
+                          setIssueCode(generateNextPxkCode(latest, normDate, activeWh));
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
+                        title="Tự động lấy số phiếu xuất kế tiếp theo kho và năm lập phiếu"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Số kế tiếp</span>
+                      </button>
                     </div>
                     <input
                       type="text"
@@ -1961,7 +2036,7 @@ export const OutboundManager: React.FC = () => {
                         setIsCodeManuallyEdited(true);
                         setIssueCode(e.target.value);
                       }}
-                      placeholder={`PX-${deriveWarehouseAbbrev(warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0])}-${(issueDate || '').slice(0, 4) || new Date().getFullYear()}-001`}
+                      placeholder={`PX-${deriveWarehouseAbbrev(warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0])}-${(issueDate || '').slice(0, 4) || new Date().getFullYear()}-0001`}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-rose-700 outline-none focus:border-blue-500"
                       required
                     />

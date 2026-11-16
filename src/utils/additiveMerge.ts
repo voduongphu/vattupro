@@ -2113,7 +2113,9 @@ export function generateNextSequentialVoucherCode(
     startSeq: number,
     padLen: number
   ): string => {
-    const targetPad = Math.max(padLen, 1);
+    const minDigits =
+      mode === 'trailing' && (defaultType === 'PNK' || defaultType === 'PXK') ? 4 : 1;
+    const targetPad = Math.max(padLen, minDigits);
     let seq = Math.max(1, startSeq);
     const build = (n: number) => {
       const numStr = String(n).padStart(targetPad, '0');
@@ -2126,6 +2128,7 @@ export function generateNextSequentialVoucherCode(
     }
     return nextCode;
   };
+  const defaultFallbackPad = defaultType === 'PNK' || defaultType === 'PXK' ? 4 : 3;
 
   interface SeriesStats {
     mode: 'trailing' | 'leading';
@@ -2172,11 +2175,42 @@ export function generateNextSequentialVoucherCode(
     return Array.from(map.values());
   };
 
+  const matchesAffixDatePrecision = (affix: string): boolean => {
+    if (!normTargetDate) return true;
+    const yyyy = normTargetDate.slice(0, 4);
+    const mm = normTargetDate.slice(5, 7);
+    const dd = normTargetDate.slice(8, 10);
+
+    const mDash =
+      /(^|[^0-9])(19\d{2}|20\d{2})([-/.])(0[1-9]|1[0-2])\3(0[1-9]|[12]\d|3[01])(?=[^0-9]|$)/.exec(
+        affix
+      );
+    if (mDash) return mDash[2] === yyyy && mDash[4] === mm && mDash[5] === dd;
+
+    const mCompact =
+      /(^|[^0-9])(19\d{2}|20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?=[^0-9]|$)/.exec(affix);
+    if (mCompact) return mCompact[2] === yyyy && mCompact[3] === mm && mCompact[4] === dd;
+
+    const mDashMonth = /(^|[^0-9])(19\d{2}|20\d{2})([-/.])(0[1-9]|1[0-2])(?=[^0-9]|$)/.exec(
+      affix
+    );
+    if (mDashMonth) return mDashMonth[2] === yyyy && mDashMonth[4] === mm;
+
+    const mCompactMonth = /(^|[^0-9])(19\d{2}|20\d{2})(0[1-9]|1[0-2])(?=[^0-9]|$)/.exec(affix);
+    if (mCompactMonth) return mCompactMonth[2] === yyyy && mCompactMonth[3] === mm;
+
+    return true;
+  };
+
   // 1. Nếu có năm mục tiêu (VD: 2017 khi chọn Ngày lập phiếu trong năm 2017):
-  // Lọc các phiếu của kho đang chọn thuộc đúng năm đó
+  // Lọc các phiếu của kho đang chọn thuộc đúng năm đó (không tái sử dụng tiền tố gắn ngày khác)
   const yearMatchedCandidates =
     targetYear > 0
-      ? candidates.filter((c) => (c.prefixYear > 0 ? c.prefixYear : c.voucherDateYear) === targetYear)
+      ? candidates.filter(
+          (c) =>
+            (c.prefixYear > 0 ? c.prefixYear : c.voucherDateYear) === targetYear &&
+            matchesAffixDatePrecision(c.affix)
+        )
       : [];
 
   if (yearMatchedCandidates.length > 0) {
@@ -2218,7 +2252,12 @@ export function generateNextSequentialVoucherCode(
       if (fourDigitSeries.length > 0) {
         const tmpl = fourDigitSeries[0];
         const adaptedAffix = replaceAffixYear(tmpl.affix, tmpl.yearInfo!, targetYear);
-        return formatUniqueFromAffix(tmpl.mode, adaptedAffix, 1, Math.max(tmpl.padLen, 3));
+        return formatUniqueFromAffix(
+          tmpl.mode,
+          adaptedAffix,
+          1,
+          Math.max(tmpl.padLen, defaultFallbackPad)
+        );
       }
 
       const currentCalendarYear = new Date().getFullYear();
@@ -2229,11 +2268,21 @@ export function generateNextSequentialVoucherCode(
           const adaptedAffix = replaceAffixYear(twoDigitMatch.affix, twoDigitMatch.yearInfo!, targetYear);
           return formatUniqueFromAffix(twoDigitMatch.mode, adaptedAffix, 1, twoDigitMatch.padLen);
         }
-        return formatUniqueFromAffix('trailing', `${docPrefix}-${warehouseAbbrev}-${targetYear}-`, 1, 3);
+        return formatUniqueFromAffix(
+          'trailing',
+          `${docPrefix}-${warehouseAbbrev}-${targetYear}-`,
+          1,
+          defaultFallbackPad
+        );
       }
 
       if (defaultType === 'PNK' && targetYear < currentCalendarYear) {
-        return formatUniqueFromAffix('trailing', `PN-${warehouseAbbrev || 'LP'}-${targetYear}-`, 1, 3);
+        return formatUniqueFromAffix(
+          'trailing',
+          `PN-${warehouseAbbrev || 'LP'}-${targetYear}-`,
+          1,
+          defaultFallbackPad
+        );
       }
 
       const twoDigitSeries = allSeries
@@ -2262,12 +2311,22 @@ export function generateNextSequentialVoucherCode(
     return formatUniqueFromAffix(active.mode, active.affix, active.maxSeq + 1, active.padLen);
   }
 
-  // 3. Kho mới tạo hoặc kho chưa có phiếu nào: dùng chuẩn <PN|PX>-<MÃ_VIẾT_TẮT_KHO>-<NĂM>-001
+  // 3. Kho mới tạo hoặc kho chưa có phiếu nào: dùng chuẩn <PN|PX>-<MÃ_VIẾT_TẮT_KHO>-<NĂM>-0001
   if (warehouseAbbrev) {
-    return formatUniqueFromAffix('trailing', `${docPrefix}-${warehouseAbbrev}-${effectiveDefaultYear}-`, 1, 3);
+    return formatUniqueFromAffix(
+      'trailing',
+      `${docPrefix}-${warehouseAbbrev}-${effectiveDefaultYear}-`,
+      1,
+      defaultFallbackPad
+    );
   }
   if (defaultType === 'PNK') {
-    return formatUniqueFromAffix('trailing', `PN-LP-${effectiveDefaultYear}-`, 1, 3);
+    return formatUniqueFromAffix(
+      'trailing',
+      `PN-LP-${effectiveDefaultYear}-`,
+      1,
+      defaultFallbackPad
+    );
   }
   const yy = String(effectiveDefaultYear).slice(-2);
   return formatUniqueFromAffix('trailing', `${defaultType}${yy}-`, 1, 4);
@@ -2367,6 +2426,189 @@ export function generateNextOutboundVoucherCode(
   }
 
   return generateNextSequentialVoucherCode(allSeeds, 'PXK', fallbackDateStr);
+}
+
+function replaceDateSegmentInVoucherCode(rawCode: string, nextDateIso: string): string | null {
+  const norm = normalizeIsoDateForSort(nextDateIso);
+  if (!norm) return null;
+  const yyyy = norm.slice(0, 4);
+  const mm = norm.slice(5, 7);
+  const dd = norm.slice(8, 10);
+
+  // Dạng YYYY-MM-DD hoặc YYYY/MM/DD
+  const dashDateRegex =
+    /(^|[^0-9])(19\d{2}|20\d{2})([-/.])(0[1-9]|1[0-2])\3(0[1-9]|[12]\d|3[01])(?=[^0-9]|$)/;
+  const mDash = dashDateRegex.exec(rawCode);
+  if (mDash) {
+    const sep = mDash[3];
+    const start = mDash.index + mDash[1].length;
+    return `${rawCode.slice(0, start)}${yyyy}${sep}${mm}${sep}${dd}${rawCode.slice(start + 10)}`;
+  }
+
+  // Dạng YYYYMMDD (VD: PN-20261014-0001)
+  const compactDateRegex =
+    /(^|[^0-9])(19\d{2}|20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?=[^0-9]|$)/;
+  const mCompact = compactDateRegex.exec(rawCode);
+  if (mCompact) {
+    const start = mCompact.index + mCompact[1].length;
+    return `${rawCode.slice(0, start)}${yyyy}${mm}${dd}${rawCode.slice(start + 8)}`;
+  }
+
+  // Dạng YYYY-MM hoặc YYYYMM (VD: PN-LP-202610-0001 hoặc PN-2026-10-0001)
+  const dashMonthRegex = /(^|[^0-9])(19\d{2}|20\d{2})([-/.])(0[1-9]|1[0-2])(?=[^0-9]|$)/;
+  const mDashMonth = dashMonthRegex.exec(rawCode);
+  if (mDashMonth) {
+    const sep = mDashMonth[3];
+    const start = mDashMonth.index + mDashMonth[1].length;
+    return `${rawCode.slice(0, start)}${yyyy}${sep}${mm}${rawCode.slice(start + 7)}`;
+  }
+
+  const compactMonthRegex = /(^|[^0-9])(19\d{2}|20\d{2})(0[1-9]|1[0-2])(?=[^0-9]|$)/;
+  const mCompactMonth = compactMonthRegex.exec(rawCode);
+  if (mCompactMonth) {
+    const start = mCompactMonth.index + mCompactMonth[1].length;
+    return `${rawCode.slice(0, start)}${yyyy}${mm}${rawCode.slice(start + 6)}`;
+  }
+
+  return null;
+}
+
+export function voucherCodeHasDatePrecision(rawCode?: string | null): boolean {
+  const s = (rawCode || '').trim();
+  if (!s) return false;
+  return (
+    /(^|[^0-9])(19\d{2}|20\d{2})([-/.])(0[1-9]|1[0-2])\3(0[1-9]|[12]\d|3[01])(?=[^0-9]|$)/.test(s) ||
+    /(^|[^0-9])(19\d{2}|20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?=[^0-9]|$)/.test(s) ||
+    /(^|[^0-9])(19\d{2}|20\d{2})([-/.])(0[1-9]|1[0-2])(?=[^0-9]|$)/.test(s) ||
+    /(^|[^0-9])(19\d{2}|20\d{2})(0[1-9]|1[0-2])(?=[^0-9]|$)/.test(s)
+  );
+}
+
+function buildNextCodeFromDateTemplate(
+  adaptedCode: string,
+  otherCodes: string[]
+): string | null {
+  const m = /^(.*?)(\d{1,8})$/.exec(adaptedCode.trim());
+  if (!m || !m[1].trim()) return null;
+  const prefix = m[1].toUpperCase();
+  const padLen = Math.max(m[2].length, 4);
+  const occupied = new Set<string>();
+  let maxSeq = 0;
+
+  for (let i = 0; i < otherCodes.length; i++) {
+    const raw = (otherCodes[i] || '').trim();
+    if (!raw) continue;
+    occupied.add(normKey(raw));
+    if (raw.toUpperCase().startsWith(prefix)) {
+      const rest = raw.slice(prefix.length);
+      if (/^\d{1,8}$/.test(rest)) {
+        const n = parseInt(rest, 10);
+        if (!isNaN(n) && n > maxSeq) maxSeq = n;
+      }
+    }
+  }
+
+  let seq = maxSeq + 1;
+  let candidate = `${prefix}${String(seq).padStart(padLen, '0')}`;
+  while (occupied.has(normKey(candidate))) {
+    seq++;
+    candidate = `${prefix}${String(seq).padStart(padLen, '0')}`;
+  }
+  return candidate;
+}
+
+export function resolveEditedInboundVoucherCode(
+  receipts: InboundReceipt[],
+  editingReceipt: Pick<InboundReceipt, 'id' | 'receiptCode' | 'receiptDate' | 'warehouseId' | 'warehouseName'>,
+  nextDateStr: string,
+  targetWarehouse?: Pick<Warehouse, 'id' | 'code' | 'name' | 'shortCode'> | null,
+  origResolvedWarehouseId?: string
+): string {
+  const otherReceipts = receipts.filter((r) => r.id !== editingReceipt.id);
+  const origCode = (editingReceipt.receiptCode || '').trim();
+  const origDate = normalizeIsoDateForSort(editingReceipt.receiptDate);
+  const nextDate = normalizeIsoDateForSort(nextDateStr);
+  const origYear = origDate ? origDate.slice(0, 4) : '';
+  const nextYear = nextDate ? nextDate.slice(0, 4) : '';
+
+  const isSameWh = targetWarehouse
+    ? origResolvedWarehouseId
+      ? targetWarehouse.id === origResolvedWarehouseId
+      : isReceiptInWarehouse(editingReceipt, targetWarehouse)
+    : true;
+
+  const isDateGranular = voucherCodeHasDatePrecision(origCode);
+  const sameScopeAsOriginal = isDateGranular
+    ? isSameWh && nextDate === origDate
+    : isSameWh && nextYear === origYear;
+
+  const origCodeTakenByOther =
+    Boolean(origCode) &&
+    otherReceipts.some((r) => normKey(r.receiptCode) === normKey(origCode));
+
+  if (sameScopeAsOriginal && origCode && !origCodeTakenByOther) {
+    return origCode;
+  }
+
+  if (isSameWh && isDateGranular && nextDate) {
+    const replaced = replaceDateSegmentInVoucherCode(origCode, nextDate);
+    if (replaced) {
+      const nextFromTemplate = buildNextCodeFromDateTemplate(
+        replaced,
+        otherReceipts.map((r) => r.receiptCode)
+      );
+      if (nextFromTemplate) return nextFromTemplate;
+    }
+  }
+
+  return generateNextInboundVoucherCode(otherReceipts, nextDate || nextDateStr, targetWarehouse);
+}
+
+export function resolveEditedOutboundVoucherCode(
+  receipts: OutboundReceipt[],
+  editingReceipt: Pick<OutboundReceipt, 'id' | 'issueCode' | 'issueDate' | 'warehouseId' | 'warehouseName'>,
+  nextDateStr: string,
+  targetWarehouse?: Pick<Warehouse, 'id' | 'code' | 'name' | 'shortCode'> | null,
+  origResolvedWarehouseId?: string
+): string {
+  const otherReceipts = receipts.filter((r) => r.id !== editingReceipt.id);
+  const origCode = (editingReceipt.issueCode || '').trim();
+  const origDate = normalizeIsoDateForSort(editingReceipt.issueDate);
+  const nextDate = normalizeIsoDateForSort(nextDateStr);
+  const origYear = origDate ? origDate.slice(0, 4) : '';
+  const nextYear = nextDate ? nextDate.slice(0, 4) : '';
+
+  const isSameWh = targetWarehouse
+    ? origResolvedWarehouseId
+      ? targetWarehouse.id === origResolvedWarehouseId
+      : isReceiptInWarehouse(editingReceipt, targetWarehouse)
+    : true;
+
+  const isDateGranular = voucherCodeHasDatePrecision(origCode);
+  const sameScopeAsOriginal = isDateGranular
+    ? isSameWh && nextDate === origDate
+    : isSameWh && nextYear === origYear;
+
+  const origCodeTakenByOther =
+    Boolean(origCode) &&
+    otherReceipts.some((r) => normKey(r.issueCode) === normKey(origCode));
+
+  if (sameScopeAsOriginal && origCode && !origCodeTakenByOther) {
+    return origCode;
+  }
+
+  if (isSameWh && isDateGranular && nextDate) {
+    const replaced = replaceDateSegmentInVoucherCode(origCode, nextDate);
+    if (replaced) {
+      const nextFromTemplate = buildNextCodeFromDateTemplate(
+        replaced,
+        otherReceipts.map((r) => r.issueCode)
+      );
+      if (nextFromTemplate) return nextFromTemplate;
+    }
+  }
+
+  return generateNextOutboundVoucherCode(otherReceipts, nextDate || nextDateStr, targetWarehouse);
 }
 
 export function generateNextOsdVoucherCode(
