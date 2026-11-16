@@ -19,7 +19,12 @@ import {
   handleFirestoreError,
   onFirestoreQuotaError,
   isFirestoreCircuitOpen,
-  markFirestoreTemporarilyUnavailable,
+  isFirestoreQuotaExhausted,
+  isQuotaExceededError,
+  notifyFirestoreQuotaExceeded,
+  clearFirestoreQuotaExhaustedFlag,
+  resetFirestoreCircuitForRetry,
+  FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
   OperationType,
   type FirebaseUser
 } from './firebase';
@@ -74,6 +79,7 @@ export interface CloudSyncSnapshotState {
   cloudUid: string | null;
   lastSyncedAt: number | null;
   errorMessage: string | null;
+  quotaExceeded: boolean;
 }
 
 interface CloudReceiptIndexEntry {
@@ -125,7 +131,8 @@ let currentState: CloudSyncSnapshotState = {
   cloudDisplayName: null,
   cloudUid: null,
   lastSyncedAt: null,
-  errorMessage: null
+  errorMessage: null,
+  quotaExceeded: false
 };
 
 let workspaceUnsub: Unsubscribe | null = null;
@@ -164,6 +171,8 @@ interface CloudSyncCheckpoint {
   inboundCount: number;
   outboundCount: number;
   materialsCount: number;
+  inboundTombCount?: number;
+  outboundTombCount?: number;
 }
 
 const CLOUD_CHECKPOINT_KEY = `vtp_cloud_sync_checkpoint_v1_${WORKSPACE_ID}`;
@@ -277,7 +286,14 @@ function resolveAuthReadyWaiters(): void {
 }
 
 function emitCloudState(patch: Partial<CloudSyncSnapshotState>): void {
-  currentState = { ...currentState, ...patch };
+  const nextPatch = { ...patch };
+  if (
+    (nextPatch.status === 'connected' || nextPatch.status === 'disconnected') &&
+    nextPatch.quotaExceeded === undefined
+  ) {
+    nextPatch.quotaExceeded = false;
+  }
+  currentState = { ...currentState, ...nextPatch };
   if (currentState.authReady) {
     resolveAuthReadyWaiters();
   }
@@ -291,7 +307,7 @@ function emitCloudState(patch: Partial<CloudSyncSnapshotState>): void {
 }
 
 onFirestoreQuotaError((msg) => {
-  emitCloudState({ status: 'error', errorMessage: msg });
+  emitCloudState({ status: 'error', quotaExceeded: true, errorMessage: msg });
 });
 
 // ============================================================================
@@ -483,6 +499,7 @@ function isPermissionError(err: unknown): boolean {
 async function safeGetDoc(ref: DocumentReference, pathLabel: string) {
   try {
     const snap = await getDoc(ref);
+    clearFirestoreQuotaExhaustedFlag();
     if (snap.exists()) {
       knownExistingPaths.add(ref.path);
     } else {
@@ -490,10 +507,8 @@ async function safeGetDoc(ref: DocumentReference, pathLabel: string) {
     }
     return snap;
   } catch (err) {
-    const code = String((err as any)?.code || '');
-    const msg = err instanceof Error ? err.message : String(err);
-    if (code === 'resource-exhausted' || msg.includes('Quota exceeded')) {
-      markFirestoreTemporarilyUnavailable(300_000);
+    if (isQuotaExceededError(err)) {
+      notifyFirestoreQuotaExceeded(300_000);
     }
     if (isPermissionError(err)) {
       handleFirestoreError(err, OperationType.GET, pathLabel);
@@ -524,8 +539,12 @@ async function writeSingleProtectedDoc(
         updatedByUid: uid,
         updatedAt: serverTimestamp()
       });
+      clearFirestoreQuotaExhaustedFlag();
       return;
     } catch (err) {
+      if (isQuotaExceededError(err)) {
+        notifyFirestoreQuotaExceeded(300_000);
+      }
       if (isPermissionError(err)) {
         handleFirestoreError(err, OperationType.UPDATE, pathLabel);
       }
@@ -540,9 +559,13 @@ async function writeSingleProtectedDoc(
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
+      clearFirestoreQuotaExhaustedFlag();
       knownExistingPaths.add(ref.path);
       return;
     } catch (err) {
+      if (isQuotaExceededError(err)) {
+        notifyFirestoreQuotaExceeded(300_000);
+      }
       if (isPermissionError(err)) {
         handleFirestoreError(err, OperationType.CREATE, pathLabel);
       }
@@ -605,10 +628,14 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
     const commitTask = (async () => {
       try {
         await batch.commit();
+        clearFirestoreQuotaExhaustedFlag();
         for (let i = 0; i < chunk.length; i++) {
           knownExistingPaths.add(chunk[i].ref.path);
         }
       } catch (err) {
+        if (isQuotaExceededError(err)) {
+          notifyFirestoreQuotaExceeded(300_000);
+        }
         if (isPermissionError(err)) {
           handleFirestoreError(err, OperationType.WRITE, chunk[0]?.pathLabel || `workspaces/${WORKSPACE_ID}`);
         }
@@ -1095,6 +1122,13 @@ function deserializeOutboundItem(m: Record<string, any>): OutboundItemDetail {
 // ============================================================================
 async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
   if (isFirestoreCircuitOpen()) {
+    if (isFirestoreQuotaExhausted()) {
+      emitCloudState({
+        status: 'error',
+        quotaExceeded: true,
+        errorMessage: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+      });
+    }
     return false;
   }
   if (!fbUser.emailVerified) {
@@ -1192,6 +1226,9 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
         knownExistingPaths.add(memberRef.path);
         cachedWsManifest = { data: initManifest, atMs: Date.now() };
       } catch (err) {
+        if (isQuotaExceededError(err)) {
+          notifyFirestoreQuotaExceeded(300_000);
+        }
         if (isPermissionError(err)) {
           handleFirestoreError(err, OperationType.CREATE, wsPath);
         }
@@ -1327,7 +1364,11 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
       }
       verifiedWorkspaceUid = uid;
       return true;
-    } catch {
+    } catch (joinErr) {
+      if (isQuotaExceededError(joinErr) || isFirestoreQuotaExhausted()) {
+        notifyFirestoreQuotaExceeded(300_000);
+        return false;
+      }
       try {
         const wsSnap = await safeGetDoc(wsRef, wsPath);
         if (!wsSnap.exists()) {
@@ -1335,11 +1376,15 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
           verifiedWorkspaceUid = uid;
           return true;
         }
-      } catch {
-        // ignore secondary wsRef check error
+      } catch (secondaryErr) {
+        if (isQuotaExceededError(secondaryErr) || isFirestoreQuotaExhausted()) {
+          notifyFirestoreQuotaExceeded(300_000);
+          return false;
+        }
       }
       emitCloudState({
         status: 'error',
+        quotaExceeded: false,
         errorMessage: 'Không thể tham gia không gian đồng bộ kho (Vui lòng nhờ Quản trị viên mở ứng dụng đồng bộ trước 1 lần hoặc kiểm tra quyền truy cập).'
       });
       return false;
@@ -1352,6 +1397,9 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
     workspaceReadyPromise = null;
     workspaceReadyUid = null;
     verifiedWorkspaceUid = null;
+    if (isQuotaExceededError(err)) {
+      notifyFirestoreQuotaExceeded(300_000);
+    }
     throw err;
   }
 }
@@ -1382,6 +1430,10 @@ function attachOsdRealtimeListener(): void {
       }
     },
     (err) => {
+      if (isQuotaExceededError(err)) {
+        notifyFirestoreQuotaExceeded(300_000);
+        return;
+      }
       try {
         handleFirestoreError(err, OperationType.GET, osdPath);
       } catch {
@@ -1409,12 +1461,19 @@ function attachWorkspaceRealtimeListener(): void {
       }
     },
     (err) => {
+      if (isQuotaExceededError(err)) {
+        notifyFirestoreQuotaExceeded(300_000);
+        return;
+      }
       try {
         handleFirestoreError(err, OperationType.GET, wsPath);
       } catch {
         emitCloudState({
           status: 'error',
-          errorMessage: 'Mất kết nối lắng nghe thời gian thực với Cloud Firestore.'
+          quotaExceeded: isFirestoreQuotaExhausted(),
+          errorMessage: isFirestoreQuotaExhausted()
+            ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+            : 'Mất kết nối lắng nghe thời gian thực với Cloud Firestore.'
         });
       }
     }
@@ -2356,7 +2415,17 @@ export const FirestoreSyncService = {
       });
 
       // Khi người dùng đang thao tác bấm nút Đăng nhập Google, nhường toàn bộ băng thông cho bước cấp phiên đăng nhập trước
-      if (interactiveAuthInFlight || isFirestoreCircuitOpen()) {
+      if (interactiveAuthInFlight) {
+        return;
+      }
+      if (isFirestoreCircuitOpen()) {
+        if (isFirestoreQuotaExhausted()) {
+          emitCloudState({
+            status: 'error',
+            quotaExceeded: true,
+            errorMessage: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+          });
+        }
         return;
       }
 
@@ -2375,16 +2444,30 @@ export const FirestoreSyncService = {
         void this.reconcileWithCloud();
       } catch (err) {
         console.warn('Cloud workspace bootstrap warning:', err);
-        emitCloudState({
-          status: 'error',
-          errorMessage: 'Không thể khởi tạo kết nối đồng bộ đám mây. Vui lòng thử lại.'
-        });
+        if (isQuotaExceededError(err) || isFirestoreQuotaExhausted()) {
+          notifyFirestoreQuotaExceeded(300_000);
+        } else {
+          emitCloudState({
+            status: 'error',
+            quotaExceeded: false,
+            errorMessage: 'Không thể khởi tạo kết nối đồng bộ đám mây. Vui lòng thử lại.'
+          });
+        }
       }
     });
   },
 
   getState(): CloudSyncSnapshotState {
     return currentState;
+  },
+
+  isQuotaExhausted(): boolean {
+    return isFirestoreQuotaExhausted() || Boolean(currentState.quotaExceeded);
+  },
+
+  resetCircuitForManualRetry(): void {
+    resetFirestoreCircuitForRetry();
+    workspaceReadyPromise = null;
   },
 
   isCloudConnected(): boolean {
@@ -2594,11 +2677,15 @@ export const FirestoreSyncService = {
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000))
       ]);
       if (!wsOk) {
+        const quotaMsg = isFirestoreQuotaExhausted() || currentState.quotaExceeded
+          ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+          : null;
         return {
           success: false,
           email: authRes.email,
           displayName: authRes.displayName,
           message:
+            quotaMsg ||
             currentState.errorMessage ||
             'Chưa thể kết nối không gian làm việc Google Cloud Firestore. Vui lòng kiểm tra mạng và thử lại.'
         };
@@ -2606,7 +2693,16 @@ export const FirestoreSyncService = {
       attachWorkspaceRealtimeListener();
       emitCloudState({ status: 'connected', errorMessage: null });
       void this.reconcileWithCloud();
-    } catch {
+    } catch (err) {
+      if (isQuotaExceededError(err) || isFirestoreQuotaExhausted()) {
+        const msg = notifyFirestoreQuotaExceeded(300_000);
+        return {
+          success: false,
+          email: authRes.email,
+          displayName: authRes.displayName,
+          message: msg
+        };
+      }
       return {
         success: false,
         email: authRes.email,
@@ -2693,25 +2789,57 @@ export const FirestoreSyncService = {
     return res.ok;
   },
 
-  async reconcileWithCloudDetailed(): Promise<{ ok: boolean; pulledChanges: boolean }> {
-    if (isFirestoreCircuitOpen() || interactiveAuthInFlight) {
-      return { ok: false, pulledChanges: false };
+  async reconcileWithCloudDetailed(): Promise<{
+    ok: boolean;
+    pulledChanges: boolean;
+    pushedChanges?: boolean;
+    quotaExceeded?: boolean;
+    errorMessage?: string;
+  }> {
+    if (isFirestoreCircuitOpen()) {
+      if (isFirestoreQuotaExhausted()) {
+        emitCloudState({
+          status: 'error',
+          quotaExceeded: true,
+          errorMessage: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+        });
+        return {
+          ok: false,
+          pulledChanges: false,
+          pushedChanges: false,
+          quotaExceeded: true,
+          errorMessage: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+        };
+      }
+      return { ok: false, pulledChanges: false, pushedChanges: false };
+    }
+    if (interactiveAuthInFlight) {
+      return { ok: false, pulledChanges: false, pushedChanges: false };
     }
     const fbUser = auth.currentUser;
     if (!fbUser || !fbUser.emailVerified) {
-      return { ok: false, pulledChanges: false };
+      return { ok: false, pulledChanges: false, pushedChanges: false };
     }
 
     if (isCloudReconciling) {
       pendingCloudReconcile = true;
-      return { ok: true, pulledChanges: false };
+      return { ok: true, pulledChanges: false, pushedChanges: false };
     }
 
     isCloudReconciling = true;
     let pulledChanges = false;
+    let pushedChanges = false;
     try {
       const ok = await ensureWorkspaceReady(fbUser);
-      if (!ok) return { ok: false, pulledChanges: false };
+      if (!ok) {
+        return {
+          ok: false,
+          pulledChanges: false,
+          pushedChanges: false,
+          quotaExceeded: isFirestoreQuotaExhausted() || currentState.quotaExceeded,
+          errorMessage: currentState.errorMessage || undefined
+        };
+      }
       attachWorkspaceRealtimeListener();
 
       const wsPath = `workspaces/${WORKSPACE_ID}`;
@@ -2722,7 +2850,7 @@ export const FirestoreSyncService = {
         cachedWsManifest = null;
       } else {
         const wsSnap = await safeGetDoc(wsRef, wsPath);
-        if (!wsSnap.exists()) return { ok: false, pulledChanges: false };
+        if (!wsSnap.exists()) return { ok: false, pulledChanges: false, pushedChanges: false };
         wsData = wsSnap.data() as WorkspaceManifestDoc;
       }
 
@@ -2761,6 +2889,8 @@ export const FirestoreSyncService = {
       const preInDigest = computeInboundListDigest(localInbounds);
       const preOutDigest = computeOutboundListDigest(localOutbounds);
       const preOsdDigest = computeOsdOnlyDigest(localOsd, localTombs);
+      const preInTombCount = Object.keys(localTombs.inbound || {}).length;
+      const preOutTombCount = Object.keys(localTombs.outbound || {}).length;
 
       const adminMissingPii =
         isCloudAdmin(fbUser) && localUsers.some((u) => Boolean(u.emailDigest) && !u.email);
@@ -2780,15 +2910,15 @@ export const FirestoreSyncService = {
 
       const inboundLocalDirty =
         cloudInboundDirty ||
-        cloudMetaDirty ||
         !checkpoint ||
-        preInDigest !== checkpoint.inboundDigest;
+        preInDigest !== checkpoint.inboundDigest ||
+        (checkpoint.inboundTombCount !== undefined && preInTombCount !== checkpoint.inboundTombCount);
 
       const outboundLocalDirty =
         cloudOutboundDirty ||
-        cloudMetaDirty ||
         !checkpoint ||
-        preOutDigest !== checkpoint.outboundDigest;
+        preOutDigest !== checkpoint.outboundDigest ||
+        (checkpoint.outboundTombCount !== undefined && preOutTombCount !== checkpoint.outboundTombCount);
 
       const materialsLocalDirty =
         cloudMaterialsDirty ||
@@ -2814,7 +2944,7 @@ export const FirestoreSyncService = {
           lastSyncedAt: Date.now(),
           errorMessage: null
         });
-        return { ok: true, pulledChanges: false };
+        return { ok: true, pulledChanges: false, pushedChanges: false };
       }
 
       // 1. Đồng bộ Meta (Users + Warehouses + OSD + Tombstones) chỉ khi có khác biệt
@@ -3070,6 +3200,7 @@ export const FirestoreSyncService = {
       // 5. Cập nhật WorkspaceManifest chỉ khi có dữ liệu thay đổi mới đẩy lên Cloud
       let finalServerRev = remoteServerRev;
       if (manifestMutated) {
+        pushedChanges = true;
         const nextServerRev = remoteServerRev + 1;
         const prevAppliedServerRev = lastAppliedCloudServerRev;
         lastAppliedCloudServerRev = nextServerRev;
@@ -3129,7 +3260,9 @@ export const FirestoreSyncService = {
         osdDigest: lastSyncedOsdDigest,
         inboundCount: finalIn.length,
         outboundCount: finalOut.length,
-        materialsCount: finalMats.length
+        materialsCount: finalMats.length,
+        inboundTombCount: Object.keys(finalTombs.inbound || {}).length,
+        outboundTombCount: Object.keys(finalTombs.outbound || {}).length
       });
 
       await StorageService.flush();
@@ -3138,10 +3271,25 @@ export const FirestoreSyncService = {
         lastSyncedAt: Date.now(),
         errorMessage: null
       });
-      return { ok: true, pulledChanges };
+      return { ok: true, pulledChanges, pushedChanges };
     } catch (err) {
       console.warn('Cloud sync reconcile deferred:', err);
-      return { ok: false, pulledChanges };
+      if (isQuotaExceededError(err) || isFirestoreQuotaExhausted()) {
+        const msg = notifyFirestoreQuotaExceeded(300_000);
+        return {
+          ok: false,
+          pulledChanges,
+          pushedChanges,
+          quotaExceeded: true,
+          errorMessage: msg
+        };
+      }
+      return {
+        ok: false,
+        pulledChanges,
+        pushedChanges,
+        errorMessage: err instanceof Error ? err.message : String(err)
+      };
     } finally {
       isCloudReconciling = false;
       if (pendingCloudReconcile) {
@@ -4317,6 +4465,10 @@ export const FirestoreSyncService = {
       };
     } catch (err: any) {
       console.error('forcePushUsersOnlyToCloud error:', err);
+      if (isQuotaExceededError(err) || isFirestoreQuotaExhausted()) {
+        const msg = notifyFirestoreQuotaExceeded(300_000);
+        return { success: false, message: msg };
+      }
       return {
         success: false,
         message: `Lỗi đồng bộ tài khoản lên Cloud: ${err?.message || String(err)}`
@@ -4482,8 +4634,16 @@ export const FirestoreSyncService = {
       };
     } catch (err: any) {
       console.error('forcePushAllLocalDataToCloud error:', err);
+      if (isQuotaExceededError(err) || isFirestoreQuotaExhausted()) {
+        const msg = notifyFirestoreQuotaExceeded(300_000);
+        return {
+          success: false,
+          message: msg
+        };
+      }
       emitCloudState({
         status: 'error',
+        quotaExceeded: false,
         errorMessage: err?.message || 'Lỗi khi đồng bộ lên Cloud Firestore'
       });
       return {

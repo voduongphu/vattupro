@@ -9,6 +9,7 @@ import {
   MonitorSmartphone,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Cloud,
   CloudOff,
   CloudUpload,
@@ -44,6 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     success: boolean;
     message: string;
   } | null>(null);
+  const [dismissedCloudErrorMsg, setDismissedCloudErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     return SyncService.subscribeSyncState(setIsSyncing);
@@ -53,16 +55,16 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     if (!remoteLogoutNotice) return;
     const timer = setTimeout(() => {
       setRemoteLogoutNotice(null);
-    }, 7000);
+    }, 9000);
     return () => clearTimeout(timer);
   }, [remoteLogoutNotice]);
 
-
   const handleUnifiedSync = async () => {
     setIsUserMenuOpen(false);
+    setDismissedCloudErrorMsg(null);
     setIsSyncing(true);
     try {
-      const res = await SyncService.forcePushAllLocalDataToCloud();
+      const res = await SyncService.syncCloudChangesOnly();
       setRemoteLogoutNotice({
         success: res.success,
         message: res.message
@@ -155,7 +157,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
 
             {(() => {
               const busy = isSyncing || isConnectingCloud || cloudState.status === 'connecting';
-              const connected = cloudState.status === 'connected';
+              const quotaExceeded = Boolean(cloudState.quotaExceeded);
+              const hasError = cloudState.status === 'error';
+              const connected = cloudState.status === 'connected' && !hasError;
 
               return (
                 <button
@@ -163,25 +167,37 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                   onClick={handleUnifiedSync}
                   disabled={isSyncing || isConnectingCloud}
                   title={
-                    connected
-                      ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
-                      : t('cloudConnectTooltip')
+                    quotaExceeded
+                      ? cloudState.errorMessage || t('cloudQuotaExceeded')
+                      : hasError && cloudState.errorMessage
+                        ? cloudState.errorMessage
+                        : connected
+                          ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
+                          : t('cloudConnectTooltip')
                   }
                   className={`min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition disabled:opacity-75 shrink-0 ${
-                    connected
-                      ? 'text-emerald-200 hover:text-white bg-emerald-950/75 hover:bg-emerald-900/80 border-emerald-700/60 shadow-xs'
-                      : 'text-blue-200 hover:text-white bg-blue-950/80 hover:bg-blue-900/80 border-blue-700/60 shadow-xs'
+                    quotaExceeded
+                      ? 'text-amber-200 hover:text-white bg-amber-950/85 hover:bg-amber-900/90 border-amber-600/70 shadow-xs'
+                      : hasError
+                        ? 'text-rose-200 hover:text-white bg-rose-950/85 hover:bg-rose-900/90 border-rose-700/70 shadow-xs'
+                        : connected
+                          ? 'text-emerald-200 hover:text-white bg-emerald-950/75 hover:bg-emerald-900/80 border-emerald-700/60 shadow-xs'
+                          : 'text-blue-200 hover:text-white bg-blue-950/80 hover:bg-blue-900/80 border-blue-700/60 shadow-xs'
                   }`}
                 >
                   {busy ? (
                     <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin shrink-0" />
+                  ) : quotaExceeded ? (
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  ) : hasError ? (
+                    <CloudOff className="w-4 h-4 text-rose-400 shrink-0" />
                   ) : connected ? (
                     <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
                   ) : (
                     <CloudUpload className="w-4 h-4 text-blue-400 shrink-0" />
                   )}
                   <span className="hidden sm:inline">
-                    {busy ? t('syncing') : t('cloudSync')}
+                    {busy ? t('syncing') : quotaExceeded ? t('cloudQuotaExceededShort') : t('cloudSync')}
                   </span>
                 </button>
               );
@@ -288,19 +304,23 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
 
         {remoteLogoutNotice && (
           <div
-            className={`px-3 sm:px-6 py-2 text-xs flex items-center justify-between gap-2 border-t ${
+            className={`px-3 sm:px-6 py-2 text-xs flex items-start sm:items-center justify-between gap-2 border-t ${
               remoteLogoutNotice.success
                 ? 'bg-emerald-950/95 border-emerald-800 text-emerald-200'
-                : 'bg-rose-950/95 border-rose-800 text-rose-200'
+                : cloudState.quotaExceeded
+                  ? 'bg-amber-950/95 border-amber-700 text-amber-100'
+                  : 'bg-rose-950/95 border-rose-800 text-rose-200'
             }`}
           >
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-start sm:items-center gap-2 min-w-0">
               {remoteLogoutNotice.success ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5 sm:mt-0" />
+              ) : cloudState.quotaExceeded ? (
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
               ) : (
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 sm:mt-0" />
               )}
-              <span className="truncate">{remoteLogoutNotice.message}</span>
+              <span className="leading-relaxed break-words">{remoteLogoutNotice.message}</span>
             </div>
             <button
               type="button"
@@ -312,6 +332,41 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
             </button>
           </div>
         )}
+
+        {cloudState.status === 'error' &&
+          cloudState.errorMessage &&
+          dismissedCloudErrorMsg !== cloudState.errorMessage &&
+          (!remoteLogoutNotice || remoteLogoutNotice.message !== cloudState.errorMessage) && (
+            <div
+              className={`px-3 sm:px-6 py-2 text-xs flex items-start sm:items-center justify-between gap-2 border-t ${
+                cloudState.quotaExceeded
+                  ? 'bg-amber-950/95 border-amber-700/90 text-amber-100'
+                  : 'bg-rose-950/95 border-rose-800 text-rose-200'
+              }`}
+            >
+              <div className="flex items-start sm:items-center gap-2 min-w-0">
+                {cloudState.quotaExceeded ? (
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                ) : (
+                  <CloudOff className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 sm:mt-0" />
+                )}
+                <span className="leading-relaxed break-words">
+                  <strong className="mr-1.5">
+                    {cloudState.quotaExceeded ? t('cloudQuotaExceeded') + ':' : 'Lỗi Cloud Firestore:'}
+                  </strong>
+                  {cloudState.errorMessage}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDismissedCloudErrorMsg(cloudState.errorMessage)}
+                className="p-1 rounded-lg hover:bg-white/10 transition shrink-0"
+                title="Đóng thông báo"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
       </header>
 
       <LoginModal isOpen={isLoginModalOpen} onClose={() => setIsLoginModalOpen(false)} />

@@ -1,5 +1,6 @@
 import { StorageService } from './storage';
 import { FirestoreSyncService, type CloudSyncSnapshotState } from './firestoreSync';
+import { FIRESTORE_QUOTA_EXCEEDED_MESSAGE } from './firebase';
 import type {
   User,
   Warehouse,
@@ -97,6 +98,9 @@ export interface SyncResult {
   isOffline?: boolean;
   cloudSynced?: boolean;
   localSynced?: boolean;
+  quotaExceeded?: boolean;
+  pulledChanges?: boolean;
+  pushedChanges?: boolean;
   osdCount?: number;
   error?: string;
 }
@@ -1288,7 +1292,14 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   return pulledChanges;
 }
 
-async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSuccess: boolean; error?: string }> {
+async function reconcileInternal(): Promise<{
+  cloudSuccess: boolean;
+  localSuccess: boolean;
+  pulledChanges?: boolean;
+  pushedChanges?: boolean;
+  cloudQuotaExceeded?: boolean;
+  error?: string;
+}> {
   // Chỉ chạy đồng bộ khi người dùng đã đăng nhập (tránh việc thiết bị vừa xóa cache chưa login đẩy data rỗng)
   if (!getStoredUnifiedSession() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
     return { cloudSuccess: false, localSuccess: false };
@@ -1319,6 +1330,9 @@ async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSucces
 
   let cloudSuccess = false;
   let localSuccess = false;
+  let pulledChanges = false;
+  let pushedChanges = false;
+  let cloudQuotaExceeded = false;
   let syncError: string | undefined;
 
   try {
@@ -1332,8 +1346,13 @@ async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSucces
     ) {
       const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed();
       cloudSuccess = cloudRes.ok;
+      pulledChanges = Boolean(cloudRes.pulledChanges);
+      pushedChanges = Boolean(cloudRes.pushedChanges);
+      cloudQuotaExceeded = Boolean(cloudRes.quotaExceeded || FirestoreSyncService.isQuotaExhausted());
       if (cloudRes.ok) {
         updateNetworkStatus(true);
+      } else if (cloudRes.errorMessage) {
+        syncError = cloudRes.errorMessage;
       }
       // Bắc cầu đồng bộ OSD và Meta xuống máy chủ cục bộ /api/sync để thiết bị khác dùng tài khoản nội bộ cũng nhận được
       try {
@@ -1343,13 +1362,17 @@ async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSucces
         // bỏ qua nếu máy chủ cục bộ không khả dụng
       }
     } else {
+      if (FirestoreSyncService.isQuotaExhausted()) {
+        cloudQuotaExceeded = true;
+        syncError = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
+      }
       // 2. Fallback đồng bộ máy chủ cục bộ /api/sync khi chưa kết nối Google Cloud
       try {
         await reconcileLocalServerOnly();
         localSuccess = true;
         updateNetworkStatus(true);
       } catch (localErr) {
-        syncError = localErr instanceof Error ? localErr.message : String(localErr);
+        syncError = syncError || (localErr instanceof Error ? localErr.message : String(localErr));
         if (!FirestoreSyncService.isCloudConnected()) {
           console.warn('Local server sync unavailable:', localErr);
         }
@@ -1374,7 +1397,14 @@ async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSucces
     }
   }
 
-  return { cloudSuccess, localSuccess, error: syncError };
+  return {
+    cloudSuccess,
+    localSuccess,
+    pulledChanges,
+    pushedChanges,
+    cloudQuotaExceeded,
+    error: syncError
+  };
 }
 
 function schedulePush(delayMs = 350): void {
@@ -1903,6 +1933,10 @@ export const SyncService = {
 
       let serverOk = false;
       let cloudOk = false;
+      let pulledChanges = false;
+      let pushedChanges = false;
+      let cloudQuotaExceeded = false;
+      let cloudErrorMsg: string | undefined;
 
       const currentSess = getStoredUnifiedSession();
       const isCloudSessionMode =
@@ -1967,12 +2001,16 @@ export const SyncService = {
           }
         })(),
 
-        // 2. Đồng bộ toàn bộ dữ liệu hệ thống (Người dùng, Kho bãi, Vật tư, Phiếu nhập xuất)
+        // 2. Đồng bộ dữ liệu thay đổi (Người dùng, Kho bãi, Vật tư, Phiếu nhập xuất)
         (async () => {
           try {
             const reconRes = await reconcileInternal();
             if (reconRes.cloudSuccess) cloudOk = true;
             if (reconRes.localSuccess) serverOk = true;
+            if (reconRes.pulledChanges) pulledChanges = true;
+            if (reconRes.pushedChanges) pushedChanges = true;
+            if (reconRes.cloudQuotaExceeded) cloudQuotaExceeded = true;
+            if (reconRes.error) cloudErrorMsg = reconRes.error;
           } catch {}
         })()
       ];
@@ -1990,7 +2028,10 @@ export const SyncService = {
         syncTasks.push(
           FirestoreSyncService.pushOsdRealtimeToCloud()
             .then((ok) => {
-              if (ok) cloudOk = true;
+              if (ok) {
+                cloudOk = true;
+                pushedChanges = true;
+              }
             })
             .catch(() => {})
         );
@@ -2001,12 +2042,45 @@ export const SyncService = {
 
       const finalOsdCount = StorageService.getOsdReceipts().length;
       const finalMatCount = StorageService.getMaterials().length;
+      const latestCloudState = FirestoreSyncService.getState();
+      const hitQuota =
+        !cloudOk &&
+        (cloudQuotaExceeded || Boolean(latestCloudState.quotaExceeded) || FirestoreSyncService.isQuotaExhausted());
+
+      if (hitQuota) {
+        return {
+          success: false,
+          quotaExceeded: true,
+          cloudSynced: false,
+          localSynced: serverOk,
+          osdCount: finalOsdCount,
+          error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
+          message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+        };
+      }
+
+      if (!cloudOk && isCloudSessionMode && (cloudErrorMsg || latestCloudState.status === 'error')) {
+        const errText =
+          cloudErrorMsg ||
+          latestCloudState.errorMessage ||
+          'Không thể đồng bộ với Google Cloud Firestore. Vui lòng thử lại.';
+        return {
+          success: false,
+          cloudSynced: false,
+          localSynced: serverOk,
+          osdCount: finalOsdCount,
+          error: errText,
+          message: errText
+        };
+      }
 
       return {
         success: true,
         message: `Đồng bộ toàn bộ dữ liệu & OSD thành công (${finalOsdCount} biên bản OSD, ${finalMatCount} vật tư)!`,
         cloudSynced: cloudOk,
         localSynced: serverOk,
+        pulledChanges,
+        pushedChanges,
         osdCount: finalOsdCount
       };
     } catch (err: any) {
@@ -2019,6 +2093,82 @@ export const SyncService = {
     } finally {
       notifySyncState(false);
     }
+  },
+
+  async syncCloudChangesOnly(): Promise<SyncResult> {
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : this.isOnline();
+    if (!isOnline) {
+      return {
+        success: false,
+        isOffline: true,
+        message: 'Thiết bị đang ngoại tuyến. Vui lòng kiểm tra kết nối mạng và thử lại.',
+        osdCount: StorageService.getOsdReceipts().length
+      };
+    }
+
+    // Cho phép thử kết nối lại ngay khi người dùng bấm nút Đồng Bộ Cloud thủ công
+    FirestoreSyncService.resetCircuitForManualRetry();
+
+    if (!FirestoreSyncService.isCloudConnected() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
+      const connRes = await this.connectCloudSync({
+        reuseExistingIfAvailable: true,
+        forceSelectAccount: false
+      });
+      if (!connRes.success) {
+        const hitQuota = FirestoreSyncService.isQuotaExhausted();
+        return {
+          success: false,
+          quotaExceeded: hitQuota,
+          cloudSynced: false,
+          message: hitQuota ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE : connRes.message,
+          error: hitQuota ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE : connRes.message
+        };
+      }
+      if (FirestoreSyncService.isQuotaExhausted()) {
+        return {
+          success: false,
+          quotaExceeded: true,
+          cloudSynced: false,
+          message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
+          error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+        };
+      }
+      return {
+        success: true,
+        cloudSynced: true,
+        message: 'Đã kết nối & đồng bộ các dữ liệu thay đổi với Cloud Firestore thành công!',
+        osdCount: StorageService.getOsdReceipts().length
+      };
+    }
+
+    const res = await this.syncNow();
+    if (!res.success) {
+      return res;
+    }
+
+    if (res.cloudSynced) {
+      const hasDelta = Boolean(res.pulledChanges || res.pushedChanges);
+      return {
+        ...res,
+        message: hasDelta
+          ? `Đã đồng bộ các dữ liệu thay đổi lên/từ Cloud Firestore thành công (${StorageService.getMaterials().length} vật tư, ${res.osdCount ?? 0} OSD).`
+          : 'Dữ liệu đã khớp với Cloud Firestore (không có thay đổi mới, không phát sinh lượt đồng bộ thừa).'
+      };
+    }
+
+    const cloudState = FirestoreSyncService.getState();
+    if (cloudState.quotaExceeded || FirestoreSyncService.isQuotaExhausted()) {
+      return {
+        success: false,
+        quotaExceeded: true,
+        cloudSynced: false,
+        localSynced: res.localSynced,
+        error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
+        message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+      };
+    }
+
+    return res;
   },
 
   async syncOsd(): Promise<SyncResult> {

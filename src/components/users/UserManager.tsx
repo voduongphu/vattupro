@@ -376,11 +376,44 @@ export const UserManager: React.FC = () => {
             Realtime Active
           </span>
         </div>
+      ) : cloudState.status === 'error' && cloudState.errorMessage ? (
+        <div
+          className={`flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl border text-xs shadow-xs ${
+            cloudState.quotaExceeded
+              ? 'bg-amber-50/90 border-amber-300 text-amber-950'
+              : 'bg-rose-50/90 border-rose-200 text-rose-950'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            <span
+              className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                cloudState.quotaExceeded ? 'bg-amber-500' : 'bg-rose-500'
+              }`}
+            />
+            <span>
+              Trạng thái Cloud Firestore:{' '}
+              <strong>
+                {cloudState.quotaExceeded
+                  ? 'Hết hạn mức Cloud Firestore trong ngày'
+                  : 'Lỗi kết nối Cloud Firestore'}
+              </strong>
+              {' — '}
+              {cloudState.errorMessage}
+            </span>
+          </div>
+          <span
+            className={`text-[11px] font-semibold uppercase tracking-wider shrink-0 hidden sm:inline ${
+              cloudState.quotaExceeded ? 'text-amber-700' : 'text-rose-700'
+            }`}
+          >
+            {cloudState.quotaExceeded ? 'Quota Exceeded' : 'Error'}
+          </span>
+        </div>
       ) : (
         <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-blue-50/80 border border-blue-200 text-xs text-blue-950 shadow-xs">
           <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0 animate-pulse" />
           <span>
-            Hệ thống tự động kích hoạt kết nối Google Cloud Firestore. Dữ liệu tài khoản và kho bãi được bảo toàn tại thiết bị. Sử dụng nút &ldquo;Đồng Bộ Cloud&rdquo; trên thanh tiêu đề để đồng bộ dữ liệu.
+            Hệ thống tự động kích hoạt kết nối Google Cloud Firestore. Dữ liệu tài khoản và kho bãi được bảo toàn tại thiết bị. Sử dụng nút &ldquo;Đồng Bộ Cloud&rdquo; trên thanh tiêu đề để đồng bộ phần thay đổi.
           </span>
         </div>
       )}
