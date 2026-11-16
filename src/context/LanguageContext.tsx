@@ -586,7 +586,8 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Tự tạo nếu để trống': 'Auto if blank',
   'Tự động tạo mã vật tư không trùng': 'Auto-generate unique material code',
   'Tự sinh mã': 'Auto-generated',
-  'Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô trong phiếu...': 'Search Material Code, Name, Package No., Batch No. in receipt...'
+  'Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô trong phiếu...': 'Search Material Code, Name, Package No., Batch No. in receipt...',
+  'Tự động lấy số phiếu nhập kế tiếp theo năm lập phiếu': 'Auto-generate next inbound receipt number by voucher year'
 };
 
 // Merge all specialized and comprehensive phrases into one unified dictionary

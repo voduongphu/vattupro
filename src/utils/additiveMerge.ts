@@ -1786,6 +1786,12 @@ export interface VoucherCodeSeed {
   isExcelFallbackCandidate?: boolean;
 }
 
+interface VoucherYearInfo {
+  year: number;
+  start: number;
+  len: number;
+}
+
 interface ParsedVoucherCode {
   mode: 'trailing' | 'leading';
   affix: string;
@@ -1793,21 +1799,63 @@ interface ParsedVoucherCode {
   num: number;
   padLen: number;
   prefixYear: number;
+  yearInfo: VoucherYearInfo | null;
   createdTs: number;
   voucherDateKey: string;
+  voucherDateYear: number;
   index: number;
   isExcelFallback: boolean;
 }
 
-function extractVoucherPrefixYear(affix: string): number {
-  const m = /^(?:PNK|PXK|NK|XK)[-_/\s.]?(\d{2}|\d{4})[-_/\s.]$/i.exec(affix.trim());
-  if (!m) return 0;
-  const rawYear = parseInt(m[1], 10);
-  if (isNaN(rawYear)) return 0;
-  if (m[1].length === 2) {
-    return rawYear >= 70 ? 1900 + rawYear : 2000 + rawYear;
+function extractVoucherYearInfo(affix: string): VoucherYearInfo | null {
+  // 1. Ưu tiên nhận diện năm 4 chữ số trong tiền tố/hậu tố (VD: PN-LP-2017-, PNK2017-, /PN-LP-2017)
+  const fourDigitMatch = /(^|[^0-9])(19\d{2}|20\d{2})(?=[^0-9]|$)/.exec(affix);
+  if (fourDigitMatch) {
+    const year = parseInt(fourDigitMatch[2], 10);
+    if (!isNaN(year) && year >= 1990 && year <= 2099) {
+      return {
+        year,
+        start: fourDigitMatch.index + fourDigitMatch[1].length,
+        len: 4
+      };
+    }
   }
-  return rawYear;
+
+  // 2. Nhận diện năm 2 chữ số gắn sau loại phiếu / mã dự án (VD: PNK25-, PN-LP-17-, PXK26-)
+  const twoDigitTrailing = /^((?:PNK|PXK|PN|PX|NK|XK|OSD)(?:[-_/\s.]?[A-Z]{1,6})?[-_/\s.]?)(\d{2})(?=[-_/\s.]|$)/i.exec(
+    affix
+  );
+  if (twoDigitTrailing) {
+    const rawYear = parseInt(twoDigitTrailing[2], 10);
+    if (!isNaN(rawYear)) {
+      return {
+        year: rawYear >= 70 ? 1900 + rawYear : 2000 + rawYear,
+        start: twoDigitTrailing[1].length,
+        len: 2
+      };
+    }
+  }
+
+  const twoDigitLeading = /^(\/(?:PNK|PXK|PN|PX|NK|XK|OSD)(?:[-_/\s.]?[A-Z]{1,6})?[-_/\s.]?)(\d{2})$/i.exec(
+    affix
+  );
+  if (twoDigitLeading) {
+    const rawYear = parseInt(twoDigitLeading[2], 10);
+    if (!isNaN(rawYear)) {
+      return {
+        year: rawYear >= 70 ? 1900 + rawYear : 2000 + rawYear,
+        start: twoDigitLeading[1].length,
+        len: 2
+      };
+    }
+  }
+
+  return null;
+}
+
+function replaceAffixYear(affix: string, info: VoucherYearInfo, targetYear: number): string {
+  const replacement = info.len === 4 ? String(targetYear) : String(targetYear).slice(-2);
+  return `${affix.slice(0, info.start)}${replacement}${affix.slice(info.start + info.len)}`;
 }
 
 function normalizeIsoDateForSort(rawDate: string | undefined): string {
@@ -1840,46 +1888,53 @@ function parseSingleVoucherCode(
 
   const createdTs = Date.parse(seed.createdAt || '') || 0;
   const voucherDateKey = normalizeIsoDateForSort(seed.date);
+  const voucherDateYear = voucherDateKey ? parseInt(voucherDateKey.slice(0, 4), 10) || 0 : 0;
   const isExcelFallback = Boolean(seed.isExcelFallbackCandidate);
 
-  // Dạng 1 (phổ biến nhất): Tiền tố + Số thứ tự ở cuối (VD: PNK25-0019, PNK26-0001, PXK25-0005, PNK-012)
+  // Dạng 1 (phổ biến nhất): Tiền tố + Số thứ tự ở cuối (VD: PN-LP-2017-001, PNK25-0019, PXK25-0005, PNK-012)
   const trailingMatch = /^(.*?)(\d{1,8})$/.exec(raw);
   if (trailingMatch && trailingMatch[1].trim().length > 0) {
     const rawPrefix = trailingMatch[1].toUpperCase();
     const digits = trailingMatch[2];
     const num = parseInt(digits, 10);
     if (!isNaN(num) && num >= 0) {
+      const yearInfo = extractVoucherYearInfo(rawPrefix);
       return {
         mode: 'trailing',
         affix: rawPrefix,
         affixKey: `T:${rawPrefix}`,
         num,
         padLen: digits.length,
-        prefixYear: extractVoucherPrefixYear(rawPrefix),
+        prefixYear: yearInfo?.year || 0,
+        yearInfo,
         createdTs,
         voucherDateKey,
+        voucherDateYear,
         index,
         isExcelFallback
       };
     }
   }
 
-  // Dạng 2: Số thứ tự ở đầu + Hậu tố (VD: 0019/PNK, 005/PXK-2026)
+  // Dạng 2: Số thứ tự ở đầu + Hậu tố (VD: 0019/PNK, 005/PXK-2026, 005/PN-LP-2017)
   const leadingMatch = /^(\d{1,6})(\/[A-Za-z0-9_.-]+)$/.exec(raw);
   if (leadingMatch) {
     const digits = leadingMatch[1];
     const rawSuffix = leadingMatch[2].toUpperCase();
     const num = parseInt(digits, 10);
     if (!isNaN(num) && num >= 0) {
+      const yearInfo = extractVoucherYearInfo(rawSuffix);
       return {
         mode: 'leading',
         affix: rawSuffix,
         affixKey: `L:${rawSuffix}`,
         num,
         padLen: digits.length,
-        prefixYear: 0,
+        prefixYear: yearInfo?.year || 0,
+        yearInfo,
         createdTs,
         voucherDateKey,
+        voucherDateYear,
         index,
         isExcelFallback
       };
@@ -1907,25 +1962,33 @@ export function generateNextSequentialVoucherCode(
   }
 
   // Loại trừ các mã ngẫu nhiên 4 chữ số cũ do import Excel tự sinh (nếu có) để không làm nhảy vọt số thứ tự
-  const nonFallbackParsed = allParsed.filter((p) => !p.isExcelFallback);
-  const candidates = nonFallbackParsed;
+  const candidates = allParsed.filter((p) => !p.isExcelFallback);
 
-  if (candidates.length === 0) {
-    const normDate = normalizeIsoDateForSort(fallbackDateStr);
-    const yy = normDate
-      ? normDate.slice(2, 4)
-      : String(new Date().getFullYear()).slice(-2);
-    const prefix = `${defaultType}${yy}-`;
-    let seq = 1;
-    let candidate = `${prefix}${String(seq).padStart(4, '0')}`;
-    while (occupiedCodes.has(normKey(candidate))) {
+  const normTargetDate = normalizeIsoDateForSort(fallbackDateStr);
+  const parsedTargetYear = normTargetDate ? parseInt(normTargetDate.slice(0, 4), 10) || 0 : 0;
+  const targetYear = parsedTargetYear >= 1990 && parsedTargetYear <= 2099 ? parsedTargetYear : 0;
+  const effectiveDefaultYear = targetYear || new Date().getFullYear();
+
+  const formatUniqueFromAffix = (
+    mode: 'trailing' | 'leading',
+    affix: string,
+    startSeq: number,
+    padLen: number
+  ): string => {
+    const targetPad = Math.max(padLen, 1);
+    let seq = Math.max(1, startSeq);
+    const build = (n: number) => {
+      const numStr = String(n).padStart(targetPad, '0');
+      return mode === 'trailing' ? `${affix}${numStr}` : `${numStr}${affix}`;
+    };
+    let nextCode = build(seq);
+    while (occupiedCodes.has(normKey(nextCode))) {
       seq++;
-      candidate = `${prefix}${String(seq).padStart(4, '0')}`;
+      nextCode = build(seq);
     }
-    return candidate;
-  }
+    return nextCode;
+  };
 
-  // Gom nhóm theo bộ tiền tố/hậu tố (series) và chọn bộ số đang được sử dụng gần nhất
   interface SeriesStats {
     mode: 'trailing' | 'leading';
     affix: string;
@@ -1933,81 +1996,131 @@ export function generateNextSequentialVoucherCode(
     padLen: number;
     latestCreatedTs: number;
     prefixYear: number;
+    yearInfo: VoucherYearInfo | null;
     latestVoucherDate: string;
+    count: number;
     minIndex: number;
   }
 
-  const seriesMap = new Map<string, SeriesStats>();
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i];
-    const existing = seriesMap.get(c.affixKey);
-    if (!existing) {
-      seriesMap.set(c.affixKey, {
-        mode: c.mode,
-        affix: c.affix,
-        maxSeq: c.num,
-        padLen: c.padLen,
-        latestCreatedTs: c.createdTs,
-        prefixYear: c.prefixYear,
-        latestVoucherDate: c.voucherDateKey,
-        minIndex: c.index
-      });
-    } else {
-      if (c.num > existing.maxSeq) {
-        existing.maxSeq = c.num;
-      }
-      if (c.padLen > existing.padLen) {
-        existing.padLen = c.padLen;
-      }
-      if (c.createdTs > existing.latestCreatedTs) {
-        existing.latestCreatedTs = c.createdTs;
-      }
-      if (c.voucherDateKey > existing.latestVoucherDate) {
-        existing.latestVoucherDate = c.voucherDateKey;
-      }
-      if (c.index < existing.minIndex) {
-        existing.minIndex = c.index;
+  const buildSeriesList = (list: ParsedVoucherCode[]): SeriesStats[] => {
+    const map = new Map<string, SeriesStats>();
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      const existing = map.get(c.affixKey);
+      if (!existing) {
+        map.set(c.affixKey, {
+          mode: c.mode,
+          affix: c.affix,
+          maxSeq: c.num,
+          padLen: c.padLen,
+          latestCreatedTs: c.createdTs,
+          prefixYear: c.prefixYear,
+          yearInfo: c.yearInfo,
+          latestVoucherDate: c.voucherDateKey,
+          count: 1,
+          minIndex: c.index
+        });
+      } else {
+        existing.count++;
+        if (c.num > existing.maxSeq) existing.maxSeq = c.num;
+        if (c.padLen > existing.padLen) existing.padLen = c.padLen;
+        if (c.createdTs > existing.latestCreatedTs) existing.latestCreatedTs = c.createdTs;
+        if (c.voucherDateKey > existing.latestVoucherDate) {
+          existing.latestVoucherDate = c.voucherDateKey;
+        }
+        if (c.index < existing.minIndex) existing.minIndex = c.index;
       }
     }
-  }
-
-  let chosenSeries: SeriesStats | null = null;
-  seriesMap.forEach((stats) => {
-    if (!chosenSeries) {
-      chosenSeries = stats;
-      return;
-    }
-    if (stats.latestCreatedTs !== chosenSeries.latestCreatedTs) {
-      if (stats.latestCreatedTs > chosenSeries.latestCreatedTs) chosenSeries = stats;
-      return;
-    }
-    if (stats.prefixYear !== chosenSeries.prefixYear) {
-      if (stats.prefixYear > chosenSeries.prefixYear) chosenSeries = stats;
-      return;
-    }
-    if (stats.latestVoucherDate !== chosenSeries.latestVoucherDate) {
-      if (stats.latestVoucherDate > chosenSeries.latestVoucherDate) chosenSeries = stats;
-      return;
-    }
-    if (stats.minIndex < chosenSeries.minIndex) {
-      chosenSeries = stats;
-    }
-  });
-
-  const active = chosenSeries!;
-  const targetPad = Math.max(active.padLen, 1);
-  let nextSeq = active.maxSeq + 1;
-  const formatCandidate = (n: number) => {
-    const numStr = String(n).padStart(targetPad, '0');
-    return active.mode === 'trailing' ? `${active.affix}${numStr}` : `${numStr}${active.affix}`;
+    return Array.from(map.values());
   };
 
-  let nextCode = formatCandidate(nextSeq);
-  while (occupiedCodes.has(normKey(nextCode))) {
-    nextSeq++;
-    nextCode = formatCandidate(nextSeq);
+  // 1. Nếu có năm mục tiêu (VD: 2017 khi chọn Ngày lập phiếu trong năm 2017):
+  // Lọc các phiếu thuộc đúng năm đó (ưu tiên năm nhúng trong mã phiếu như PN-LP-2017-001, fallback theo năm của ngày phiếu)
+  const yearMatchedCandidates =
+    targetYear > 0
+      ? candidates.filter((c) => (c.prefixYear > 0 ? c.prefixYear : c.voucherDateYear) === targetYear)
+      : [];
+
+  if (yearMatchedCandidates.length > 0) {
+    const yearSeries = buildSeriesList(yearMatchedCandidates);
+    yearSeries.sort((a, b) => {
+      const aHasYear = a.prefixYear === targetYear ? 1 : 0;
+      const bHasYear = b.prefixYear === targetYear ? 1 : 0;
+      if (aHasYear !== bHasYear) return bHasYear - aHasYear;
+      if (a.latestVoucherDate !== b.latestVoucherDate) {
+        return b.latestVoucherDate.localeCompare(a.latestVoucherDate);
+      }
+      if (a.latestCreatedTs !== b.latestCreatedTs) return b.latestCreatedTs - a.latestCreatedTs;
+      if (a.count !== b.count) return b.count - a.count;
+      if (a.maxSeq !== b.maxSeq) return b.maxSeq - a.maxSeq;
+      return a.minIndex - b.minIndex;
+    });
+
+    const active = yearSeries[0];
+    return formatUniqueFromAffix(active.mode, active.affix, active.maxSeq + 1, active.padLen);
   }
-  return nextCode;
+
+  // 2. Chưa có phiếu nào thuộc targetYear -> kiểm tra mẫu từ các năm khác hoặc sinh chuẩn theo năm đó
+  if (candidates.length > 0) {
+    const allSeries = buildSeriesList(candidates);
+    if (targetYear > 0) {
+      // Ưu tiên mẫu phiếu có chứa mã dự án "-LP-" hoặc năm 4 chữ số (VD: PN-LP-2018-001 -> PN-LP-2017-001)
+      const fourDigitSeries = allSeries
+        .filter((s) => s.yearInfo && s.yearInfo.len === 4)
+        .sort((a, b) => {
+          const aLp = a.affix.includes('-LP-') ? 1 : 0;
+          const bLp = b.affix.includes('-LP-') ? 1 : 0;
+          if (aLp !== bLp) return bLp - aLp;
+          if (a.latestCreatedTs !== b.latestCreatedTs) return b.latestCreatedTs - a.latestCreatedTs;
+          return b.prefixYear - a.prefixYear;
+        });
+
+      if (fourDigitSeries.length > 0) {
+        const tmpl = fourDigitSeries[0];
+        const adaptedAffix = replaceAffixYear(tmpl.affix, tmpl.yearInfo!, targetYear);
+        return formatUniqueFromAffix(tmpl.mode, adaptedAffix, 1, Math.max(tmpl.padLen, 3));
+      }
+
+      // Nếu là Phiếu Nhập Kho cho năm cũ mà chưa có phiếu nào theo mẫu PN-LP-YYYY- -> dùng chuẩn Long Phú 1: PN-LP-<YEAR>-001
+      const currentCalendarYear = new Date().getFullYear();
+      if (defaultType === 'PNK' && targetYear < currentCalendarYear) {
+        return formatUniqueFromAffix('trailing', `PN-LP-${targetYear}-`, 1, 3);
+      }
+
+      // Nếu có mẫu năm 2 chữ số (VD: PNK25-) -> chuyển sang năm mới tương ứng
+      const twoDigitSeries = allSeries
+        .filter((s) => s.yearInfo && s.yearInfo.len === 2)
+        .sort((a, b) => {
+          if (a.latestCreatedTs !== b.latestCreatedTs) return b.latestCreatedTs - a.latestCreatedTs;
+          return b.prefixYear - a.prefixYear;
+        });
+
+      if (twoDigitSeries.length > 0) {
+        const tmpl = twoDigitSeries[0];
+        const adaptedAffix = replaceAffixYear(tmpl.affix, tmpl.yearInfo!, targetYear);
+        return formatUniqueFromAffix(tmpl.mode, adaptedAffix, 1, tmpl.padLen);
+      }
+    }
+
+    // Trường hợp không xác định năm mục tiêu hoặc toàn bộ series đều không gắn năm -> giữ logic kế tiếp trên series gần nhất
+    allSeries.sort((a, b) => {
+      if (a.latestCreatedTs !== b.latestCreatedTs) return b.latestCreatedTs - a.latestCreatedTs;
+      if (a.prefixYear !== b.prefixYear) return b.prefixYear - a.prefixYear;
+      if (a.latestVoucherDate !== b.latestVoucherDate) {
+        return b.latestVoucherDate.localeCompare(a.latestVoucherDate);
+      }
+      return a.minIndex - b.minIndex;
+    });
+    const active = allSeries[0];
+    return formatUniqueFromAffix(active.mode, active.affix, active.maxSeq + 1, active.padLen);
+  }
+
+  // 3. Hệ thống chưa có phiếu nào: nếu là PNK -> mặc định PN-LP-<YEAR>-001 (Long Phú 1), ngược lại dùng <TYPE><YY>-0001
+  if (defaultType === 'PNK') {
+    return formatUniqueFromAffix('trailing', `PN-LP-${effectiveDefaultYear}-`, 1, 3);
+  }
+  const yy = String(effectiveDefaultYear).slice(-2);
+  return formatUniqueFromAffix('trailing', `${defaultType}${yy}-`, 1, 4);
 }
 
 export function generateNextInboundVoucherCode(

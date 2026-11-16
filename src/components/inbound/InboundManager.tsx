@@ -947,6 +947,8 @@ export const InboundManager: React.FC = () => {
         /^PXK\d{2}-/i.test(s) ||
         /^PNK-/i.test(s) ||
         /^PXK-/i.test(s) ||
+        /^PN-(?:[A-Z0-9]+-)?\d{2,4}-/i.test(s) ||
+        /^PX-(?:[A-Z0-9]+-)?\d{2,4}-/i.test(s) ||
         /^OSD\d{2}-/i.test(s)
       );
     };
@@ -2110,7 +2112,7 @@ export const InboundManager: React.FC = () => {
                             setReceiptCode(generateNextPnkCode(latest, receiptDate));
                           }}
                           className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
-                          title="Tự động lấy số phiếu nhập kế tiếp"
+                          title="Tự động lấy số phiếu nhập kế tiếp theo năm lập phiếu"
                         >
                           <RefreshCw className="w-3 h-3" />
                           <span>Số kế tiếp</span>
@@ -2124,7 +2126,7 @@ export const InboundManager: React.FC = () => {
                         setIsCodeManuallyEdited(true);
                         setReceiptCode(e.target.value);
                       }}
-                      placeholder="PNK25-0019"
+                      placeholder="PN-LP-2017-001"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-blue-700 outline-none focus:border-blue-500"
                       required
                     />

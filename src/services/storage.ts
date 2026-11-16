@@ -594,6 +594,8 @@ function isVoucherCodeLike(val?: string | null): boolean {
     /^PXK\d{2}-/i.test(s) ||
     /^PNK-/i.test(s) ||
     /^PXK-/i.test(s) ||
+    /^PN-(?:[A-Z0-9]+-)?\d{2,4}-/i.test(s) ||
+    /^PX-(?:[A-Z0-9]+-)?\d{2,4}-/i.test(s) ||
     /^OSD\d{2}-/i.test(s) ||
     /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(s)
   );
