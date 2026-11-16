@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { Warehouse } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
+import { deriveWarehouseAbbrev } from '../../utils/additiveMerge';
 import { 
   Warehouse as WarehouseIcon, 
   Plus, 
@@ -32,6 +33,8 @@ export const WarehouseManager: React.FC = () => {
 
   // Form states
   const [code, setCode] = useState('');
+  const [shortCode, setShortCode] = useState('');
+  const [isShortCodeManual, setIsShortCodeManual] = useState(false);
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
   const [type, setType] = useState<Warehouse['type']>('covered');
@@ -61,6 +64,8 @@ export const WarehouseManager: React.FC = () => {
 
   const openAddModal = () => {
     setCode(`KB-${Date.now().toString().slice(-4)}`);
+    setShortCode('');
+    setIsShortCodeManual(false);
     setName('');
     setLocation('');
     setType('covered');
@@ -77,6 +82,8 @@ export const WarehouseManager: React.FC = () => {
   const openEditModal = (wh: Warehouse) => {
     setEditingWh(wh);
     setCode(wh.code);
+    setShortCode(wh.shortCode || '');
+    setIsShortCodeManual(Boolean(wh.shortCode));
     setName(wh.name);
     setLocation(wh.location);
     setType(wh.type);
@@ -101,8 +108,13 @@ export const WarehouseManager: React.FC = () => {
       return;
     }
 
+    const cleanShortCode =
+      shortCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '') ||
+      deriveWarehouseAbbrev({ name: name.trim(), code: code.trim() });
+
     StorageService.addWarehouse({
       code: code.trim().toUpperCase(),
+      shortCode: cleanShortCode,
       name: name.trim(),
       location: location.trim(),
       type,
@@ -127,7 +139,10 @@ export const WarehouseManager: React.FC = () => {
       return;
     }
 
+    const cleanShortCode = shortCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+
     StorageService.updateWarehouse(editingWh.id, {
+      shortCode: cleanShortCode || undefined,
       name: name.trim(),
       location: location.trim(),
       type,
@@ -251,9 +266,12 @@ export const WarehouseManager: React.FC = () => {
           <div key={w.id} className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm hover:shadow-md transition flex flex-col justify-between">
             <div>
               <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2.5 flex-wrap">
                   <div className="p-2 rounded-xl bg-slate-100 text-slate-700 font-mono font-bold text-xs border border-slate-200">
                     {w.code}
+                  </div>
+                  <div className="px-2 py-1 rounded-lg bg-blue-50 text-blue-700 font-mono font-bold text-[11px] border border-blue-200">
+                    Ký hiệu phiếu: {deriveWarehouseAbbrev(w)}
                   </div>
                   <h3 className="font-bold text-slate-900 text-base leading-snug">{w.name}</h3>
                 </div>
@@ -388,10 +406,33 @@ export const WarehouseManager: React.FC = () => {
                 <input
                   type="text"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="ví dụ: Kho Tổng Cát Lái 2"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setName(val);
+                    if (!isShortCodeManual) {
+                      setShortCode(val.trim() ? deriveWarehouseAbbrev({ name: val, code }) : '');
+                    }
+                  }}
+                  placeholder="ví dụ: Kho SBQT Long Thành"
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                   required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                  Mã viết tắt số phiếu (VD: LP, LT)
+                </label>
+                <input
+                  type="text"
+                  value={shortCode}
+                  onChange={(e) => {
+                    const raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    setIsShortCodeManual(Boolean(raw));
+                    setShortCode(raw);
+                  }}
+                  placeholder={`Tự động: ${deriveWarehouseAbbrev({ name, code })}`}
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono font-bold text-blue-700 uppercase"
                 />
               </div>
 
@@ -502,15 +543,33 @@ export const WarehouseManager: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveEdit} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Tên kho bãi (*)</label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  required
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Tên kho bãi (*)</label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                    Mã viết tắt số phiếu (VD: LP, LT)
+                  </label>
+                  <input
+                    type="text"
+                    value={shortCode}
+                    onChange={(e) => {
+                      const raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                      setIsShortCodeManual(Boolean(raw));
+                      setShortCode(raw);
+                    }}
+                    placeholder={`Tự động: ${deriveWarehouseAbbrev({ name, code })}`}
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono font-bold text-blue-700 uppercase"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

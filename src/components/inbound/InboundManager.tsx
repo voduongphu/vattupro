@@ -21,6 +21,7 @@ import {
   sumInboundItems,
   buildDeterministicItemId,
   generateNextInboundVoucherCode,
+  deriveWarehouseAbbrev,
   collectUsedMaterialCodeKeys,
   generateUniqueMaterialCode
 } from '../../utils/additiveMerge';
@@ -351,31 +352,43 @@ export const InboundManager: React.FC = () => {
 
   const generateNextPnkCode = (
     existingList: InboundReceipt[],
-    targetDateStr?: string
+    targetDateStr?: string,
+    targetWh?: Warehouse | null
   ): string => {
-    return generateNextInboundVoucherCode(existingList, targetDateStr);
+    return generateNextInboundVoucherCode(existingList, targetDateStr, targetWh);
   };
 
-  // Tự động nhảy sang số phiếu kế tiếp nếu có phiếu mới đồng bộ về khi đang mở form lập mới (chưa sửa tay số phiếu)
+  // Tự động nhảy sang số phiếu kế tiếp theo Kho đang chọn & Năm lập phiếu khi đang mở form lập mới
   useEffect(() => {
     if (!isCreateModalOpen || editingReceipt || isCodeManuallyEdited) return;
-    const nextCode = generateNextPnkCode(receipts, receiptDate);
+    const targetWh = warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
+    const nextCode = generateNextPnkCode(receipts, receiptDate, targetWh);
     setReceiptCode((prev) => (prev !== nextCode ? nextCode : prev));
-  }, [receipts, isCreateModalOpen, editingReceipt, isCodeManuallyEdited, receiptDate]);
+  }, [
+    receipts,
+    warehouses,
+    selectedWarehouseId,
+    isCreateModalOpen,
+    editingReceipt,
+    isCodeManuallyEdited,
+    receiptDate
+  ]);
 
   const openCreateModal = () => {
     StorageService.syncMaterialsFromReceipts();
     const mats = StorageService.getMaterials();
     const currentReceipts = StorageService.getInboundReceipts();
+    const whList = StorageService.getWarehouses();
+    const defaultWh = whList[0] || null;
     const todayDate = new Date().toISOString().slice(0, 10);
     setReceipts(currentReceipts);
+    setWarehouses(whList);
     setEditingReceipt(null);
     setMaterials(mats);
     setIsCodeManuallyEdited(false);
+    setSelectedWarehouseId(defaultWh?.id || '');
     setReceiptDate(todayDate);
-    setReceiptCode(generateNextPnkCode(currentReceipts, todayDate));
-    const whList = StorageService.getWarehouses();
-    setSelectedWarehouseId(whList[0]?.id || '');
+    setReceiptCode(generateNextPnkCode(currentReceipts, todayDate, defaultWh));
 
     setFormDepartmentName('');
     setFormDeliverer('');
@@ -778,7 +791,8 @@ export const InboundManager: React.FC = () => {
           ? customRcpCode.trim()
           : generateNextInboundVoucherCode(
               [...newReceipts, ...existingForAutoNumber],
-              normalizedGroupDate
+              normalizedGroupDate,
+              targetWh
             );
 
         const len = whItems.length;
@@ -2108,11 +2122,13 @@ export const InboundManager: React.FC = () => {
                           type="button"
                           onClick={() => {
                             const latest = StorageService.getInboundReceipts();
+                            const activeWh =
+                              warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
                             setIsCodeManuallyEdited(false);
-                            setReceiptCode(generateNextPnkCode(latest, receiptDate));
+                            setReceiptCode(generateNextPnkCode(latest, receiptDate, activeWh));
                           }}
                           className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
-                          title="Tự động lấy số phiếu nhập kế tiếp theo năm lập phiếu"
+                          title="Tự động lấy số phiếu nhập kế tiếp theo kho và năm lập phiếu"
                         >
                           <RefreshCw className="w-3 h-3" />
                           <span>Số kế tiếp</span>
@@ -2126,7 +2142,7 @@ export const InboundManager: React.FC = () => {
                         setIsCodeManuallyEdited(true);
                         setReceiptCode(e.target.value);
                       }}
-                      placeholder="PN-LP-2017-001"
+                      placeholder={`PN-${deriveWarehouseAbbrev(warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0])}-${(receiptDate || '').slice(0, 4) || new Date().getFullYear()}-001`}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-blue-700 outline-none focus:border-blue-500"
                       required
                     />

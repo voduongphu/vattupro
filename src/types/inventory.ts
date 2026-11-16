@@ -20,6 +20,7 @@ export interface User {
 export interface Warehouse {
   id: string;
   code: string; // Mã kho bãi (vd: KB-01, BAI-CANG...)
+  shortCode?: string; // Mã viết tắt lập số phiếu (vd: LP cho Long Phú 1, LT cho SBQT Long Thành)
   name: string; // Tên kho / bãi
   location: string; // Vị trí / Địa chỉ
   type: 'covered' | 'open_yard' | 'transit' | 'specialized'; // Loại kho

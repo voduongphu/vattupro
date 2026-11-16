@@ -326,7 +326,7 @@ export function computeMetaDigest(
   for (let i = 0; i < warehouses.length; i++) {
     const w = warehouses[i];
     const [h1, h2] = hashPair(
-      `W|${normKey(w.code)}|${w.id}|${w.name}|${w.location || ''}|${w.type}|${w.capacityAreaM2 || 0}|${w.capacityTons || 0}|${w.keeperName || ''}|${w.phone || ''}|${w.status}|${w.notes || ''}|${Number(w.updatedAt) || 0}`
+      `W|${normKey(w.code)}|${w.id}|${w.name}|${w.shortCode || ''}|${w.location || ''}|${w.type}|${w.capacityAreaM2 || 0}|${w.capacityTons || 0}|${w.keeperName || ''}|${w.phone || ''}|${w.status}|${w.notes || ''}|${Number(w.updatedAt) || 0}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -739,11 +739,13 @@ export function mergeWarehousesAdditive(
         result[existIdx] = { ...curr, ...inc, updatedAt: incTs };
         changed = true;
       } else {
+        const mergedShortCode = curr.shortCode || inc.shortCode;
         const mergedLocation = curr.location || inc.location;
         const mergedKeeper = curr.keeperName || inc.keeperName;
         const mergedPhone = curr.phone || inc.phone;
         const mergedNotes = curr.notes || inc.notes;
         if (
+          mergedShortCode !== curr.shortCode ||
           mergedLocation !== curr.location ||
           mergedKeeper !== curr.keeperName ||
           mergedPhone !== curr.phone ||
@@ -751,6 +753,7 @@ export function mergeWarehousesAdditive(
         ) {
           result[existIdx] = {
             ...curr,
+            shortCode: mergedShortCode,
             location: mergedLocation,
             keeperName: mergedKeeper,
             phone: mergedPhone,
@@ -1944,10 +1947,128 @@ function parseSingleVoucherCode(
   return null;
 }
 
+export interface VoucherNumberingOptions {
+  warehouseAbbrev?: string;
+  scopedSeeds?: VoucherCodeSeed[];
+}
+
+export function deriveWarehouseAbbrev(
+  wh?: Pick<Warehouse, 'shortCode' | 'name' | 'code'> | null
+): string {
+  if (!wh) return 'LP';
+  const explicit = (wh.shortCode || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  if (explicit) return explicit;
+
+  const foldedName = foldVietnameseAscii(wh.name || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (foldedName) {
+    const cleanedName = foldedName
+      .replace(
+        /\b(KHO BAI|KHO HANG|KHO VAT TU|KHO THIET BI|KHO CHUYEN DUNG|KHO TIEU CHUAN|KHO HOA CHAT|KHO LUU TRU|KHO TRUNG CHUYEN|KHO TONG|BAI TRUNG CHUYEN|BAI NGOAI TROI|BAI CANG)\b/g,
+        ' '
+      )
+      .replace(
+        /\b(SAN BAY QUOC TE|SAN BAY|SBQT|DU AN|CONG TRINH|TRUNG TAM|CHI NHANH|KHU VUC|NHA MAY|KHU CONG NGHIEP|KCN|CCN|VIET NAM)\b/g,
+        ' '
+      )
+      .replace(/^(?:(?:KHO|BAI|CANG)\s+)+/g, '')
+      .replace(/\s+(?:KHO|BAI|CANG)\s+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const effective =
+      cleanedName ||
+      foldedName.replace(/^(?:(?:KHO|BAI|CANG)\s+)+/g, '').trim() ||
+      foldedName;
+    const tokens = effective.split(' ').filter(Boolean);
+    const wordTokens = tokens.filter((t) => /[A-Z]/.test(t) && !/^\d+$/.test(t));
+
+    if (wordTokens.length >= 2) {
+      const initials = wordTokens
+        .map((t) => t[0])
+        .join('')
+        .slice(0, 6);
+      if (initials.length >= 2) return initials;
+    }
+
+    if (wordTokens.length === 1) {
+      const single = wordTokens[0];
+      const numSuffix = tokens.find((t) => /^\d+$/.test(t)) || '';
+      if (single.length <= 4) {
+        return `${single}${numSuffix}`.slice(0, 6);
+      }
+      return single.slice(0, 3);
+    }
+
+    const alphaNumOnly = effective.replace(/[^A-Z0-9]/g, '');
+    if (alphaNumOnly) return alphaNumOnly.slice(0, 4);
+  }
+
+  const rawCode = (wh.code || '').trim().toUpperCase();
+  if (rawCode) {
+    const strippedCode = rawCode
+      .replace(/^(KB|WH|KHO)[-_/\s]*/i, '')
+      .replace(/[^A-Z0-9]/g, '');
+    if (strippedCode && !/^\d+$/.test(strippedCode)) {
+      return strippedCode.slice(0, 6);
+    }
+    const cleanCode = rawCode.replace(/[^A-Z0-9]/g, '');
+    if (cleanCode) return cleanCode.slice(0, 6);
+  }
+
+  return 'KHO';
+}
+
+function isReceiptInWarehouse(
+  receipt: { warehouseId?: string; warehouseName?: string },
+  wh: Pick<Warehouse, 'id' | 'name'>
+): boolean {
+  if (wh.id && receipt.warehouseId && receipt.warehouseId === wh.id) return true;
+  if (
+    wh.name &&
+    receipt.warehouseName &&
+    normUserKey(receipt.warehouseName) === normUserKey(wh.name)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function resolveScopedWarehouseAbbrev(
+  scopedSeeds: VoucherCodeSeed[],
+  targetWarehouse?: Pick<Warehouse, 'shortCode' | 'name' | 'code'> | null
+): string | undefined {
+  if (!targetWarehouse) return undefined;
+  const explicit = (targetWarehouse.shortCode || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  if (explicit) return explicit;
+
+  // Nếu kho này đã có các phiếu theo chuẩn PN-<MÃ>-YYYY-... hoặc PX-<MÃ>-YYYY-..., ưu tiên kế thừa <MÃ> đó
+  for (let i = 0; i < scopedSeeds.length; i++) {
+    const raw = (scopedSeeds[i].code || '').trim().toUpperCase();
+    const m = /^(?:PN|PX|PNK|PXK)-([A-Z0-9]{1,8})-(?:19\d{2}|20\d{2}|\d{2})-/i.exec(raw);
+    if (m && m[1] && m[1] !== 'PL') {
+      return m[1].toUpperCase();
+    }
+  }
+
+  return deriveWarehouseAbbrev(targetWarehouse);
+}
+
 export function generateNextSequentialVoucherCode(
   seeds: VoucherCodeSeed[],
   defaultType: 'PNK' | 'PXK' | 'OSD',
-  fallbackDateStr?: string
+  fallbackDateStr?: string,
+  options?: VoucherNumberingOptions
 ): string {
   const occupiedCodes = new Set<string>();
   const allParsed: ParsedVoucherCode[] = [];
@@ -1961,13 +2082,30 @@ export function generateNextSequentialVoucherCode(
     }
   }
 
-  // Loại trừ các mã ngẫu nhiên 4 chữ số cũ do import Excel tự sinh (nếu có) để không làm nhảy vọt số thứ tự
-  const candidates = allParsed.filter((p) => !p.isExcelFallback);
+  // Nếu có danh sách phiếu lọc riêng theo Kho đang chọn, dùng danh sách đó để xác định series & số kế tiếp
+  const hasScopedWarehouse = Array.isArray(options?.scopedSeeds);
+  const scopedParsed: ParsedVoucherCode[] = [];
+  if (hasScopedWarehouse && options?.scopedSeeds) {
+    for (let i = 0; i < options.scopedSeeds.length; i++) {
+      const k = normKey(options.scopedSeeds[i].code);
+      if (k) occupiedCodes.add(k);
+      const parsed = parseSingleVoucherCode(options.scopedSeeds[i], i);
+      if (parsed && !parsed.isExcelFallback) {
+        scopedParsed.push(parsed);
+      }
+    }
+  }
+
+  const candidates = hasScopedWarehouse
+    ? scopedParsed
+    : allParsed.filter((p) => !p.isExcelFallback);
 
   const normTargetDate = normalizeIsoDateForSort(fallbackDateStr);
   const parsedTargetYear = normTargetDate ? parseInt(normTargetDate.slice(0, 4), 10) || 0 : 0;
   const targetYear = parsedTargetYear >= 1990 && parsedTargetYear <= 2099 ? parsedTargetYear : 0;
   const effectiveDefaultYear = targetYear || new Date().getFullYear();
+  const docPrefix = defaultType === 'PNK' ? 'PN' : defaultType === 'PXK' ? 'PX' : 'OSD';
+  const warehouseAbbrev = (options?.warehouseAbbrev || '').trim().toUpperCase();
 
   const formatUniqueFromAffix = (
     mode: 'trailing' | 'leading',
@@ -2035,7 +2173,7 @@ export function generateNextSequentialVoucherCode(
   };
 
   // 1. Nếu có năm mục tiêu (VD: 2017 khi chọn Ngày lập phiếu trong năm 2017):
-  // Lọc các phiếu thuộc đúng năm đó (ưu tiên năm nhúng trong mã phiếu như PN-LP-2017-001, fallback theo năm của ngày phiếu)
+  // Lọc các phiếu của kho đang chọn thuộc đúng năm đó
   const yearMatchedCandidates =
     targetYear > 0
       ? candidates.filter((c) => (c.prefixYear > 0 ? c.prefixYear : c.voucherDateYear) === targetYear)
@@ -2044,6 +2182,9 @@ export function generateNextSequentialVoucherCode(
   if (yearMatchedCandidates.length > 0) {
     const yearSeries = buildSeriesList(yearMatchedCandidates);
     yearSeries.sort((a, b) => {
+      const aHasAbbrev = warehouseAbbrev && a.affix.includes(`-${warehouseAbbrev}-`) ? 1 : 0;
+      const bHasAbbrev = warehouseAbbrev && b.affix.includes(`-${warehouseAbbrev}-`) ? 1 : 0;
+      if (aHasAbbrev !== bHasAbbrev) return bHasAbbrev - aHasAbbrev;
       const aHasYear = a.prefixYear === targetYear ? 1 : 0;
       const bHasYear = b.prefixYear === targetYear ? 1 : 0;
       if (aHasYear !== bHasYear) return bHasYear - aHasYear;
@@ -2060,17 +2201,16 @@ export function generateNextSequentialVoucherCode(
     return formatUniqueFromAffix(active.mode, active.affix, active.maxSeq + 1, active.padLen);
   }
 
-  // 2. Chưa có phiếu nào thuộc targetYear -> kiểm tra mẫu từ các năm khác hoặc sinh chuẩn theo năm đó
+  // 2. Kho hiện tại chưa có phiếu nào thuộc targetYear -> kiểm tra mẫu của chính kho đó ở các năm khác
   if (candidates.length > 0) {
     const allSeries = buildSeriesList(candidates);
     if (targetYear > 0) {
-      // Ưu tiên mẫu phiếu có chứa mã dự án "-LP-" hoặc năm 4 chữ số (VD: PN-LP-2018-001 -> PN-LP-2017-001)
       const fourDigitSeries = allSeries
         .filter((s) => s.yearInfo && s.yearInfo.len === 4)
         .sort((a, b) => {
-          const aLp = a.affix.includes('-LP-') ? 1 : 0;
-          const bLp = b.affix.includes('-LP-') ? 1 : 0;
-          if (aLp !== bLp) return bLp - aLp;
+          const aHasAbbrev = warehouseAbbrev && a.affix.includes(`-${warehouseAbbrev}-`) ? 1 : 0;
+          const bHasAbbrev = warehouseAbbrev && b.affix.includes(`-${warehouseAbbrev}-`) ? 1 : 0;
+          if (aHasAbbrev !== bHasAbbrev) return bHasAbbrev - aHasAbbrev;
           if (a.latestCreatedTs !== b.latestCreatedTs) return b.latestCreatedTs - a.latestCreatedTs;
           return b.prefixYear - a.prefixYear;
         });
@@ -2081,13 +2221,21 @@ export function generateNextSequentialVoucherCode(
         return formatUniqueFromAffix(tmpl.mode, adaptedAffix, 1, Math.max(tmpl.padLen, 3));
       }
 
-      // Nếu là Phiếu Nhập Kho cho năm cũ mà chưa có phiếu nào theo mẫu PN-LP-YYYY- -> dùng chuẩn Long Phú 1: PN-LP-<YEAR>-001
       const currentCalendarYear = new Date().getFullYear();
-      if (defaultType === 'PNK' && targetYear < currentCalendarYear) {
-        return formatUniqueFromAffix('trailing', `PN-LP-${targetYear}-`, 1, 3);
+      if (warehouseAbbrev && (targetYear < currentCalendarYear || defaultType === 'PNK' || defaultType === 'PXK')) {
+        // Nếu kho có quy ước 2 chữ số (PNK25/PXK25) và chọn năm mới/hiện tại mà không dùng -ABBREV-, chỉ giữ 2 chữ số khi không có warehouseAbbrev hoặc khi >= currentYear
+        const twoDigitMatch = allSeries.find((s) => s.yearInfo && s.yearInfo.len === 2);
+        if (twoDigitMatch && targetYear >= currentCalendarYear && !twoDigitMatch.affix.includes(`-${warehouseAbbrev}-`)) {
+          const adaptedAffix = replaceAffixYear(twoDigitMatch.affix, twoDigitMatch.yearInfo!, targetYear);
+          return formatUniqueFromAffix(twoDigitMatch.mode, adaptedAffix, 1, twoDigitMatch.padLen);
+        }
+        return formatUniqueFromAffix('trailing', `${docPrefix}-${warehouseAbbrev}-${targetYear}-`, 1, 3);
       }
 
-      // Nếu có mẫu năm 2 chữ số (VD: PNK25-) -> chuyển sang năm mới tương ứng
+      if (defaultType === 'PNK' && targetYear < currentCalendarYear) {
+        return formatUniqueFromAffix('trailing', `PN-${warehouseAbbrev || 'LP'}-${targetYear}-`, 1, 3);
+      }
+
       const twoDigitSeries = allSeries
         .filter((s) => s.yearInfo && s.yearInfo.len === 2)
         .sort((a, b) => {
@@ -2102,7 +2250,6 @@ export function generateNextSequentialVoucherCode(
       }
     }
 
-    // Trường hợp không xác định năm mục tiêu hoặc toàn bộ series đều không gắn năm -> giữ logic kế tiếp trên series gần nhất
     allSeries.sort((a, b) => {
       if (a.latestCreatedTs !== b.latestCreatedTs) return b.latestCreatedTs - a.latestCreatedTs;
       if (a.prefixYear !== b.prefixYear) return b.prefixYear - a.prefixYear;
@@ -2115,7 +2262,10 @@ export function generateNextSequentialVoucherCode(
     return formatUniqueFromAffix(active.mode, active.affix, active.maxSeq + 1, active.padLen);
   }
 
-  // 3. Hệ thống chưa có phiếu nào: nếu là PNK -> mặc định PN-LP-<YEAR>-001 (Long Phú 1), ngược lại dùng <TYPE><YY>-0001
+  // 3. Kho mới tạo hoặc kho chưa có phiếu nào: dùng chuẩn <PN|PX>-<MÃ_VIẾT_TẮT_KHO>-<NĂM>-001
+  if (warehouseAbbrev) {
+    return formatUniqueFromAffix('trailing', `${docPrefix}-${warehouseAbbrev}-${effectiveDefaultYear}-`, 1, 3);
+  }
   if (defaultType === 'PNK') {
     return formatUniqueFromAffix('trailing', `PN-LP-${effectiveDefaultYear}-`, 1, 3);
   }
@@ -2123,9 +2273,31 @@ export function generateNextSequentialVoucherCode(
   return formatUniqueFromAffix('trailing', `${defaultType}${yy}-`, 1, 4);
 }
 
+function buildInboundSeed(r: InboundReceipt, numSet: Set<number>): VoucherCodeSeed {
+  const rawCode = (r.receiptCode || '').trim();
+  const m = /^PNK\d{2}-([1-9]\d{3})$/i.exec(rawCode);
+  const num = m ? parseInt(m[1], 10) : 0;
+  const isIsolatedRandomExcel =
+    Boolean(m) &&
+    r.packingListNo === 'PL-EXCEL' &&
+    r.shipment === 'SHP-EXCEL' &&
+    !numSet.has(num - 1) &&
+    !numSet.has(1);
+
+  return {
+    code: rawCode,
+    date: r.receiptDate,
+    createdAt: r.createdAt,
+    lastEditedAt: r.lastEditedAt,
+    updatedAt: r.updatedAt,
+    isExcelFallbackCandidate: isIsolatedRandomExcel
+  };
+}
+
 export function generateNextInboundVoucherCode(
   receipts: InboundReceipt[],
-  fallbackDateStr?: string
+  fallbackDateStr?: string,
+  targetWarehouse?: Pick<Warehouse, 'id' | 'code' | 'name' | 'shortCode'> | null
 ): string {
   // Kiểm tra các số xuất hiện để nhận diện mã ngẫu nhiên cũ từ Excel (PL-EXCEL + SHP-EXCEL + 4 chữ số ngẫu nhiên >= 1000)
   const numSet = new Set<number>();
@@ -2134,33 +2306,47 @@ export function generateNextInboundVoucherCode(
     if (m) numSet.add(parseInt(m[1], 10));
   }
 
-  const seeds: VoucherCodeSeed[] = receipts.map((r) => {
-    const rawCode = (r.receiptCode || '').trim();
-    const m = /^PNK\d{2}-([1-9]\d{3})$/i.exec(rawCode);
-    const num = m ? parseInt(m[1], 10) : 0;
-    const isIsolatedRandomExcel =
-      Boolean(m) &&
-      r.packingListNo === 'PL-EXCEL' &&
-      r.shipment === 'SHP-EXCEL' &&
-      !numSet.has(num - 1) &&
-      !numSet.has(1);
+  const allSeeds: VoucherCodeSeed[] = receipts.map((r) => buildInboundSeed(r, numSet));
 
-    return {
-      code: rawCode,
-      date: r.receiptDate,
-      createdAt: r.createdAt,
-      lastEditedAt: r.lastEditedAt,
-      updatedAt: r.updatedAt,
-      isExcelFallbackCandidate: isIsolatedRandomExcel
-    };
-  });
+  if (targetWarehouse) {
+    const scopedReceipts = receipts.filter((r) => isReceiptInWarehouse(r, targetWarehouse));
+    const scopedSeeds = scopedReceipts.map((r) => buildInboundSeed(r, numSet));
+    const abbrev = resolveScopedWarehouseAbbrev(scopedSeeds, targetWarehouse);
+    return generateNextSequentialVoucherCode(allSeeds, 'PNK', fallbackDateStr, {
+      warehouseAbbrev: abbrev,
+      scopedSeeds
+    });
+  }
 
-  return generateNextSequentialVoucherCode(seeds, 'PNK', fallbackDateStr);
+  return generateNextSequentialVoucherCode(allSeeds, 'PNK', fallbackDateStr);
+}
+
+function buildOutboundSeed(r: OutboundReceipt, numSet: Set<number>): VoucherCodeSeed {
+  const rawCode = (r.issueCode || '').trim();
+  const m = /^PXK\d{2}-([1-9]\d{3})$/i.exec(rawCode);
+  const num = m ? parseInt(m[1], 10) : 0;
+  const firstItem = r.items?.[0];
+  const isIsolatedRandomExcel =
+    Boolean(m) &&
+    firstItem?.packingListNo === 'PL-EXCEL-01' &&
+    firstItem?.shipment === 'SHP-EXCEL' &&
+    !numSet.has(num - 1) &&
+    !numSet.has(1);
+
+  return {
+    code: rawCode,
+    date: r.issueDate,
+    createdAt: r.createdAt,
+    lastEditedAt: r.lastEditedAt,
+    updatedAt: r.updatedAt,
+    isExcelFallbackCandidate: isIsolatedRandomExcel
+  };
 }
 
 export function generateNextOutboundVoucherCode(
   receipts: OutboundReceipt[],
-  fallbackDateStr?: string
+  fallbackDateStr?: string,
+  targetWarehouse?: Pick<Warehouse, 'id' | 'code' | 'name' | 'shortCode'> | null
 ): string {
   const numSet = new Set<number>();
   for (let i = 0; i < receipts.length; i++) {
@@ -2168,29 +2354,19 @@ export function generateNextOutboundVoucherCode(
     if (m) numSet.add(parseInt(m[1], 10));
   }
 
-  const seeds: VoucherCodeSeed[] = receipts.map((r) => {
-    const rawCode = (r.issueCode || '').trim();
-    const m = /^PXK\d{2}-([1-9]\d{3})$/i.exec(rawCode);
-    const num = m ? parseInt(m[1], 10) : 0;
-    const firstItem = r.items?.[0];
-    const isIsolatedRandomExcel =
-      Boolean(m) &&
-      firstItem?.packingListNo === 'PL-EXCEL-01' &&
-      firstItem?.shipment === 'SHP-EXCEL' &&
-      !numSet.has(num - 1) &&
-      !numSet.has(1);
+  const allSeeds: VoucherCodeSeed[] = receipts.map((r) => buildOutboundSeed(r, numSet));
 
-    return {
-      code: rawCode,
-      date: r.issueDate,
-      createdAt: r.createdAt,
-      lastEditedAt: r.lastEditedAt,
-      updatedAt: r.updatedAt,
-      isExcelFallbackCandidate: isIsolatedRandomExcel
-    };
-  });
+  if (targetWarehouse) {
+    const scopedReceipts = receipts.filter((r) => isReceiptInWarehouse(r, targetWarehouse));
+    const scopedSeeds = scopedReceipts.map((r) => buildOutboundSeed(r, numSet));
+    const abbrev = resolveScopedWarehouseAbbrev(scopedSeeds, targetWarehouse);
+    return generateNextSequentialVoucherCode(allSeeds, 'PXK', fallbackDateStr, {
+      warehouseAbbrev: abbrev,
+      scopedSeeds
+    });
+  }
 
-  return generateNextSequentialVoucherCode(seeds, 'PXK', fallbackDateStr);
+  return generateNextSequentialVoucherCode(allSeeds, 'PXK', fallbackDateStr);
 }
 
 export function generateNextOsdVoucherCode(

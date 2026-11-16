@@ -26,6 +26,7 @@ import {
   sumOutboundItems,
   buildDeterministicItemId,
   generateNextOutboundVoucherCode,
+  deriveWarehouseAbbrev,
   collectUsedMaterialCodeKeys,
   generateUniqueMaterialCode
 } from '../../utils/additiveMerge';
@@ -244,17 +245,27 @@ export const OutboundManager: React.FC = () => {
 
   const generateNextPxkCode = (
     existingList: OutboundReceipt[],
-    targetDateStr?: string
+    targetDateStr?: string,
+    targetWh?: Warehouse | null
   ): string => {
-    return generateNextOutboundVoucherCode(existingList, targetDateStr);
+    return generateNextOutboundVoucherCode(existingList, targetDateStr, targetWh);
   };
 
-  // Tự động nhảy sang số phiếu kế tiếp nếu có phiếu mới đồng bộ về khi đang mở form lập mới (chưa sửa tay số phiếu)
+  // Tự động nhảy sang số phiếu kế tiếp theo Kho đang chọn & Năm lập phiếu khi đang mở form lập mới
   useEffect(() => {
     if (!isCreateModalOpen || editingReceipt || isCodeManuallyEdited) return;
-    const nextCode = generateNextPxkCode(receipts, issueDate);
+    const targetWh = warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
+    const nextCode = generateNextPxkCode(receipts, issueDate, targetWh);
     setIssueCode((prev) => (prev !== nextCode ? nextCode : prev));
-  }, [receipts, isCreateModalOpen, editingReceipt, isCodeManuallyEdited, issueDate]);
+  }, [
+    receipts,
+    warehouses,
+    selectedWarehouseId,
+    isCreateModalOpen,
+    editingReceipt,
+    isCodeManuallyEdited,
+    issueDate
+  ]);
 
   const openStockPicker = () => {
     const baseStock = StorageService.calculateInventoryRecords().map((r) => ({ ...r }));
@@ -289,17 +300,18 @@ export const OutboundManager: React.FC = () => {
 
   const openCreateModal = () => {
     const currentReceipts = StorageService.getOutboundReceipts();
+    const whList = StorageService.getWarehouses();
+    const defaultWhObj = whList[0] || null;
     const todayDate = new Date().toISOString().slice(0, 10);
     setReceipts(currentReceipts);
+    setWarehouses(whList);
     setEditingReceipt(null);
     setMaterials(StorageService.getMaterials());
     setStockRecords(StorageService.calculateInventoryRecords().map((r) => ({ ...r })));
     setIsCodeManuallyEdited(false);
+    setSelectedWarehouseId(defaultWhObj?.id || '');
     setIssueDate(todayDate);
-    setIssueCode(generateNextPxkCode(currentReceipts, todayDate));
-    const whList = StorageService.getWarehouses();
-    const defaultWh = whList[0]?.id || '';
-    setSelectedWarehouseId(defaultWh);
+    setIssueCode(generateNextPxkCode(currentReceipts, todayDate, defaultWhObj));
 
     setFormDepartmentName('');
     setRecipientName('');
@@ -716,7 +728,8 @@ export const OutboundManager: React.FC = () => {
           ? customCode.trim()
           : generateNextOutboundVoucherCode(
               [...newReceipts, ...existingForAutoNumber],
-              normalizedGroupDate
+              normalizedGroupDate,
+              targetWh
             );
 
         const len = whItems.length;
@@ -1928,11 +1941,13 @@ export const OutboundManager: React.FC = () => {
                           type="button"
                           onClick={() => {
                             const latest = StorageService.getOutboundReceipts();
+                            const activeWh =
+                              warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
                             setIsCodeManuallyEdited(false);
-                            setIssueCode(generateNextPxkCode(latest, issueDate));
+                            setIssueCode(generateNextPxkCode(latest, issueDate, activeWh));
                           }}
                           className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
-                          title="Tự động lấy số phiếu xuất kế tiếp"
+                          title="Tự động lấy số phiếu xuất kế tiếp theo kho và năm lập phiếu"
                         >
                           <RefreshCw className="w-3 h-3" />
                           <span>Số kế tiếp</span>
@@ -1946,7 +1961,7 @@ export const OutboundManager: React.FC = () => {
                         setIsCodeManuallyEdited(true);
                         setIssueCode(e.target.value);
                       }}
-                      placeholder="PXK25-0001"
+                      placeholder={`PX-${deriveWarehouseAbbrev(warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0])}-${(issueDate || '').slice(0, 4) || new Date().getFullYear()}-001`}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-rose-700 outline-none focus:border-blue-500"
                       required
                     />

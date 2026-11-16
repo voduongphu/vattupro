@@ -664,6 +664,7 @@ function serializeWarehousePublic(w: Warehouse): Record<string, any> {
   return {
     id: cleanStr(w.id, 120, `wh-${Date.now()}`),
     code: cleanStr(w.code, 100, 'WH'),
+    shortCode: cleanStr(w.shortCode, 32, ''),
     name: cleanStr(w.name, 200, 'Kho vật tư'),
     location: cleanStr(w.location, 300, ''),
     type: ['covered', 'open_yard', 'transit', 'specialized'].includes(w.type) ? w.type : 'covered',
@@ -681,6 +682,7 @@ function deserializeWarehousePublic(m: Record<string, any>): Warehouse {
   return {
     id: cleanStr(m.id, 120, 'wh-0'),
     code: cleanStr(m.code, 100, 'WH'),
+    shortCode: cleanStr(m.shortCode, 32, '') || undefined,
     name: cleanStr(m.name, 200, 'Kho vật tư'),
     location: cleanStr(m.location, 300, ''),
     type: ['covered', 'open_yard', 'transit', 'specialized'].includes(m.type) ? m.type : 'covered',
