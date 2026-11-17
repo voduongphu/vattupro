@@ -33,7 +33,7 @@ import { StorageService } from '../../services/storage';
 import { SyncService } from '../../services/syncService';
 
 export const UserManager: React.FC = () => {
-  const { users, isAdmin, addUser, updateUser, deleteUser } = useAuth();
+  const { users, currentUser, isAdmin, addUser, updateUser, deleteUser } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRole, setSelectedRole] = useState<string>('all');
   const [warehouses, setWarehouses] = useState<Warehouse[]>(() => StorageService.getWarehouses());
@@ -299,8 +299,20 @@ export const UserManager: React.FC = () => {
     setUserToDelete(null);
   };
 
+  const visibleUsers = isAdmin
+    ? users
+    : users.filter((u) => {
+        if (isUserAdmin(u)) return true;
+        if (!currentUser) return false;
+        return (
+          u.id === currentUser.id ||
+          normUserKey(u.username) === normUserKey(currentUser.username) ||
+          (Boolean(currentUser.emailDigest) && u.emailDigest === currentUser.emailDigest)
+        );
+      });
+
   const normalizedSearch = searchTerm.normalize('NFC').toLowerCase();
-  const filteredUsers = users.filter((u) => {
+  const filteredUsers = visibleUsers.filter((u) => {
     const matchesSearch =
       u.fullName.normalize('NFC').toLowerCase().includes(normalizedSearch) ||
       (u.email && u.email.toLowerCase().includes(normalizedSearch)) ||
@@ -471,7 +483,7 @@ export const UserManager: React.FC = () => {
             onChange={(e) => setSelectedRole(e.target.value)}
             className="flex-1 sm:flex-initial px-3 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
           >
-            <option value="all">Tất cả vai trò ({users.length})</option>
+            <option value="all">Tất cả vai trò ({visibleUsers.length})</option>
             <option value="admin">Quản Trị Viên (Admin)</option>
             <option value="manager">Quản Lý Kho</option>
             <option value="staff">Thủ Kho / Nhân Viên</option>
