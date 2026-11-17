@@ -73,7 +73,7 @@ export const MaterialCatalog: React.FC = () => {
   };
 
   useEffect(() => {
-    StorageService.syncMaterialsFromReceipts({ emitMutation: true });
+    StorageService.syncMaterialsFromReceipts({ emitMutation: false });
     loadMaterials();
     return StorageService.subscribe(loadMaterials);
   }, []);

@@ -135,6 +135,7 @@ let activeReconcilePromise: Promise<{
   cloudQuotaExceeded?: boolean;
   error?: string;
 }> | null = null;
+let pushOsdInFlightPromise: Promise<{ success: boolean; error?: string }> | null = null;
 let isVerifyingSession = false;
 let authTransitionCount = 0;
 let metaDirty = false;
@@ -1125,7 +1126,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
       notifyOsdListeners(StorageService.getOsdReceipts());
     }
     lastKnownOsdRev = Math.max(lastKnownOsdRev, Number((manifest as any).osdRevision) || 0);
-    if (osdChanged && (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())) {
+    if (osdChanged && !FirestoreSyncService.isCloudConnected() && FirestoreSyncService.hasAuthenticatedCloudUser()) {
       void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
     }
   }
@@ -1301,7 +1302,11 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   return pulledChanges;
 }
 
-async function reconcileInternal(options?: { forceManifestRefresh?: boolean }): Promise<{
+async function reconcileInternal(options?: {
+  forceManifestRefresh?: boolean;
+  skipLocalServer?: boolean;
+  trigger?: 'mutation' | 'remote' | 'startup' | 'manual';
+}): Promise<{
   cloudSuccess: boolean;
   localSuccess: boolean;
   pulledChanges?: boolean;
@@ -1309,6 +1314,11 @@ async function reconcileInternal(options?: { forceManifestRefresh?: boolean }): 
   cloudQuotaExceeded?: boolean;
   error?: string;
 }> {
+  if (pushDebounceTimer) {
+    clearTimeout(pushDebounceTimer);
+    pushDebounceTimer = null;
+  }
+
   // Chỉ chạy đồng bộ khi người dùng đã đăng nhập (tránh việc thiết bị vừa xóa cache chưa login đẩy data rỗng)
   if (!getStoredUnifiedSession() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
     return {
@@ -1330,8 +1340,17 @@ async function reconcileInternal(options?: { forceManifestRefresh?: boolean }): 
   }
 
   if (isReconciling && activeReconcilePromise) {
-    pendingReconcile = true;
-    if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    const hasPendingTrigger =
+      Boolean(options?.forceManifestRefresh) ||
+      options?.trigger === 'mutation' ||
+      options?.trigger === 'remote' ||
+      metaDirty ||
+      materialsDirty ||
+      localReceiptsDirty;
+    if (hasPendingTrigger) {
+      pendingReconcile = true;
+      if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    }
     return await activeReconcilePromise;
   }
 
@@ -1373,15 +1392,20 @@ async function reconcileInternal(options?: { forceManifestRefresh?: boolean }): 
         cloudQuotaExceeded = Boolean(cloudRes.quotaExceeded || FirestoreSyncService.isQuotaExhausted());
         if (cloudRes.ok) {
           updateNetworkStatus(true);
+          metaDirty = false;
+          materialsDirty = false;
+          localReceiptsDirty = false;
         } else if (cloudRes.errorMessage) {
           syncError = cloudRes.errorMessage;
         }
-        // Bắc cầu đồng bộ OSD và Meta xuống máy chủ cục bộ /api/sync để thiết bị khác dùng tài khoản nội bộ cũng nhận được
-        try {
-          await reconcileLocalServerOnly();
-          localSuccess = true;
-        } catch {
-          // bỏ qua nếu máy chủ cục bộ không khả dụng
+        // Chỉ bắc cầu sang máy chủ cục bộ /api/sync nếu không yêu cầu bỏ qua máy chủ cục bộ
+        if (!options?.skipLocalServer && (pulledChanges || pushedChanges || !hasCompletedInitialLocalSync)) {
+          try {
+            await reconcileLocalServerOnly();
+            localSuccess = true;
+          } catch {
+            // bỏ qua nếu máy chủ cục bộ không khả dụng
+          }
         }
       } else {
         if (FirestoreSyncService.isQuotaExhausted()) {
@@ -1415,7 +1439,10 @@ async function reconcileInternal(options?: { forceManifestRefresh?: boolean }): 
         if (authTransitionCount === 0) {
           pendingReconcile = false;
           pendingForceManifestRefresh = false;
-          void reconcileInternal({ forceManifestRefresh: followUpForce });
+          void reconcileInternal({
+            forceManifestRefresh: followUpForce,
+            skipLocalServer: options?.skipLocalServer
+          });
         } else {
           schedulePush(180);
         }
@@ -1439,7 +1466,7 @@ async function reconcileInternal(options?: { forceManifestRefresh?: boolean }): 
 function schedulePush(delayMs = 350): void {
   if (pushDebounceTimer) clearTimeout(pushDebounceTimer);
   pushDebounceTimer = setTimeout(() => {
-    void reconcileInternal();
+    void reconcileInternal({ trigger: 'mutation' });
   }, delayMs);
 }
 
@@ -1695,7 +1722,7 @@ export const SyncService = {
             getStoredUnifiedSession()?.session.sessionToken === token
         ),
       onRemoteWorkspaceChange: () => {
-        void reconcileInternal();
+        void reconcileInternal({ trigger: 'remote', skipLocalServer: true });
       },
       onRemoteOsdChange: (remoteOsd) => {
         if (Array.isArray(remoteOsd)) {
@@ -1703,20 +1730,6 @@ export const SyncService = {
         }
         const currentList = StorageService.getOsdReceipts();
         notifyOsdListeners(currentList);
-        // Bắc cầu: Đẩy dữ liệu OSD từ Cloud Firestore sang máy chủ /api/sync/osd để các thiết bị khác nhận được tức thì
-        void fetchJson<{ ok: boolean; osdRevision: number }>('/api/sync/osd', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            clientId: CLIENT_ID,
-            osd: currentList,
-            tombstones: StorageService.getTombstones().osd || {}
-          })
-        }).then((res) => {
-          if (res.ok) {
-            lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
-          }
-        }).catch(() => {});
       },
       onRemoteSessionSnapshot: (remoteData) => {
         if (authTransitionCount > 0) return;
@@ -1780,7 +1793,7 @@ export const SyncService = {
       }
     });
 
-    StorageService.onLocalMutation((kind) => {
+    StorageService.onLocalMutation((kind, codes, details) => {
       if (kind === 'materials') {
         materialsDirty = true;
       } else if (kind === 'meta' || kind === 'osd') {
@@ -1788,7 +1801,7 @@ export const SyncService = {
       } else if (kind === 'inbound' || kind === 'outbound') {
         localReceiptsDirty = true;
       }
-      FirestoreSyncService.markLocalMutation(kind);
+      FirestoreSyncService.markLocalMutation(kind, codes, details);
       if (kind === 'osd') {
         notifyOsdListeners(StorageService.getOsdReceipts());
         try {
@@ -1799,7 +1812,12 @@ export const SyncService = {
         } catch {
           // ignore
         }
-        FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+        if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+          void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+        } else {
+          schedulePush(350);
+        }
+        return;
       }
       // Debounce gom cụm các đột biến liên tiếp (nhất là khi import hàng loạt ~1000 dòng)
       schedulePush(350);
@@ -1815,7 +1833,7 @@ export const SyncService = {
       void verifySessionHeartbeat(true);
     }
     setTimeout(() => {
-      void reconcileInternal();
+      void reconcileInternal({ trigger: 'startup' });
     }, 80);
 
     if (typeof window !== 'undefined') {
@@ -1970,71 +1988,17 @@ export const SyncService = {
       const currentSess = getStoredUnifiedSession();
       const isCloudSessionMode =
         FirestoreSyncService.isCloudConnected() ||
+        FirestoreSyncService.hasAuthenticatedCloudUser() ||
         Boolean(currentSess?.session.sessionToken.startsWith('cloud.'));
 
-      // Chạy SONG SONG các luồng đồng bộ độc lập để TỐI ĐA HÓA TỐC ĐỘ:
       const syncTasks: Promise<any>[] = [
-        // 1. Đồng bộ chuyên biệt OSD 2 chiều qua /api/sync/osd
-        (async () => {
-          try {
-            const localOsd = StorageService.getOsdReceipts();
-            const localTombstones = StorageService.getTombstones();
-            const res = await fetchJson<{
-              ok: boolean;
-              osdRevision: number;
-              osd: OsdReceipt[];
-              tombstones?: Record<string, number>;
-            }>('/api/sync/osd', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                clientId: CLIENT_ID,
-                osd: localOsd,
-                tombstones: localTombstones.osd || {}
-              })
-            });
-
-            if (res.ok && Array.isArray(res.osd)) {
-              const pulledFromLocal = StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
-              if (res.tombstones && typeof res.tombstones === 'object') {
-                const tombs = StorageService.getTombstones();
-                tombs.osd = { ...(tombs.osd || {}), ...res.tombstones };
-                StorageService.saveTombstones(tombs);
-              }
-              if (pulledFromLocal) {
-                notifyOsdListeners(StorageService.getOsdReceipts());
-                FirestoreSyncService.markLocalMutation('osd');
-                if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
-                  void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
-                }
-              }
-              serverOk = true;
-              lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
-            }
-          } catch {
-            // Fallback GET nhanh
-            try {
-              const fb = await fetchJson<{ ok: boolean; osd: OsdReceipt[] }>('/api/sync/osd');
-              if (fb.ok && Array.isArray(fb.osd)) {
-                const pulledFromLocal = StorageService.applyRemoteOsdReceipts(fb.osd, this.getActorId());
-                if (pulledFromLocal) {
-                  notifyOsdListeners(StorageService.getOsdReceipts());
-                  FirestoreSyncService.markLocalMutation('osd');
-                  if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
-                    void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
-                  }
-                }
-                serverOk = true;
-              }
-            } catch {}
-          }
-        })(),
-
-        // 2. Đồng bộ dữ liệu thay đổi (Người dùng, Kho bãi, Vật tư, Phiếu nhập xuất)
+        // Đồng bộ dữ liệu thay đổi theo từng miền (Cloud Firestore hoặc Server nội bộ)
         (async () => {
           try {
             const reconRes = await reconcileInternal({
-              forceManifestRefresh: Boolean(options?.forceManifestRefresh)
+              forceManifestRefresh: Boolean(options?.forceManifestRefresh),
+              skipLocalServer: isCloudSessionMode,
+              trigger: 'manual'
             });
             if (reconRes.cloudSuccess) cloudOk = true;
             if (reconRes.localSuccess) serverOk = true;
@@ -2046,26 +2010,56 @@ export const SyncService = {
         })()
       ];
 
-      // Chỉ kiểm tra nhịp tim phiên thủ công khi không dùng onSnapshot của Cloud Firestore
+      // Chỉ đồng bộ thêm /api/sync/osd & nhịp tim HTTP khi không ở chế độ Cloud Firestore
       if (!isCloudSessionMode) {
-        syncTasks.push(verifySessionHeartbeat(true).catch(() => {}));
-      }
-
-      // Chỉ đẩy OSD lên Cloud Firestore khi thực sự có thay đổi OSD chưa đồng bộ
-      if (
-        (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) &&
-        FirestoreSyncService.hasPendingOsdPush()
-      ) {
         syncTasks.push(
-          FirestoreSyncService.pushOsdRealtimeToCloud()
-            .then((ok) => {
-              if (ok) {
-                cloudOk = true;
-                pushedChanges = true;
+          (async () => {
+            try {
+              const localOsd = StorageService.getOsdReceipts();
+              const localTombstones = StorageService.getTombstones();
+              const res = await fetchJson<{
+                ok: boolean;
+                osdRevision: number;
+                osd: OsdReceipt[];
+                tombstones?: Record<string, number>;
+              }>('/api/sync/osd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  clientId: CLIENT_ID,
+                  osd: localOsd,
+                  tombstones: localTombstones.osd || {}
+                })
+              });
+
+              if (res.ok && Array.isArray(res.osd)) {
+                const pulledFromLocal = StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
+                if (res.tombstones && typeof res.tombstones === 'object') {
+                  const tombs = StorageService.getTombstones();
+                  tombs.osd = { ...(tombs.osd || {}), ...res.tombstones };
+                  StorageService.saveTombstones(tombs);
+                }
+                if (pulledFromLocal) {
+                  notifyOsdListeners(StorageService.getOsdReceipts());
+                }
+                serverOk = true;
+                lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
               }
-            })
-            .catch(() => {})
+            } catch {
+              try {
+                const fb = await fetchJson<{ ok: boolean; osd: OsdReceipt[] }>('/api/sync/osd');
+                if (fb.ok && Array.isArray(fb.osd)) {
+                  const pulledFromLocal = StorageService.applyRemoteOsdReceipts(fb.osd, this.getActorId());
+                  if (pulledFromLocal) {
+                    notifyOsdListeners(StorageService.getOsdReceipts());
+                  }
+                  serverOk = true;
+                }
+              } catch {}
+            }
+          })()
         );
+        syncTasks.push(verifySessionHeartbeat(true).catch(() => {}));
       }
 
       await Promise.all(syncTasks);
@@ -2107,7 +2101,7 @@ export const SyncService = {
 
       return {
         success: true,
-        message: `Đồng bộ toàn bộ dữ liệu & OSD thành công (${finalOsdCount} biên bản OSD, ${finalMatCount} vật tư)!`,
+        message: `Đồng bộ dữ liệu & OSD thành công (${finalOsdCount} biên bản OSD, ${finalMatCount} vật tư)!`,
         cloudSynced: cloudOk,
         localSynced: serverOk,
         pulledChanges,
@@ -2135,6 +2129,11 @@ export const SyncService = {
         message: 'Thiết bị đang ngoại tuyến. Vui lòng kiểm tra kết nối mạng và thử lại.',
         osdCount: StorageService.getOsdReceipts().length
       };
+    }
+
+    if (pushDebounceTimer) {
+      clearTimeout(pushDebounceTimer);
+      pushDebounceTimer = null;
     }
 
     // Cho phép thử kết nối lại ngay khi người dùng bấm nút Đồng Bộ Cloud thủ công
@@ -2168,94 +2167,118 @@ export const SyncService = {
       return {
         success: true,
         cloudSynced: true,
-        message: 'Đã kết nối & đồng bộ dữ liệu từ Cloud Firestore thành công!',
+        message: 'Đã kết nối & đồng bộ dữ liệu thay đổi từ Cloud Firestore thành công!',
         osdCount: StorageService.getOsdReceipts().length
       };
     }
 
-    const res = await this.syncNow({ forceManifestRefresh: true, requireCloud: true });
-    if (!res.success || !res.cloudSynced) {
+    const reconRes = await reconcileInternal({
+      forceManifestRefresh: true,
+      skipLocalServer: true,
+      trigger: 'manual'
+    });
+    const osdCount = StorageService.getOsdReceipts().length;
+    if (!reconRes.cloudSuccess) {
       const cloudState = FirestoreSyncService.getState();
-      if (res.quotaExceeded || cloudState.quotaExceeded || FirestoreSyncService.isQuotaExhausted()) {
+      if (reconRes.cloudQuotaExceeded || cloudState.quotaExceeded || FirestoreSyncService.isQuotaExhausted()) {
         return {
           success: false,
           quotaExceeded: true,
           cloudSynced: false,
-          localSynced: res.localSynced,
+          localSynced: reconRes.localSuccess,
           error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
-          message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+          message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
+          osdCount
         };
       }
       const errMsg =
-        res.error ||
-        res.message ||
+        reconRes.error ||
         cloudState.errorMessage ||
         'Chưa thể đồng bộ với Google Cloud Firestore. Vui lòng thử lại.';
       return {
         success: false,
         cloudSynced: false,
-        localSynced: res.localSynced,
+        localSynced: reconRes.localSuccess,
         error: errMsg,
         message: errMsg,
-        osdCount: res.osdCount
+        osdCount
       };
     }
 
-    const hasDelta = Boolean(res.pulledChanges || res.pushedChanges);
+    const hasDelta = Boolean(reconRes.pulledChanges || reconRes.pushedChanges);
     return {
-      ...res,
+      success: true,
+      cloudSynced: true,
+      localSynced: reconRes.localSuccess,
+      pulledChanges: reconRes.pulledChanges,
+      pushedChanges: reconRes.pushedChanges,
+      osdCount,
       message: hasDelta
-        ? `Đã đồng bộ các dữ liệu thay đổi lên/từ Cloud Firestore thành công (${StorageService.getMaterials().length} vật tư, ${res.osdCount ?? 0} OSD).`
+        ? `Đã đồng bộ phần dữ liệu thay đổi lên/từ Cloud Firestore thành công (${StorageService.getMaterials().length} vật tư, ${osdCount} OSD).`
         : 'Dữ liệu đã khớp với Cloud Firestore (không có thay đổi mới, không phát sinh lượt đồng bộ thừa).'
     };
   },
 
   async syncOsd(): Promise<SyncResult> {
-    // Gộp trực tiếp hành động đồng bộ OSD với đồng bộ dữ liệu làm một!
     return this.syncNow();
   },
 
-  async pushOsdImmediately(): Promise<void> {
-    try {
-      const localOsd = StorageService.getOsdReceipts();
-      const localTombstones = StorageService.getTombstones();
-      notifyOsdListeners(localOsd);
-
+  async pushOsdImmediately(): Promise<{ success: boolean; error?: string }> {
+    if (pushOsdInFlightPromise) {
+      return await pushOsdInFlightPromise;
+    }
+    pushOsdInFlightPromise = (async () => {
       try {
-        authChannel?.postMessage({
-          type: 'sync:osd_mutation',
-          osd: localOsd
-        });
-      } catch {
-        // ignore
-      }
+        const localOsd = StorageService.getOsdReceipts();
+        notifyOsdListeners(localOsd);
 
-      void fetchJson<{
-        ok: boolean;
-        osdRevision: number;
-        osd: OsdReceipt[];
-      }>('/api/sync/osd', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId: CLIENT_ID,
-          osd: localOsd,
-          tombstones: localTombstones.osd || {}
-        })
-      }).then((res) => {
+        try {
+          authChannel?.postMessage({
+            type: 'sync:osd_mutation',
+            osd: localOsd
+          });
+        } catch {
+          // ignore
+        }
+
+        if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+          const ok = await FirestoreSyncService.pushOsdRealtimeToCloud();
+          if (!ok && FirestoreSyncService.isQuotaExhausted()) {
+            return { success: false, error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE };
+          }
+          return {
+            success: ok,
+            error: ok ? undefined : FirestoreSyncService.getState().errorMessage || undefined
+          };
+        }
+
+        const localTombstones = StorageService.getTombstones();
+        const res = await fetchJson<{
+          ok: boolean;
+          osdRevision: number;
+          osd: OsdReceipt[];
+        }>('/api/sync/osd', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId: CLIENT_ID,
+            osd: localOsd,
+            tombstones: localTombstones.osd || {}
+          })
+        });
         if (res.ok && Array.isArray(res.osd)) {
           StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
           notifyOsdListeners(res.osd);
           lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
         }
-      }).catch(() => {});
-
-      if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
-        void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+        return { success: true };
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      } finally {
+        pushOsdInFlightPromise = null;
       }
-    } catch {
-      // ignore
-    }
+    })();
+    return await pushOsdInFlightPromise;
   },
 
   getCloudState(): CloudSyncSnapshotState {
@@ -2277,7 +2300,6 @@ export const SyncService = {
       if (current) {
         void FirestoreSyncService.syncActiveSessionToCloudIfConnected(current.session);
       }
-      void reconcileInternal();
     }
     return res;
   },
@@ -2294,14 +2316,6 @@ export const SyncService = {
         if (current) {
           await FirestoreSyncService.syncActiveSessionToCloudIfConnected(current.session);
         }
-        const reconRes = await reconcileInternal({ forceManifestRefresh: true });
-        if (!reconRes.cloudSuccess && authTransitionCount === 0 && reconRes.error) {
-          return {
-            success: false,
-            email: res.email,
-            message: reconRes.error
-          };
-        }
       }
       return res;
     } finally {
@@ -2311,8 +2325,21 @@ export const SyncService = {
 
   async syncUsersToCloudImmediately(): Promise<{ success: boolean; message: string; count?: number }> {
     metaDirty = true;
-    FirestoreSyncService.markLocalMutation('meta');
-    // Luôn bắc cầu xuống /api/sync/meta của server Express
+    if (pushDebounceTimer) {
+      clearTimeout(pushDebounceTimer);
+      pushDebounceTimer = null;
+    }
+    FirestoreSyncService.markLocalMutation('meta', undefined, { users: true });
+
+    if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+      const res = await FirestoreSyncService.forcePushUsersOnlyToCloud();
+      if (res.success) {
+        metaDirty = false;
+      }
+      return res;
+    }
+
+    // Fallback bắc cầu xuống /api/sync/meta khi chưa kết nối Google Cloud
     void fetch('/api/sync/meta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2324,10 +2351,6 @@ export const SyncService = {
         osd: StorageService.getOsdReceipts()
       })
     }).catch(() => {});
-
-    if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
-      return await FirestoreSyncService.forcePushUsersOnlyToCloud();
-    }
 
     return {
       success: true,

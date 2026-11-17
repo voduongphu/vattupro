@@ -121,8 +121,15 @@ let isHydrated = false;
 let pendingWrites = new Set<Promise<void>>();
 
 export type LocalMutationKind = 'meta' | 'materials' | 'inbound' | 'outbound' | 'osd';
+export interface LocalMutationDetails {
+  users?: boolean;
+  warehouses?: boolean;
+  tombstones?: boolean;
+}
 const subscribers = new Set<() => void>();
-const localMutationListeners = new Set<(kind: LocalMutationKind, codes?: string[]) => void>();
+const localMutationListeners = new Set<
+  (kind: LocalMutationKind, codes?: string[], details?: LocalMutationDetails) => void
+>();
 
 function notifySubscribers(): void {
   subscribers.forEach((fn) => {
@@ -134,10 +141,14 @@ function notifySubscribers(): void {
   });
 }
 
-function emitLocalMutation(kind: LocalMutationKind, codes?: string[]): void {
+function emitLocalMutation(
+  kind: LocalMutationKind,
+  codes?: string[],
+  details?: LocalMutationDetails
+): void {
   localMutationListeners.forEach((fn) => {
     try {
-      fn(kind, codes);
+      fn(kind, codes, details);
     } catch (err) {
       console.error('Local mutation listener error:', err);
     }
@@ -1245,7 +1256,9 @@ export const StorageService = {
     };
   },
 
-  onLocalMutation(listener: (kind: LocalMutationKind, codes?: string[]) => void): () => void {
+  onLocalMutation(
+    listener: (kind: LocalMutationKind, codes?: string[], details?: LocalMutationDetails) => void
+  ): () => void {
     localMutationListeners.add(listener);
     return () => {
       localMutationListeners.delete(listener);
@@ -1384,7 +1397,7 @@ export const StorageService = {
     const merged = mergeUsersAdditive(existingUsers, [newUser], tombstones.users);
     this.saveUsers(merged.list);
     notifySubscribers();
-    emitLocalMutation('meta');
+    emitLocalMutation('meta', [newUser.id], { users: true });
     return newUser;
   },
 
@@ -1411,15 +1424,15 @@ export const StorageService = {
     const merged = mergeUsersAdditive(existingUsers, [cleanUser], tombstones.users);
     this.saveUsers(merged.list);
     notifySubscribers();
-    emitLocalMutation('meta');
-    return (
+    const matched =
       merged.list.find(
         (u) =>
           (emDigest && u.emailDigest === emDigest) ||
           u.id === cleanUser.id ||
           normUserKey(u.username) === uKey
-      ) || cleanUser
-    );
+      ) || cleanUser;
+    emitLocalMutation('meta', [matched.id], { users: true });
+    return matched;
   },
 
   updateUser(
@@ -1471,7 +1484,7 @@ export const StorageService = {
     this.saveUsers(users);
     notifySubscribers();
     if (options?.emitMutation !== false) {
-      emitLocalMutation('meta');
+      emitLocalMutation('meta', [users[index].id], { users: true });
     }
     return users[index];
   },
@@ -1497,7 +1510,7 @@ export const StorageService = {
     const filtered = users.filter((u) => u.id !== id);
     this.saveUsers(filtered);
     notifySubscribers();
-    emitLocalMutation('meta');
+    emitLocalMutation('meta', [id], { users: true, tombstones: true });
     return true;
   },
 
@@ -1510,7 +1523,7 @@ export const StorageService = {
     users[idx] = { ...prev, password: newPass.trim(), updatedAt: nextUpdatedAt };
     this.saveUsers(users);
     notifySubscribers();
-    emitLocalMutation('meta');
+    emitLocalMutation('meta', [userId], { users: true });
     return true;
   },
 
@@ -1538,7 +1551,7 @@ export const StorageService = {
     const merged = mergeWarehousesAdditive(this.getWarehouses(), [newWh], tombstones.warehouses);
     this.saveWarehouses(merged.list);
     notifySubscribers();
-    emitLocalMutation('meta');
+    emitLocalMutation('meta', [newWh.id], { warehouses: true });
     return newWh;
   },
 
@@ -1549,7 +1562,7 @@ export const StorageService = {
     whs[idx] = { ...whs[idx], ...updates, updatedAt: Date.now() };
     this.saveWarehouses(whs);
     notifySubscribers();
-    emitLocalMutation('meta');
+    emitLocalMutation('meta', [id], { warehouses: true });
     return whs[idx];
   },
 
@@ -1567,7 +1580,7 @@ export const StorageService = {
     const filtered = whs.filter((w) => w.id !== id);
     this.saveWarehouses(filtered);
     notifySubscribers();
-    emitLocalMutation('meta');
+    emitLocalMutation('meta', [id], { warehouses: true, tombstones: true });
     return true;
   },
 
@@ -1595,7 +1608,7 @@ export const StorageService = {
     const merged = mergeMaterialsAdditive(this.getMaterials(), [newMat], tombstones.materials);
     this.saveMaterials(merged.list);
     notifySubscribers();
-    emitLocalMutation('materials');
+    emitLocalMutation('materials', [normKey(newMat.code)]);
     return newMat;
   },
 
@@ -1606,7 +1619,7 @@ export const StorageService = {
     mats[idx] = { ...mats[idx], ...updates, updatedAt: Date.now() };
     this.saveMaterials(mats);
     notifySubscribers();
-    emitLocalMutation('materials');
+    emitLocalMutation('materials', [normKey(mats[idx].code)]);
     return mats[idx];
   },
 
@@ -1624,7 +1637,7 @@ export const StorageService = {
     const filtered = mats.filter((m) => m.id !== id);
     this.saveMaterials(filtered);
     notifySubscribers();
-    emitLocalMutation('materials');
+    emitLocalMutation('materials', target ? [normKey(target.code)] : [id], { tombstones: true });
     return true;
   },
 
@@ -1634,12 +1647,14 @@ export const StorageService = {
     const now = Date.now();
     const tombstones = this.getTombstones();
     const filtered: MaterialItem[] = [];
+    const deletedCodes: string[] = [];
     for (let i = 0; i < mats.length; i++) {
       const m = mats[i];
       if (idSet.has(m.id)) {
         const tombTs = Math.max(now, (Number(m.updatedAt) || 0) + 1);
         tombstones.materials[m.id] = tombTs;
         tombstones.materials[normKey(m.code)] = tombTs;
+        deletedCodes.push(normKey(m.code));
       } else {
         filtered.push(m);
       }
@@ -1649,7 +1664,7 @@ export const StorageService = {
       this.saveTombstones(tombstones);
       this.saveMaterials(filtered);
       notifySubscribers();
-      emitLocalMutation('materials');
+      emitLocalMutation('materials', deletedCodes, { tombstones: true });
     }
     return deletedCount;
   },
@@ -1660,15 +1675,17 @@ export const StorageService = {
     if (count > 0) {
       const now = Date.now();
       const tombstones = this.getTombstones();
+      const deletedCodes: string[] = [];
       for (let i = 0; i < mats.length; i++) {
         const tombTs = Math.max(now, (Number(mats[i].updatedAt) || 0) + 1);
         tombstones.materials[mats[i].id] = tombTs;
         tombstones.materials[normKey(mats[i].code)] = tombTs;
+        deletedCodes.push(normKey(mats[i].code));
       }
       this.saveTombstones(tombstones);
       this.saveMaterials([]);
       notifySubscribers();
-      emitLocalMutation('materials');
+      emitLocalMutation('materials', deletedCodes, { tombstones: true });
     }
     return count;
   },
@@ -1693,6 +1710,7 @@ export const StorageService = {
     let updated = 0;
     const baseTs = Date.now();
     const salt = Math.random().toString(36).slice(2, 6);
+    const touchedCodes: string[] = [];
 
     for (let i = 0; i < imported.length; i++) {
       const item = imported[i];
@@ -1723,6 +1741,7 @@ export const StorageService = {
             updatedAt: baseTs
           };
           updated++;
+          touchedCodes.push(normKey(code));
         }
       } else {
         const newIdx = materials.length;
@@ -1744,12 +1763,15 @@ export const StorageService = {
         });
         codeIndexMap.set(code, newIdx);
         added++;
+        touchedCodes.push(normKey(code));
       }
     }
 
     this.saveMaterials(materials);
     notifySubscribers();
-    emitLocalMutation('materials');
+    if (touchedCodes.length > 0) {
+      emitLocalMutation('materials', touchedCodes);
+    }
     return { added, updated };
   },
 
@@ -1994,7 +2016,7 @@ export const StorageService = {
       if (options?.notify) {
         notifySubscribers();
       }
-      if (options?.emitMutation || isBaselineRun) {
+      if (options?.emitMutation === true) {
         emitLocalMutation('materials');
       }
     }
@@ -2111,10 +2133,12 @@ export const StorageService = {
     const matSync = this.syncMaterialsFromReceipts({ emitMutation: true });
 
     if (isCodeChanged) {
-      emitLocalMutation('meta');
+      notifySubscribers();
+      emitLocalMutation('inbound', [newCodeKey, oldCodeKey], { tombstones: true });
+    } else {
+      notifySubscribers();
+      emitLocalMutation('inbound', [newCodeKey]);
     }
-    notifySubscribers();
-    emitLocalMutation('inbound', [newCodeKey]);
     return { success: true, newMaterialsCount: matSync.added + matSync.updated };
   },
 
@@ -2134,9 +2158,11 @@ export const StorageService = {
 
     const filtered = inbounds.filter((i) => i.id !== id && i.receiptCode !== id);
     this.saveInboundReceipts(filtered);
-    this.syncMaterialsFromReceipts({ emitMutation: true });
+    this.syncMaterialsFromReceipts({ emitMutation: false });
     notifySubscribers();
-    emitLocalMutation('meta');
+    emitLocalMutation('inbound', target ? [normKey(target.receiptCode)] : [normKey(id)], {
+      tombstones: true
+    });
     return true;
   },
 
@@ -2147,6 +2173,7 @@ export const StorageService = {
     const now = Date.now();
     const tombstones = this.getTombstones();
     const filtered: InboundReceipt[] = [];
+    const deletedCodes: string[] = [];
 
     for (let i = 0; i < inbounds.length; i++) {
       const r = inbounds[i];
@@ -2154,6 +2181,7 @@ export const StorageService = {
         tombstones.inbound[r.id] = now;
         tombstones.inbound[r.receiptCode] = now;
         tombstones.inbound[normKey(r.receiptCode)] = now;
+        deletedCodes.push(normKey(r.receiptCode));
       } else {
         filtered.push(r);
       }
@@ -2163,9 +2191,9 @@ export const StorageService = {
     if (deletedCount > 0) {
       this.saveTombstones(tombstones);
       this.saveInboundReceipts(filtered);
-      this.syncMaterialsFromReceipts({ emitMutation: true });
+      this.syncMaterialsFromReceipts({ emitMutation: false });
       notifySubscribers();
-      emitLocalMutation('meta');
+      emitLocalMutation('inbound', deletedCodes, { tombstones: true });
     }
     return deletedCount;
   },
@@ -2270,10 +2298,12 @@ export const StorageService = {
     const matSync = this.syncMaterialsFromReceipts({ emitMutation: true });
 
     if (isCodeChanged) {
-      emitLocalMutation('meta');
+      notifySubscribers();
+      emitLocalMutation('outbound', [newCodeKey, oldCodeKey], { tombstones: true });
+    } else {
+      notifySubscribers();
+      emitLocalMutation('outbound', [newCodeKey]);
     }
-    notifySubscribers();
-    emitLocalMutation('outbound', [newCodeKey]);
     return { success: true, newMaterialsCount: matSync.added + matSync.updated };
   },
 
@@ -2293,9 +2323,11 @@ export const StorageService = {
 
     const filtered = outbounds.filter((o) => o.id !== id && o.issueCode !== id);
     this.saveOutboundReceipts(filtered);
-    this.syncMaterialsFromReceipts({ emitMutation: true });
+    this.syncMaterialsFromReceipts({ emitMutation: false });
     notifySubscribers();
-    emitLocalMutation('meta');
+    emitLocalMutation('outbound', target ? [normKey(target.issueCode)] : [normKey(id)], {
+      tombstones: true
+    });
     return true;
   },
 
@@ -2306,6 +2338,7 @@ export const StorageService = {
     const now = Date.now();
     const tombstones = this.getTombstones();
     const filtered: OutboundReceipt[] = [];
+    const deletedCodes: string[] = [];
 
     for (let i = 0; i < outbounds.length; i++) {
       const o = outbounds[i];
@@ -2313,6 +2346,7 @@ export const StorageService = {
         tombstones.outbound[o.id] = now;
         tombstones.outbound[o.issueCode] = now;
         tombstones.outbound[normKey(o.issueCode)] = now;
+        deletedCodes.push(normKey(o.issueCode));
       } else {
         filtered.push(o);
       }
@@ -2322,9 +2356,9 @@ export const StorageService = {
     if (deletedCount > 0) {
       this.saveTombstones(tombstones);
       this.saveOutboundReceipts(filtered);
-      this.syncMaterialsFromReceipts({ emitMutation: true });
+      this.syncMaterialsFromReceipts({ emitMutation: false });
       notifySubscribers();
-      emitLocalMutation('meta');
+      emitLocalMutation('outbound', deletedCodes, { tombstones: true });
     }
     return deletedCount;
   },
@@ -2705,7 +2739,7 @@ export const StorageService = {
     }
     this.saveTombstones(tombstones);
     this.saveOsdReceipts(next);
-    emitLocalMutation('osd', target ? [target.osdCode] : undefined);
+    emitLocalMutation('osd', target ? [target.osdCode] : undefined, { tombstones: true });
     return true;
   },
 
