@@ -11,7 +11,16 @@ import {
   parseMetaDigestV2,
   buildStableReceiptIndexChunks,
   diffChunkDigests,
-  computeDomainSyncPlan
+  computeDomainSyncPlan,
+  createEmptyPendingOutbox,
+  sanitizePendingOutbox,
+  mergePendingOutboxMutation,
+  clearPendingOutboxDomains,
+  hasAnyPendingOutbox,
+  hasRemoteManifestChanged,
+  computeLoginMetaPullFlags,
+  resolveManifestTransactionUpdate,
+  type ManifestSnapshotLike
 } from './cloudSyncHelpers.ts';
 import type { User, InboundReceipt } from '../types/inventory.ts';
 
@@ -243,5 +252,308 @@ describe('cloudSyncHelpers', () => {
     const chunksB = makeChunks(250); // inside chunk 1
     const diff = diffChunkDigests(chunksB, base.nextDigests, 'mat_', 3);
     assert.deepEqual(diff.dirtyIndices, [1]);
+  });
+
+  it('persistent outbox helpers merge, sanitize, check, and selectively clear domains', () => {
+    const empty = createEmptyPendingOutbox();
+    assert.equal(hasAnyPendingOutbox(empty), false);
+
+    let outbox = mergePendingOutboxMutation(empty, 'meta', ['wh-1'], { warehouses: true }, 1000);
+    outbox = mergePendingOutboxMutation(outbox, 'inbound', ['pn-01'], { tombstones: true }, 2000);
+    outbox = mergePendingOutboxMutation(outbox, 'materials', ['vt-01'], undefined, 3000);
+
+    assert.equal(hasAnyPendingOutbox(outbox), true);
+    assert.equal(outbox.warehouses, true);
+    assert.equal(outbox.users, false);
+    assert.equal(outbox.inbound, true);
+    assert.equal(outbox.tombstones, true);
+    assert.equal(outbox.materials, true);
+    assert.deepEqual(outbox.warehouseIds, ['wh-1']);
+    assert.deepEqual(outbox.inboundCodes, ['PN-01']);
+    assert.deepEqual(outbox.materialCodes, ['VT-01']);
+    assert.equal(outbox.updatedAtMs, 3000);
+
+    const sanitized = sanitizePendingOutbox(JSON.parse(JSON.stringify(outbox)));
+    assert.deepEqual(sanitized, outbox);
+    assert.deepEqual(sanitizePendingOutbox(null), empty);
+
+    const partiallyCleared = clearPendingOutboxDomains(
+      outbox,
+      { warehouses: true, tombstones: true },
+      4000
+    );
+    assert.equal(partiallyCleared.warehouses, false);
+    assert.deepEqual(partiallyCleared.warehouseIds, []);
+    assert.equal(partiallyCleared.tombstones, false);
+    assert.equal(partiallyCleared.inbound, true);
+    assert.equal(partiallyCleared.materials, true);
+    assert.equal(hasAnyPendingOutbox(partiallyCleared), true);
+
+    const fullyCleared = clearPendingOutboxDomains(
+      partiallyCleared,
+      { inbound: true, materials: true },
+      5000
+    );
+    assert.equal(hasAnyPendingOutbox(fullyCleared), false);
+  });
+
+  it('hasRemoteManifestChanged detects both revision and same-revision digest drift', () => {
+    assert.equal(
+      hasRemoteManifestChanged({
+        remoteServerRev: 5,
+        remoteMetaDigest: 'v2:u1|w1|t1|o1|in1|out1',
+        remoteMaterialsDigest: '10:a:b:c',
+        lastAppliedServerRev: 5,
+        lastAppliedMetaDigest: 'v2:u1|w1|t1|o1|in1|out1',
+        lastAppliedMaterialsDigest: '10:a:b:c'
+      }),
+      false
+    );
+
+    assert.equal(
+      hasRemoteManifestChanged({
+        remoteServerRev: 6,
+        remoteMetaDigest: 'v2:u1|w1|t1|o1|in1|out1',
+        remoteMaterialsDigest: '10:a:b:c',
+        lastAppliedServerRev: 5,
+        lastAppliedMetaDigest: 'v2:u1|w1|t1|o1|in1|out1',
+        lastAppliedMaterialsDigest: '10:a:b:c'
+      }),
+      true
+    );
+
+    // Same serverRevision (e.g. concurrent bump to same number) but metaDigest changed
+    assert.equal(
+      hasRemoteManifestChanged({
+        remoteServerRev: 5,
+        remoteMetaDigest: 'v2:u2|w1|t1|o1|in1|out1',
+        remoteMaterialsDigest: '10:a:b:c',
+        lastAppliedServerRev: 5,
+        lastAppliedMetaDigest: 'v2:u1|w1|t1|o1|in1|out1',
+        lastAppliedMaterialsDigest: '10:a:b:c'
+      }),
+      true
+    );
+
+    // Same serverRevision & metaDigest, materialsDigest changed
+    assert.equal(
+      hasRemoteManifestChanged({
+        remoteServerRev: 5,
+        remoteMetaDigest: 'v2:u1|w1|t1|o1|in1|out1',
+        remoteMaterialsDigest: '11:x:y:z',
+        lastAppliedServerRev: 5,
+        lastAppliedMetaDigest: 'v2:u1|w1|t1|o1|in1|out1',
+        lastAppliedMaterialsDigest: '10:a:b:c'
+      }),
+      true
+    );
+  });
+
+  it('computeLoginMetaPullFlags skips unchanged accounts and tombstones on login', () => {
+    const users = [
+      makeUser({ id: 'admin-1', username: 'admin', role: 'admin', email: 'a@b.com', emailDigest: 'ed1' }),
+      makeUser({ id: 'staff-1', username: 'staff1', role: 'staff', email: 's@b.com', emailDigest: 'ed2' })
+    ];
+    const emptyTombs = {
+      inbound: {},
+      outbound: {},
+      materials: {},
+      warehouses: {},
+      users: {},
+      osd: {}
+    };
+    const uDigest = computeUsersDomainDigest(users);
+    const tDigest = computeTombstonesDomainDigest(emptyTombs);
+    const matchingMetaDigest = encodeMetaDigestV2({
+      u: uDigest,
+      w: '0.0.0',
+      t: tDigest,
+      o: '0.0.0',
+      in: '0.0.0',
+      out: '0.0.0'
+    });
+
+    assert.deepEqual(
+      computeLoginMetaPullFlags({
+        remoteMetaDigest: matchingMetaDigest,
+        accountChunkCount: 1,
+        tombstoneChunkCount: 1,
+        localUsers: users,
+        localTombstones: emptyTombs,
+        isAdmin: true
+      }),
+      { pullUsers: false, pullTombstones: false }
+    );
+
+    // Only tombstones changed remotely
+    const tombChangedDigest = encodeMetaDigestV2({
+      u: uDigest,
+      w: '0.0.0',
+      t: '1.abc.def',
+      o: '0.0.0',
+      in: '0.0.0',
+      out: '0.0.0'
+    });
+    assert.deepEqual(
+      computeLoginMetaPullFlags({
+        remoteMetaDigest: tombChangedDigest,
+        accountChunkCount: 1,
+        tombstoneChunkCount: 1,
+        localUsers: users,
+        localTombstones: emptyTombs,
+        isAdmin: false
+      }),
+      { pullUsers: false, pullTombstones: true }
+    );
+
+    // Admin missing PII triggers user pull even if digest matches
+    const usersMissingPii = [
+      makeUser({ id: 'admin-1', username: 'admin', role: 'admin', emailDigest: 'ed1' }),
+      makeUser({ id: 'staff-1', username: 'staff1', role: 'staff', emailDigest: 'ed2' })
+    ];
+    assert.deepEqual(
+      computeLoginMetaPullFlags({
+        remoteMetaDigest: matchingMetaDigest,
+        accountChunkCount: 1,
+        tombstoneChunkCount: 1,
+        localUsers: usersMissingPii,
+        localTombstones: emptyTombs,
+        isAdmin: true
+      }),
+      { pullUsers: true, pullTombstones: false }
+    );
+  });
+
+  it('resolveManifestTransactionUpdate merges concurrent unrelated domains and rejects same-domain conflicts', () => {
+    const baseManifest: ManifestSnapshotLike = {
+      serverRevision: 10,
+      metaRevision: 4,
+      materialsRevision: 2,
+      materialsCount: 50,
+      materialsChunkCount: 1,
+      materialsDigest: '50:m1:m2:m3',
+      metaDigest: encodeMetaDigestV2({
+        u: 'u1',
+        w: 'w1',
+        t: 't1',
+        o: 'o1',
+        in: 'in1',
+        out: 'out1'
+      }),
+      accountChunkCount: 1,
+      warehouseChunkCount: 1,
+      tombstoneChunkCount: 1,
+      inboundIndexChunkCount: 1,
+      outboundIndexChunkCount: 1
+    };
+
+    // Case 1: Remote concurrently updated `outbound` (rev 10 -> 11), local only touched `inbound`
+    const remoteOutboundUpdated: ManifestSnapshotLike = {
+      ...baseManifest,
+      serverRevision: 11,
+      outboundIndexChunkCount: 2,
+      metaDigest: encodeMetaDigestV2({
+        u: 'u1',
+        w: 'w1',
+        t: 't1',
+        o: 'o1',
+        in: 'in1',
+        out: 'out2'
+      })
+    };
+    const mergedOutcome = resolveManifestTransactionUpdate({
+      latestRemote: remoteOutboundUpdated,
+      expectedBaseline: {
+        serverRevision: 10,
+        metaDigest: baseManifest.metaDigest,
+        materialsDigest: baseManifest.materialsDigest
+      },
+      localUpdate: {
+        touched: { inbound: true },
+        metaDigest: encodeMetaDigestV2({
+          u: 'u1',
+          w: 'w1',
+          t: 't1',
+          o: 'o1',
+          in: 'in2',
+          out: 'out1'
+        }),
+        inboundIndexChunkCount: 3,
+        bumpMetaRevision: false
+      }
+    });
+
+    assert.equal(mergedOutcome.conflict, false);
+    if (!mergedOutcome.conflict) {
+      assert.equal(mergedOutcome.manifest.serverRevision, 12);
+      assert.equal(mergedOutcome.manifest.inboundIndexChunkCount, 3);
+      assert.equal(mergedOutcome.manifest.outboundIndexChunkCount, 2);
+      const parsed = parseMetaDigestV2(mergedOutcome.manifest.metaDigest);
+      assert.equal(parsed?.in, 'in2');
+      assert.equal(parsed?.out, 'out2'); // Preserved remote concurrent outbound change
+    }
+
+    // Case 2: Remote concurrently updated `inbound` as well -> conflict!
+    const remoteInboundUpdated: ManifestSnapshotLike = {
+      ...baseManifest,
+      serverRevision: 11,
+      metaDigest: encodeMetaDigestV2({
+        u: 'u1',
+        w: 'w1',
+        t: 't1',
+        o: 'o1',
+        in: 'in_remote',
+        out: 'out1'
+      })
+    };
+    const conflictOutcome = resolveManifestTransactionUpdate({
+      latestRemote: remoteInboundUpdated,
+      expectedBaseline: {
+        serverRevision: 10,
+        metaDigest: baseManifest.metaDigest,
+        materialsDigest: baseManifest.materialsDigest
+      },
+      localUpdate: {
+        touched: { inbound: true },
+        metaDigest: encodeMetaDigestV2({
+          u: 'u1',
+          w: 'w1',
+          t: 't1',
+          o: 'o1',
+          in: 'in_local',
+          out: 'out1'
+        }),
+        inboundIndexChunkCount: 2
+      }
+    });
+    assert.deepEqual(conflictOutcome, {
+      conflict: true,
+      reason: 'inbound_changed_remotely'
+    });
+
+    // Case 3: Remote concurrently updated `materials` -> conflict when local touches materials
+    const matConflict = resolveManifestTransactionUpdate({
+      latestRemote: {
+        ...baseManifest,
+        serverRevision: 11,
+        materialsDigest: '51:m_new'
+      },
+      expectedBaseline: {
+        serverRevision: 10,
+        metaDigest: baseManifest.metaDigest,
+        materialsDigest: baseManifest.materialsDigest
+      },
+      localUpdate: {
+        touched: { materials: true },
+        metaDigest: baseManifest.metaDigest,
+        materialsDigest: '51:m_local',
+        materialsCount: 51,
+        materialsChunkCount: 1
+      }
+    });
+    assert.deepEqual(matConflict, {
+      conflict: true,
+      reason: 'materials_changed_remotely'
+    });
   });
 });

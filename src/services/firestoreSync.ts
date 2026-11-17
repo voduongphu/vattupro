@@ -4,6 +4,7 @@ import {
   setDoc,
   updateDoc,
   writeBatch,
+  runTransaction,
   onSnapshot,
   serverTimestamp,
   type DocumentReference,
@@ -78,6 +79,16 @@ import {
   buildStableReceiptIndexChunks,
   diffChunkDigests,
   computeDomainSyncPlan,
+  createEmptyPendingOutbox,
+  sanitizePendingOutbox,
+  mergePendingOutboxMutation,
+  clearPendingOutboxDomains,
+  hasRemoteManifestChanged,
+  computeLoginMetaPullFlags,
+  resolveManifestTransactionUpdate,
+  type CloudPendingOutbox,
+  type TouchedManifestDomains,
+  type ManifestSnapshotLike,
   type DomainSyncPlan
 } from '../utils/cloudSyncHelpers';
 
@@ -167,13 +178,19 @@ let interactiveAuthInFlight = false;
 let adminPiiLoadedForMetaRev = -1;
 let lastAppliedCloudServerRev = -1;
 let lastAppliedCloudMetaRev = -1;
+let lastAppliedCloudMetaDigest = '';
+let lastAppliedCloudMaterialsDigest = '';
 let latestObservedRemoteServerRev = -1;
+let latestObservedRemoteMetaDigest = '';
+let latestObservedRemoteMaterialsDigest = '';
 let isCloudReconciling = false;
 let pendingCloudReconcile = false;
 let pendingForceManifestRefresh = false;
 let currentLocalMutationSeq = 0;
 let passStartedLocalMutationSeq = 0;
 let activePassServerRev = -1;
+let activePassMetaDigest = '';
+let activePassMaterialsDigest = '';
 let reconcileInFlightPromise: Promise<{
   ok: boolean;
   pulledChanges: boolean;
@@ -230,6 +247,81 @@ interface CloudSyncCheckpoint {
 }
 
 const CLOUD_CHECKPOINT_KEY = `vtp_cloud_sync_checkpoint_v1_${WORKSPACE_ID}`;
+const PENDING_OUTBOX_KEY = `vtp_cloud_pending_outbox_v1_${WORKSPACE_ID}`;
+
+function readPendingOutbox(): CloudPendingOutbox {
+  if (typeof window === 'undefined') return createEmptyPendingOutbox();
+  try {
+    const raw = window.localStorage.getItem(PENDING_OUTBOX_KEY);
+    if (!raw) return createEmptyPendingOutbox();
+    return sanitizePendingOutbox(JSON.parse(raw));
+  } catch {
+    return createEmptyPendingOutbox();
+  }
+}
+
+function writePendingOutbox(outbox: CloudPendingOutbox): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(PENDING_OUTBOX_KEY, JSON.stringify(outbox));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function hydrateOutboxIntoRamFlags(): CloudPendingOutbox {
+  const outbox = readPendingOutbox();
+  if (outbox.users) cloudMetaUsersDirty = true;
+  if (outbox.warehouses) cloudMetaWarehousesDirty = true;
+  if (outbox.tombstones) cloudMetaTombstonesDirty = true;
+  cloudMetaDirty = cloudMetaUsersDirty || cloudMetaWarehousesDirty || cloudMetaTombstonesDirty;
+  if (outbox.osd) cloudOsdDirty = true;
+  if (outbox.materials) cloudMaterialsDirty = true;
+  if (outbox.inbound) cloudInboundDirty = true;
+  if (outbox.outbound) cloudOutboundDirty = true;
+  for (const id of outbox.userIds) dirtyUserIds.add(id);
+  for (const id of outbox.warehouseIds) dirtyWarehouseIds.add(id);
+  for (const code of outbox.materialCodes) dirtyMaterialCodes.add(code);
+  for (const code of outbox.inboundCodes) dirtyInboundCodes.add(code);
+  for (const code of outbox.outboundCodes) dirtyOutboundCodes.add(code);
+  return outbox;
+}
+
+function clearSyncedOutboxDomains(
+  cleared: Partial<Record<'users' | 'warehouses' | 'tombstones' | 'osd' | 'materials' | 'inbound' | 'outbound', boolean>>
+): void {
+  if (cleared.users) {
+    cloudMetaUsersDirty = false;
+    dirtyUserIds.clear();
+  }
+  if (cleared.warehouses) {
+    cloudMetaWarehousesDirty = false;
+    dirtyWarehouseIds.clear();
+  }
+  if (cleared.tombstones) {
+    cloudMetaTombstonesDirty = false;
+  }
+  cloudMetaDirty = cloudMetaUsersDirty || cloudMetaWarehousesDirty || cloudMetaTombstonesDirty;
+  if (cleared.osd) {
+    cloudOsdDirty = false;
+  }
+  if (cleared.materials) {
+    cloudMaterialsDirty = false;
+    dirtyMaterialCodes.clear();
+  }
+  if (cleared.inbound) {
+    cloudInboundDirty = false;
+    dirtyInboundCodes.clear();
+  }
+  if (cleared.outbound) {
+    cloudOutboundDirty = false;
+    dirtyOutboundCodes.clear();
+  }
+  const next = clearPendingOutboxDomains(readPendingOutbox(), cleared);
+  writePendingOutbox(next);
+}
+
+hydrateOutboxIntoRamFlags();
 
 function readCloudSyncCheckpoint(uid?: string | null): CloudSyncCheckpoint | null {
   if (typeof window === 'undefined' || !uid) return null;
@@ -302,6 +394,7 @@ function persistKnownExistingPaths(uid?: string | null): void {
 }
 
 function hydrateRamStateFromCheckpoint(uid?: string | null): CloudSyncCheckpoint | null {
+  hydrateOutboxIntoRamFlags();
   if (!uid) return null;
   loadKnownExistingPaths(uid);
   const cp = readCloudSyncCheckpoint(uid);
@@ -317,6 +410,12 @@ function hydrateRamStateFromCheckpoint(uid?: string | null): CloudSyncCheckpoint
   }
   if (lastAppliedCloudMetaRev < 0 && typeof cp.metaRevision === 'number') {
     lastAppliedCloudMetaRev = cp.metaRevision;
+  }
+  if (!lastAppliedCloudMetaDigest && cp.metaDigest) {
+    lastAppliedCloudMetaDigest = cp.metaDigest;
+  }
+  if (!lastAppliedCloudMaterialsDigest && cp.materialsDigest) {
+    lastAppliedCloudMaterialsDigest = cp.materialsDigest;
   }
   if (!lastSyncedOsdDigest && cp.osdDigest) {
     lastSyncedOsdDigest = cp.osdDigest;
@@ -338,28 +437,31 @@ function resetCloudSessionCaches(clearStorage = false): void {
   adminPiiLoadedForMetaRev = -1;
   lastAppliedCloudServerRev = -1;
   lastAppliedCloudMetaRev = -1;
+  lastAppliedCloudMetaDigest = '';
+  lastAppliedCloudMaterialsDigest = '';
   latestObservedRemoteServerRev = -1;
+  latestObservedRemoteMetaDigest = '';
+  latestObservedRemoteMaterialsDigest = '';
   lastSyncedOsdDigest = '';
   cloudInboundIndexCache = null;
   cloudOutboundIndexCache = null;
   ramChunkDigests = {};
   ramChunkDigestsUid = null;
   syncedAttachmentSignatures.clear();
-  cloudMetaDirty = false;
-  cloudMetaUsersDirty = false;
-  cloudMetaWarehousesDirty = false;
-  cloudMetaTombstonesDirty = false;
-  cloudOsdDirty = false;
-  cloudMaterialsDirty = false;
-  cloudInboundDirty = false;
-  cloudOutboundDirty = false;
-  dirtyUserIds.clear();
-  dirtyWarehouseIds.clear();
-  dirtyMaterialCodes.clear();
-  dirtyInboundCodes.clear();
-  dirtyOutboundCodes.clear();
   if (clearStorage) {
+    clearSyncedOutboxDomains({
+      users: true,
+      warehouses: true,
+      tombstones: true,
+      osd: true,
+      materials: true,
+      inbound: true,
+      outbound: true
+    });
     clearCloudSyncCheckpoint();
+  } else {
+    // Giữ nguyên hàng đợi pending outbox trên localStorage và nạp lại vào RAM để không bỏ sót dữ liệu sửa khi offline/đổi phiên
+    hydrateOutboxIntoRamFlags();
   }
 }
 
@@ -664,6 +766,189 @@ async function writeSingleProtectedDoc(
     }
     if (isPermissionError(err)) {
       handleFirestoreError(err, OperationType.CREATE, pathLabel);
+    }
+    throw err;
+  }
+}
+
+class ManifestConflictError extends Error {
+  reason: string;
+  constructor(reason: string) {
+    super(`Manifest conflict: ${reason}`);
+    this.name = 'ManifestConflictError';
+    this.reason = reason;
+  }
+}
+
+async function commitManifestWithTransaction(params: {
+  fbUser: FirebaseUser;
+  expectedBaseline: {
+    serverRevision: number;
+    metaDigest: string;
+    materialsDigest: string;
+  };
+  localUpdate: {
+    touched: TouchedManifestDomains;
+    metaDigest: string;
+    accountChunkCount?: number;
+    warehouseChunkCount?: number;
+    tombstoneChunkCount?: number;
+    inboundIndexChunkCount?: number;
+    outboundIndexChunkCount?: number;
+    materialsCount?: number;
+    materialsChunkCount?: number;
+    materialsDigest?: string;
+    bumpMetaRevision?: boolean;
+  };
+  allowForceOverwrite?: boolean;
+}): Promise<WorkspaceManifestDoc> {
+  const uid = params.fbUser.uid;
+  const wsPath = `workspaces/${WORKSPACE_ID}`;
+  const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+
+  try {
+    const committed = await runTransaction(db, async (tx) => {
+      const wsSnap = await tx.get(wsRef);
+      if (!wsSnap.exists()) {
+        const initMutable: ManifestSnapshotLike = {
+          serverRevision: 1,
+          metaRevision: params.localUpdate.bumpMetaRevision ? 1 : 0,
+          materialsRevision: params.localUpdate.touched.materials ? 1 : 0,
+          materialsCount: cleanNum(params.localUpdate.materialsCount, 0),
+          materialsChunkCount: cleanNum(params.localUpdate.materialsChunkCount, 0, 2000),
+          materialsDigest: cleanStr(params.localUpdate.materialsDigest, 128, '0:0:0:0'),
+          metaDigest: cleanStr(
+            params.localUpdate.metaDigest,
+            128,
+            'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'
+          ),
+          accountChunkCount: cleanNum(params.localUpdate.accountChunkCount, 0, 50),
+          warehouseChunkCount: cleanNum(params.localUpdate.warehouseChunkCount, 0, 50),
+          tombstoneChunkCount: cleanNum(params.localUpdate.tombstoneChunkCount, 0, 500),
+          inboundIndexChunkCount: cleanNum(params.localUpdate.inboundIndexChunkCount, 0, 500),
+          outboundIndexChunkCount: cleanNum(params.localUpdate.outboundIndexChunkCount, 0, 500)
+        };
+        const fullDoc: WorkspaceManifestDoc = {
+          workspaceId: WORKSPACE_ID,
+          name: WORKSPACE_NAME,
+          ownerUid: cleanStr(uid, 128),
+          updatedByUid: uid,
+          status: 'active',
+          allowSelfJoin: true,
+          ...initMutable
+        };
+        tx.set(wsRef, {
+          ...fullDoc,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+        return fullDoc;
+      }
+
+      const latestRaw = wsSnap.data() as Record<string, any>;
+      const latestSnapshot: ManifestSnapshotLike = {
+        serverRevision: Number(latestRaw.serverRevision) || 0,
+        metaRevision: Number(latestRaw.metaRevision) || 0,
+        materialsRevision: Number(latestRaw.materialsRevision) || 0,
+        materialsCount: Number(latestRaw.materialsCount) || 0,
+        materialsChunkCount: Number(latestRaw.materialsChunkCount) || 0,
+        materialsDigest: String(latestRaw.materialsDigest || '0:0:0:0'),
+        metaDigest: String(latestRaw.metaDigest || 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'),
+        accountChunkCount: Number(latestRaw.accountChunkCount) || 0,
+        warehouseChunkCount: Number(latestRaw.warehouseChunkCount) || 0,
+        tombstoneChunkCount: Number(latestRaw.tombstoneChunkCount) || 0,
+        inboundIndexChunkCount: Number(latestRaw.inboundIndexChunkCount) || 0,
+        outboundIndexChunkCount: Number(latestRaw.outboundIndexChunkCount) || 0
+      };
+
+      let nextMutable: ManifestSnapshotLike;
+      if (params.allowForceOverwrite) {
+        nextMutable = {
+          serverRevision: latestSnapshot.serverRevision + 1,
+          metaRevision: latestSnapshot.metaRevision + 1,
+          materialsRevision: latestSnapshot.materialsRevision + 1,
+          materialsCount: cleanNum(params.localUpdate.materialsCount, 0),
+          materialsChunkCount: cleanNum(params.localUpdate.materialsChunkCount, 0, 2000),
+          materialsDigest: cleanStr(
+            params.localUpdate.materialsDigest,
+            128,
+            latestSnapshot.materialsDigest
+          ),
+          metaDigest: cleanStr(
+            params.localUpdate.metaDigest,
+            128,
+            latestSnapshot.metaDigest
+          ),
+          accountChunkCount: cleanNum(params.localUpdate.accountChunkCount, 0, 50),
+          warehouseChunkCount: cleanNum(params.localUpdate.warehouseChunkCount, 0, 50),
+          tombstoneChunkCount: cleanNum(params.localUpdate.tombstoneChunkCount, 0, 500),
+          inboundIndexChunkCount: cleanNum(params.localUpdate.inboundIndexChunkCount, 0, 500),
+          outboundIndexChunkCount: cleanNum(params.localUpdate.outboundIndexChunkCount, 0, 500)
+        };
+      } else {
+        const outcome = resolveManifestTransactionUpdate({
+          latestRemote: latestSnapshot,
+          expectedBaseline: params.expectedBaseline,
+          localUpdate: params.localUpdate
+        });
+        if ('reason' in outcome) {
+          throw new ManifestConflictError(outcome.reason);
+        }
+        nextMutable = {
+          serverRevision: cleanNum(outcome.manifest.serverRevision, 1),
+          metaRevision: cleanNum(outcome.manifest.metaRevision, 0),
+          materialsRevision: cleanNum(outcome.manifest.materialsRevision, 0),
+          materialsCount: cleanNum(outcome.manifest.materialsCount, 0),
+          materialsChunkCount: cleanNum(outcome.manifest.materialsChunkCount, 0, 2000),
+          materialsDigest: cleanStr(outcome.manifest.materialsDigest, 128, '0:0:0:0'),
+          metaDigest: cleanStr(
+            outcome.manifest.metaDigest,
+            128,
+            'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'
+          ),
+          accountChunkCount: cleanNum(outcome.manifest.accountChunkCount, 0, 50),
+          warehouseChunkCount: cleanNum(outcome.manifest.warehouseChunkCount, 0, 50),
+          tombstoneChunkCount: cleanNum(outcome.manifest.tombstoneChunkCount, 0, 500),
+          inboundIndexChunkCount: cleanNum(outcome.manifest.inboundIndexChunkCount, 0, 500),
+          outboundIndexChunkCount: cleanNum(outcome.manifest.outboundIndexChunkCount, 0, 500)
+        };
+      }
+
+      tx.update(wsRef, {
+        ...nextMutable,
+        updatedByUid: uid,
+        updatedAt: serverTimestamp()
+      });
+
+      return {
+        workspaceId: cleanStr(latestRaw.workspaceId, 64, WORKSPACE_ID),
+        name: cleanStr(latestRaw.name, 200, WORKSPACE_NAME),
+        ownerUid: cleanStr(latestRaw.ownerUid, 128, uid),
+        updatedByUid: uid,
+        status: latestRaw.status === 'archived' ? 'archived' : 'active',
+        allowSelfJoin: latestRaw.allowSelfJoin !== false,
+        ...nextMutable
+      } as WorkspaceManifestDoc;
+    });
+
+    clearFirestoreQuotaExhaustedFlag();
+    knownExistingPaths.add(wsRef.path);
+    cachedWsManifest = { data: committed, atMs: Date.now() };
+    lastAppliedCloudServerRev = committed.serverRevision;
+    lastAppliedCloudMetaRev = committed.metaRevision;
+    lastAppliedCloudMetaDigest = committed.metaDigest;
+    lastAppliedCloudMaterialsDigest = committed.materialsDigest;
+    return committed;
+  } catch (err) {
+    if (err instanceof ManifestConflictError) {
+      cachedWsManifest = null;
+      throw err;
+    }
+    if (isQuotaExceededError(err)) {
+      notifyFirestoreQuotaExceeded(300_000);
+    }
+    if (isPermissionError(err)) {
+      handleFirestoreError(err, OperationType.UPDATE, wsPath);
     }
     throw err;
   }
@@ -1608,8 +1893,21 @@ function attachWorkspaceRealtimeListener(): void {
       const data = snap.data() as WorkspaceManifestDoc;
       cachedWsManifest = { data, atMs: Date.now() };
       const rev = Number(data.serverRevision) || 0;
+      const remoteMetaDigest = String(data.metaDigest || '');
+      const remoteMatDigest = String(data.materialsDigest || '');
       latestObservedRemoteServerRev = Math.max(latestObservedRemoteServerRev, rev);
-      if (rev !== lastAppliedCloudServerRev) {
+      latestObservedRemoteMetaDigest = remoteMetaDigest;
+      latestObservedRemoteMaterialsDigest = remoteMatDigest;
+      if (
+        hasRemoteManifestChanged({
+          remoteServerRev: rev,
+          remoteMetaDigest,
+          remoteMaterialsDigest: remoteMatDigest,
+          lastAppliedServerRev: lastAppliedCloudServerRev,
+          lastAppliedMetaDigest: lastAppliedCloudMetaDigest,
+          lastAppliedMaterialsDigest: lastAppliedCloudMaterialsDigest
+        })
+      ) {
         externalOnRemoteWorkspaceChange?.();
       }
     },
@@ -2155,21 +2453,7 @@ async function pushMetaToCloud(
   }
   Object.assign(ramChunkDigests, committedDigestUpdates);
 
-  if (pushUsers) {
-    cloudMetaUsersDirty = false;
-    dirtyUserIds.clear();
-  }
-  if (pushWarehouses) {
-    cloudMetaWarehousesDirty = false;
-    dirtyWarehouseIds.clear();
-  }
-  if (pushTombstones) {
-    cloudMetaTombstonesDirty = false;
-  }
-  cloudMetaDirty = cloudMetaUsersDirty || cloudMetaWarehousesDirty || cloudMetaTombstonesDirty;
-
   if (pushOsd) {
-    cloudOsdDirty = false;
     lastSyncedOsdDigest = computeOsdOnlyDigest(osdList, tombstones);
     for (const o of osdList) {
       if (o.pdfAttachment?.dataUrl && o.pdfAttachment.dataUrl.length > 50) {
@@ -2283,11 +2567,6 @@ async function pushOsdOnlyChunksToCloud(existingWsData?: WorkspaceManifestDoc | 
     await commitStagedWrites(staged);
   }
   Object.assign(ramChunkDigests, committedDigestUpdates);
-  cloudOsdDirty = false;
-  if (shouldPushTombstones) {
-    cloudMetaTombstonesDirty = false;
-    cloudMetaDirty = cloudMetaUsersDirty || cloudMetaWarehousesDirty;
-  }
   lastSyncedOsdDigest = computeOsdOnlyDigest(osdList, tombstones);
 
   for (const o of osdList) {
@@ -3100,6 +3379,8 @@ export const FirestoreSyncService = {
         }
       }
     }
+    const nextOutbox = mergePendingOutboxMutation(readPendingOutbox(), kind, codes, details);
+    writePendingOutbox(nextOutbox);
   },
 
   hasPendingOsdPush(): boolean {
@@ -3406,10 +3687,15 @@ export const FirestoreSyncService = {
 
     if (isCloudReconciling && reconcileInFlightPromise) {
       const hasNewLocalMutation = currentLocalMutationSeq !== passStartedLocalMutationSeq;
-      const hasNewRemoteRevision =
-        activePassServerRev >= 0 &&
-        latestObservedRemoteServerRev > activePassServerRev;
-      if (options?.forceManifestRefresh || hasNewLocalMutation || hasNewRemoteRevision) {
+      const hasNewRemoteChange =
+        (activePassServerRev >= 0 && latestObservedRemoteServerRev > activePassServerRev) ||
+        (Boolean(activePassMetaDigest) &&
+          Boolean(latestObservedRemoteMetaDigest) &&
+          latestObservedRemoteMetaDigest !== activePassMetaDigest) ||
+        (Boolean(activePassMaterialsDigest) &&
+          Boolean(latestObservedRemoteMaterialsDigest) &&
+          latestObservedRemoteMaterialsDigest !== activePassMaterialsDigest);
+      if (options?.forceManifestRefresh || hasNewLocalMutation || hasNewRemoteChange) {
         pendingCloudReconcile = true;
         if (options?.forceManifestRefresh) {
           pendingForceManifestRefresh = true;
@@ -3425,6 +3711,7 @@ export const FirestoreSyncService = {
       ok: boolean;
       pulledChanges: boolean;
       pushedChanges?: boolean;
+      manifestConflict?: boolean;
       quotaExceeded?: boolean;
       errorMessage?: string;
     }> => {
@@ -3432,6 +3719,9 @@ export const FirestoreSyncService = {
       let pushedChanges = false;
       passStartedLocalMutationSeq = currentLocalMutationSeq;
       activePassServerRev = -1;
+      activePassMetaDigest = '';
+      activePassMaterialsDigest = '';
+      hydrateOutboxIntoRamFlags();
       try {
         const ok = await ensureWorkspaceReady(fbUser);
         if (!ok) {
@@ -3470,7 +3760,14 @@ export const FirestoreSyncService = {
         }
 
         const remoteServerRev = Number(wsData.serverRevision) || 0;
+        const expectedBaseline = {
+          serverRevision: remoteServerRev,
+          metaDigest: String(wsData.metaDigest || 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'),
+          materialsDigest: String(wsData.materialsDigest || '0:0:0:0')
+        };
         activePassServerRev = remoteServerRev;
+        activePassMetaDigest = expectedBaseline.metaDigest;
+        activePassMaterialsDigest = expectedBaseline.materialsDigest;
         const remoteMetaRev = Number(wsData.metaRevision) || 0;
         const checkpoint =
           hydrateRamStateFromCheckpoint(fbUser.uid) || readCloudSyncCheckpoint(fbUser.uid);
@@ -3482,17 +3779,19 @@ export const FirestoreSyncService = {
         let nextAccountChunkCount = Number(wsData.accountChunkCount) || 0;
         let nextWarehouseChunkCount = Number(wsData.warehouseChunkCount) || 0;
         let nextTombstoneChunkCount = Number(wsData.tombstoneChunkCount) || 0;
-        let nextMetaDigest = String(wsData.metaDigest || 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0');
+        let nextMetaDigest = expectedBaseline.metaDigest;
         let nextMetaRevision = remoteMetaRev;
 
         let nextMaterialsCount = Number(wsData.materialsCount) || 0;
         let nextMaterialsChunkCount = Number(wsData.materialsChunkCount) || 0;
-        let nextMaterialsDigest = String(wsData.materialsDigest || '0:0:0:0');
+        let nextMaterialsDigest = expectedBaseline.materialsDigest;
         let nextMaterialsRevision = Number(wsData.materialsRevision) || 0;
 
         let nextInboundIndexChunkCount = Number(wsData.inboundIndexChunkCount) || 0;
         let nextOutboundIndexChunkCount = Number(wsData.outboundIndexChunkCount) || 0;
         let manifestMutated = false;
+        const pushedDomains: TouchedManifestDomains = {};
+        const verifiedUnchangedDomains: TouchedManifestDomains = {};
 
         const localUsers = StorageService.getUsers();
         const localWhs = StorageService.getWarehouses();
@@ -3636,22 +3935,20 @@ export const FirestoreSyncService = {
 
         // Fast-path: Chỉ đồng bộ khi thực sự có khác biệt theo từng miền dữ liệu
         if (!anyWorkNeeded) {
-          cloudMetaUsersDirty = false;
-          cloudMetaWarehousesDirty = false;
-          cloudMetaTombstonesDirty = false;
-          cloudMetaDirty = false;
-          cloudOsdDirty = false;
-          cloudInboundDirty = false;
-          cloudOutboundDirty = false;
-          cloudMaterialsDirty = false;
-          dirtyUserIds.clear();
-          dirtyWarehouseIds.clear();
-          dirtyMaterialCodes.clear();
-          dirtyInboundCodes.clear();
-          dirtyOutboundCodes.clear();
+          clearSyncedOutboxDomains({
+            users: true,
+            warehouses: true,
+            tombstones: true,
+            osd: true,
+            materials: true,
+            inbound: true,
+            outbound: true
+          });
 
           lastAppliedCloudServerRev = remoteServerRev;
           lastAppliedCloudMetaRev = nextMetaRevision;
+          lastAppliedCloudMetaDigest = expectedBaseline.metaDigest;
+          lastAppliedCloudMaterialsDigest = expectedBaseline.materialsDigest;
           lastSyncedOsdDigest = preOsdDigest;
           if (!checkpoint || !cpV2) {
             writeCloudSyncCheckpoint({
@@ -3741,6 +4038,14 @@ export const FirestoreSyncService = {
           nextMetaRevision = remoteMetaRev + 1;
           lastAppliedCloudMetaRev = nextMetaRevision;
           manifestMutated = true;
+          if (needPushUsers) pushedDomains.users = true;
+          else verifiedUnchangedDomains.users = true;
+          if (needPushWarehouses) pushedDomains.warehouses = true;
+          else verifiedUnchangedDomains.warehouses = true;
+          if (needPushTombstones) pushedDomains.tombstones = true;
+          else verifiedUnchangedDomains.tombstones = true;
+          if (needPushOsd) pushedDomains.osd = true;
+          else verifiedUnchangedDomains.osd = true;
         } else if (needPushOsd) {
           const pushedOsd = await pushOsdOnlyChunksToCloud(wsData);
           nextTombstoneChunkCount = pushedOsd.tombstoneChunkCount;
@@ -3748,14 +4053,16 @@ export const FirestoreSyncService = {
           nextMetaRevision = remoteMetaRev + 1;
           lastAppliedCloudMetaRev = nextMetaRevision;
           manifestMutated = true;
+          pushedDomains.osd = true;
+          if (pushedOsd.tombstonesPushed) pushedDomains.tombstones = true;
+          else verifiedUnchangedDomains.tombstones = true;
+          verifiedUnchangedDomains.users = true;
+          verifiedUnchangedDomains.warehouses = true;
         } else {
-          cloudMetaUsersDirty = false;
-          cloudMetaWarehousesDirty = false;
-          cloudMetaTombstonesDirty = false;
-          cloudMetaDirty = false;
-          cloudOsdDirty = false;
-          dirtyUserIds.clear();
-          dirtyWarehouseIds.clear();
+          verifiedUnchangedDomains.users = true;
+          verifiedUnchangedDomains.warehouses = true;
+          verifiedUnchangedDomains.tombstones = true;
+          verifiedUnchangedDomains.osd = true;
         }
 
         const tombstones = StorageService.getTombstones();
@@ -3947,6 +4254,9 @@ export const FirestoreSyncService = {
             nextInboundIndexChunkCount = idxWriteRes.chunkCount;
             inChunkIndexByCode = idxWriteRes.nextChunkIndexByCode;
             manifestMutated = true;
+            pushedDomains.inbound = true;
+          } else {
+            verifiedUnchangedDomains.inbound = true;
           }
 
           cloudInboundIndexCache = {
@@ -3956,9 +4266,9 @@ export const FirestoreSyncService = {
             entries: new Map(cloudInMap),
             chunkIndexByCode: new Map(inChunkIndexByCode)
           };
+        } else {
+          verifiedUnchangedDomains.inbound = true;
         }
-        cloudInboundDirty = false;
-        dirtyInboundCodes.clear();
 
         if (outIndexRes) {
           const cloudOutMap = outIndexRes.entries;
@@ -4075,6 +4385,9 @@ export const FirestoreSyncService = {
             nextOutboundIndexChunkCount = idxWriteRes.chunkCount;
             outChunkIndexByCode = idxWriteRes.nextChunkIndexByCode;
             manifestMutated = true;
+            pushedDomains.outbound = true;
+          } else {
+            verifiedUnchangedDomains.outbound = true;
           }
 
           cloudOutboundIndexCache = {
@@ -4084,9 +4397,9 @@ export const FirestoreSyncService = {
             entries: new Map(cloudOutMap),
             chunkIndexByCode: new Map(outChunkIndexByCode)
           };
+        } else {
+          verifiedUnchangedDomains.outbound = true;
         }
-        cloudOutboundDirty = false;
-        dirtyOutboundCodes.clear();
 
         // 4. Đồng bộ Danh Mục Vật Tư (Materials) theo chunk chỉ khi phía Cloud hoặc cục bộ có thay đổi
         const currentMats = StorageService.getMaterials();
@@ -4110,10 +4423,13 @@ export const FirestoreSyncService = {
             nextMaterialsDigest = pushedMats.materialsDigest;
             nextMaterialsRevision = (Number(wsData.materialsRevision) || 0) + 1;
             manifestMutated = true;
+            pushedDomains.materials = true;
+          } else {
+            verifiedUnchangedDomains.materials = true;
           }
+        } else {
+          verifiedUnchangedDomains.materials = true;
         }
-        cloudMaterialsDirty = false;
-        dirtyMaterialCodes.clear();
 
         const finalUsers = StorageService.getUsers();
         const finalWhs = StorageService.getWarehouses();
@@ -4145,61 +4461,48 @@ export const FirestoreSyncService = {
           cloudOutboundIndexCache.domainDigest = finalOutDigest;
         }
 
-        // 5. Cập nhật WorkspaceManifest chỉ khi có dữ liệu thay đổi mới đẩy lên Cloud
+        // Xóa cờ các miền đã đối chiếu khớp Cloud trước khi giao dịch manifest
+        clearSyncedOutboxDomains(verifiedUnchangedDomains);
+
+        // 5. Cập nhật WorkspaceManifest bằng Firestore Transaction chỉ khi có dữ liệu thay đổi mới đẩy lên Cloud
         let finalServerRev = remoteServerRev;
+        let committedMetaDigest = finalMetaDigest;
+        let committedMatDigest = finalMatDigest;
         if (manifestMutated) {
           pushedChanges = true;
-          const nextServerRev = remoteServerRev + 1;
-          const prevAppliedServerRev = lastAppliedCloudServerRev;
-          lastAppliedCloudServerRev = nextServerRev;
-          knownExistingPaths.add(wsRef.path);
-          const nextManifestMutable = {
-            serverRevision: nextServerRev,
-            metaRevision: nextMetaRevision,
-            materialsRevision: nextMaterialsRevision,
-            materialsCount: nextMaterialsCount,
-            materialsChunkCount: nextMaterialsChunkCount,
-            materialsDigest: nextMaterialsDigest,
-            metaDigest: finalMetaDigest,
-            accountChunkCount: nextAccountChunkCount,
-            warehouseChunkCount: nextWarehouseChunkCount,
-            tombstoneChunkCount: nextTombstoneChunkCount,
-            inboundIndexChunkCount: nextInboundIndexChunkCount,
-            outboundIndexChunkCount: nextOutboundIndexChunkCount
-          };
-          const ownerUidStr = cleanStr(wsData.ownerUid || fbUser.uid, 128);
-          try {
-            await writeSingleProtectedDoc(
-              wsRef,
-              wsPath,
-              {
-                workspaceId: WORKSPACE_ID,
-                name: WORKSPACE_NAME,
-                ownerUid: ownerUidStr,
-                status: 'active',
-                allowSelfJoin: true
-              },
-              nextManifestMutable
-            );
-            finalServerRev = nextServerRev;
-            cachedWsManifest = {
-              data: {
-                workspaceId: WORKSPACE_ID,
-                name: WORKSPACE_NAME,
-                ownerUid: ownerUidStr,
-                updatedByUid: fbUser.uid,
-                status: 'active',
-                allowSelfJoin: true,
-                ...nextManifestMutable
-              },
-              atMs: Date.now()
-            };
-          } catch (err) {
-            lastAppliedCloudServerRev = prevAppliedServerRev;
-            throw err;
-          }
+          const committedManifest = await commitManifestWithTransaction({
+            fbUser,
+            expectedBaseline,
+            localUpdate: {
+              touched: pushedDomains,
+              metaDigest: finalMetaDigest,
+              accountChunkCount: nextAccountChunkCount,
+              warehouseChunkCount: nextWarehouseChunkCount,
+              tombstoneChunkCount: nextTombstoneChunkCount,
+              inboundIndexChunkCount: nextInboundIndexChunkCount,
+              outboundIndexChunkCount: nextOutboundIndexChunkCount,
+              materialsCount: nextMaterialsCount,
+              materialsChunkCount: nextMaterialsChunkCount,
+              materialsDigest: nextMaterialsDigest,
+              bumpMetaRevision: Boolean(
+                pushedDomains.users ||
+                  pushedDomains.warehouses ||
+                  pushedDomains.tombstones ||
+                  pushedDomains.osd
+              )
+            }
+          });
+          finalServerRev = committedManifest.serverRevision;
+          nextMetaRevision = committedManifest.metaRevision;
+          committedMetaDigest = committedManifest.metaDigest;
+          committedMatDigest = committedManifest.materialsDigest;
+          // Chỉ xóa outbox của các miền vừa đẩy SAU KHI giao dịch WorkspaceManifest thành công
+          clearSyncedOutboxDomains(pushedDomains);
         } else {
           lastAppliedCloudServerRev = remoteServerRev;
+          lastAppliedCloudMetaRev = nextMetaRevision;
+          lastAppliedCloudMetaDigest = expectedBaseline.metaDigest;
+          lastAppliedCloudMaterialsDigest = expectedBaseline.materialsDigest;
         }
 
         lastSyncedOsdDigest = computeOsdOnlyDigest(finalOsd, finalTombs);
@@ -4207,8 +4510,8 @@ export const FirestoreSyncService = {
           uid: fbUser.uid,
           serverRevision: finalServerRev,
           metaRevision: nextMetaRevision,
-          metaDigest: finalMetaDigest,
-          materialsDigest: finalMatDigest,
+          metaDigest: committedMetaDigest,
+          materialsDigest: committedMatDigest,
           inboundDigest: finalInDigest,
           outboundDigest: finalOutDigest,
           osdDigest: lastSyncedOsdDigest,
@@ -4229,6 +4532,17 @@ export const FirestoreSyncService = {
         });
         return { ok: true, pulledChanges, pushedChanges };
       } catch (err) {
+        if (err instanceof ManifestConflictError) {
+          console.info('Cloud manifest conflict detected, scheduling pull-merge-retry:', err.reason);
+          pendingCloudReconcile = true;
+          pendingForceManifestRefresh = true;
+          return {
+            ok: true,
+            pulledChanges,
+            pushedChanges: false,
+            manifestConflict: true
+          };
+        }
         console.warn('Cloud sync reconcile deferred:', err);
         if (isQuotaExceededError(err) || isFirestoreQuotaExhausted()) {
           const msg = notifyFirestoreQuotaExceeded(300_000);
@@ -4257,6 +4571,7 @@ export const FirestoreSyncService = {
         ok: boolean;
         pulledChanges: boolean;
         pushedChanges?: boolean;
+        manifestConflict?: boolean;
         quotaExceeded?: boolean;
         errorMessage?: string;
       } = { ok: false, pulledChanges: false, pushedChanges: false };
@@ -4277,13 +4592,28 @@ export const FirestoreSyncService = {
             pushedChanges: anyPushed
           };
 
-          if (passRes.quotaExceeded || !passRes.ok || !pendingCloudReconcile || passCount >= 2) {
+          if (passRes.quotaExceeded || !passRes.ok || !pendingCloudReconcile || passCount >= 3) {
             pendingCloudReconcile = false;
             pendingForceManifestRefresh = false;
             break;
           }
         }
-        return lastRes;
+        if (lastRes.manifestConflict) {
+          return {
+            ok: false,
+            pulledChanges: anyPulled,
+            pushedChanges: anyPushed,
+            errorMessage:
+              'Dữ liệu trên Cloud vừa được thiết bị khác cập nhật đồng thời. Đã giữ lại thay đổi cục bộ để đồng bộ lại.'
+          };
+        }
+        return {
+          ok: lastRes.ok,
+          pulledChanges: anyPulled,
+          pushedChanges: anyPushed,
+          quotaExceeded: lastRes.quotaExceeded,
+          errorMessage: lastRes.errorMessage
+        };
       } finally {
         isCloudReconciling = false;
         reconcileInFlightPromise = null;
@@ -4408,16 +4738,28 @@ export const FirestoreSyncService = {
         return { handled: false, success: false, message: '' };
       }
 
-      // Đồng bộ nhanh danh sách tài khoản mới nhất từ Cloud trước khi kiểm tra mật khẩu
+      // Chỉ tải accounts/tombstones từ Cloud khi digest miền người dùng hoặc tombstone có thay đổi
       const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
       const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
       if (wsSnap.exists()) {
-        await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser, {
-          pullUsers: true,
-          pullWarehouses: false,
-          pullTombstones: true,
-          pullOsd: false
+        const wsManifest = wsSnap.data() as WorkspaceManifestDoc;
+        cachedWsManifest = { data: wsManifest, atMs: Date.now() };
+        const loginFlags = computeLoginMetaPullFlags({
+          remoteMetaDigest: wsManifest.metaDigest,
+          accountChunkCount: wsManifest.accountChunkCount,
+          tombstoneChunkCount: wsManifest.tombstoneChunkCount,
+          localUsers: StorageService.getUsers(),
+          localTombstones: StorageService.getTombstones(),
+          isAdmin: isCloudAdmin(fbUser)
         });
+        if (loginFlags.pullUsers || loginFlags.pullTombstones) {
+          await pullMetaFromCloud(wsManifest, fbUser, {
+            pullUsers: loginFlags.pullUsers,
+            pullWarehouses: false,
+            pullTombstones: loginFlags.pullTombstones,
+            pullOsd: false
+          });
+        }
       }
 
       const users = StorageService.getUsers();
@@ -4627,45 +4969,42 @@ export const FirestoreSyncService = {
         const emailLower = fbUser.email.trim().toLowerCase();
         const emailDigest = computeEmailAuthDigest(emailLower);
 
-        // Luôn tải danh sách tài khoản mới nhất từ Cloud (accounts_0..N) khi đăng nhập Google để nhận phân quyền kho mới nhất từ Admin
-        let accountChunkTotal = Number(cachedWsManifest?.data?.accountChunkCount) || 0;
-        if (!cachedWsManifest || accountChunkTotal <= 0) {
+        // Chỉ tải accounts_* / tomb_* khi digest người dùng hoặc tombstone thực sự khác cục bộ
+        let wsManifest: WorkspaceManifestDoc | null =
+          cachedWsManifest && Date.now() - cachedWsManifest.atMs < 10_000
+            ? cachedWsManifest.data
+            : null;
+        if (!wsManifest) {
           try {
             const wsSnap = await safeGetDoc(
               doc(db, 'workspaces', WORKSPACE_ID),
               `workspaces/${WORKSPACE_ID}`
             );
             if (wsSnap.exists()) {
-              const wsManifest = wsSnap.data() as WorkspaceManifestDoc;
+              wsManifest = wsSnap.data() as WorkspaceManifestDoc;
               cachedWsManifest = { data: wsManifest, atMs: Date.now() };
-              accountChunkTotal = Number(wsManifest.accountChunkCount) || 1;
             }
           } catch {
-            // fallback 1 chunk
+            // fallback using local users
           }
         }
-        accountChunkTotal = Math.max(1, accountChunkTotal);
-        const accSnaps = await Promise.all(
-          Array.from({ length: accountChunkTotal }, (_, idx) => {
-            const cid = `accounts_${idx}`;
-            return safeGetDoc(
-              doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
-              `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`
-            );
-          })
-        );
-        const remoteUsers: User[] = [];
-        for (const snap of accSnaps) {
-          if (!snap.exists()) continue;
-          const rawItems = Array.isArray(snap.data().items) ? snap.data().items : [];
-          for (const raw of rawItems) {
-            if (raw && typeof raw === 'object') {
-              remoteUsers.push(deserializeAccountPublic(raw));
-            }
+        if (wsManifest) {
+          const loginFlags = computeLoginMetaPullFlags({
+            remoteMetaDigest: wsManifest.metaDigest,
+            accountChunkCount: wsManifest.accountChunkCount,
+            tombstoneChunkCount: wsManifest.tombstoneChunkCount,
+            localUsers: StorageService.getUsers(),
+            localTombstones: StorageService.getTombstones(),
+            isAdmin: isCloudAdmin(fbUser)
+          });
+          if (loginFlags.pullUsers || loginFlags.pullTombstones) {
+            await pullMetaFromCloud(wsManifest, fbUser, {
+              pullUsers: loginFlags.pullUsers,
+              pullWarehouses: false,
+              pullTombstones: loginFlags.pullTombstones,
+              pullOsd: false
+            });
           }
-        }
-        if (remoteUsers.length > 0) {
-          StorageService.applyRemoteMeta({ users: remoteUsers });
         }
         const localUsers = StorageService.getUsers();
 
@@ -4698,7 +5037,7 @@ export const FirestoreSyncService = {
         let matched = resolved.user;
         if (resolved.isNew || resolved.mutated) {
           matched = StorageService.upsertGoogleUser(matched);
-          cloudMetaDirty = true;
+          this.markLocalMutation('meta', [matched.id], { users: true });
         }
 
         const userKey = canonicalUserSessionKey(matched);
@@ -4836,7 +5175,7 @@ export const FirestoreSyncService = {
           };
 
         if (shouldSyncUserMetaToCloud) {
-          cloudMetaDirty = true;
+          this.markLocalMutation('meta', [matched.id], { users: true });
         }
         attachWorkspaceRealtimeListener();
         emitCloudState({ status: 'connected', errorMessage: null });
@@ -4890,12 +5229,24 @@ export const FirestoreSyncService = {
       const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
       const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
       if (wsSnap.exists()) {
-        await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser, {
-          pullUsers: true,
-          pullWarehouses: false,
-          pullTombstones: true,
-          pullOsd: false
+        const wsManifest = wsSnap.data() as WorkspaceManifestDoc;
+        cachedWsManifest = { data: wsManifest, atMs: Date.now() };
+        const loginFlags = computeLoginMetaPullFlags({
+          remoteMetaDigest: wsManifest.metaDigest,
+          accountChunkCount: wsManifest.accountChunkCount,
+          tombstoneChunkCount: wsManifest.tombstoneChunkCount,
+          localUsers: StorageService.getUsers(),
+          localTombstones: StorageService.getTombstones(),
+          isAdmin: isCloudAdmin(fbUser)
         });
+        if (loginFlags.pullUsers || loginFlags.pullTombstones) {
+          await pullMetaFromCloud(wsManifest, fbUser, {
+            pullUsers: loginFlags.pullUsers,
+            pullWarehouses: false,
+            pullTombstones: loginFlags.pullTombstones,
+            pullOsd: false
+          });
+        }
       }
 
       const resolved = resolveGoogleUserRecord(StorageService.getUsers(), {
@@ -5092,12 +5443,24 @@ export const FirestoreSyncService = {
       const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
       const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
       if (wsSnap.exists()) {
-        await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser, {
-          pullUsers: true,
-          pullWarehouses: false,
-          pullTombstones: true,
-          pullOsd: false
+        const wsManifest = wsSnap.data() as WorkspaceManifestDoc;
+        cachedWsManifest = { data: wsManifest, atMs: Date.now() };
+        const loginFlags = computeLoginMetaPullFlags({
+          remoteMetaDigest: wsManifest.metaDigest,
+          accountChunkCount: wsManifest.accountChunkCount,
+          tombstoneChunkCount: wsManifest.tombstoneChunkCount,
+          localUsers: StorageService.getUsers(),
+          localTombstones: StorageService.getTombstones(),
+          isAdmin: isCloudAdmin(fbUser)
         });
+        if (loginFlags.pullUsers || loginFlags.pullTombstones) {
+          await pullMetaFromCloud(wsManifest, fbUser, {
+            pullUsers: loginFlags.pullUsers,
+            pullWarehouses: false,
+            pullTombstones: loginFlags.pullTombstones,
+            pullOsd: false
+          });
+        }
       }
 
       const matched = findMatchingUser(StorageService.getUsers(), username);
@@ -5335,72 +5698,45 @@ export const FirestoreSyncService = {
 
       const pushed = await pushOsdOnlyChunksToCloud(wsData);
 
-      // Cập nhật WorkspaceManifest với serverRevision mới (chỉ tăng metaRevision nếu tombstones thay đổi)
       if (wsData) {
-        const nextServerRev = (Number(wsData.serverRevision) || 0) + 1;
-        const nextMetaRevision = pushed.tombstonesPushed
-          ? (Number(wsData.metaRevision) || 0) + 1
-          : Number(wsData.metaRevision) || 0;
-        const prevAppliedServerRev = lastAppliedCloudServerRev;
-        lastAppliedCloudServerRev = nextServerRev;
-        lastAppliedCloudMetaRev = nextMetaRevision;
-
-        knownExistingPaths.add(wsRef.path);
-        const ownerUidStr = cleanStr(wsData.ownerUid || fbUser.uid, 128);
-        const nextManifestMutable = {
-          serverRevision: nextServerRev,
-          metaRevision: nextMetaRevision,
-          materialsRevision: Number(wsData.materialsRevision) || 0,
-          materialsCount: Number(wsData.materialsCount) || 0,
-          materialsChunkCount: Number(wsData.materialsChunkCount) || 0,
-          materialsDigest: String(wsData.materialsDigest || '0:0:0:0'),
-          metaDigest: pushed.metaDigest,
-          accountChunkCount: Number(wsData.accountChunkCount) || 0,
-          warehouseChunkCount: Number(wsData.warehouseChunkCount) || 0,
-          tombstoneChunkCount: pushed.tombstoneChunkCount,
-          inboundIndexChunkCount: Number(wsData.inboundIndexChunkCount) || 0,
-          outboundIndexChunkCount: Number(wsData.outboundIndexChunkCount) || 0
-        };
         try {
-          await writeSingleProtectedDoc(
-            wsRef,
-            wsPath,
-            {
-              workspaceId: WORKSPACE_ID,
-              name: WORKSPACE_NAME,
-              ownerUid: ownerUidStr,
-              status: 'active',
-              allowSelfJoin: true
+          const committed = await commitManifestWithTransaction({
+            fbUser,
+            expectedBaseline: {
+              serverRevision: Number(wsData.serverRevision) || 0,
+              metaDigest: String(wsData.metaDigest || 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'),
+              materialsDigest: String(wsData.materialsDigest || '0:0:0:0')
             },
-            nextManifestMutable
-          );
-          cachedWsManifest = {
-            data: {
-              workspaceId: WORKSPACE_ID,
-              name: WORKSPACE_NAME,
-              ownerUid: ownerUidStr,
-              updatedByUid: fbUser.uid,
-              status: 'active',
-              allowSelfJoin: true,
-              ...nextManifestMutable
-            },
-            atMs: Date.now()
-          };
+            localUpdate: {
+              touched: {
+                osd: true,
+                tombstones: pushed.tombstonesPushed
+              },
+              metaDigest: pushed.metaDigest,
+              tombstoneChunkCount: pushed.tombstoneChunkCount,
+              bumpMetaRevision: pushed.tombstonesPushed
+            }
+          });
+          clearSyncedOutboxDomains({ osd: true, tombstones: pushed.tombstonesPushed });
           const prevCp = readCloudSyncCheckpoint(fbUser.uid);
           if (prevCp) {
             writeCloudSyncCheckpoint({
               ...prevCp,
-              serverRevision: nextServerRev,
-              metaRevision: nextMetaRevision,
-              metaDigest: pushed.metaDigest,
+              serverRevision: committed.serverRevision,
+              metaRevision: committed.metaRevision,
+              metaDigest: committed.metaDigest,
               osdDigest: currentOsdDigest,
               chunkDigests: { ...ramChunkDigests }
             });
           }
         } catch (err) {
-          lastAppliedCloudServerRev = prevAppliedServerRev;
+          if (err instanceof ManifestConflictError) {
+            return await this.reconcileWithCloud();
+          }
           throw err;
         }
+      } else {
+        clearSyncedOutboxDomains({ osd: true });
       }
       persistKnownExistingPaths(fbUser.uid);
 
@@ -5497,65 +5833,60 @@ export const FirestoreSyncService = {
           })
         : pushedMeta.metaDigest;
 
-      const nextServerRev = (Number(wsData.serverRevision) || 0) + 1;
-      const nextMetaRev = (Number(wsData.metaRevision) || 0) + 1;
-      const ownerUidStr = cleanStr(wsData.ownerUid || fbUser.uid, 128);
-      const nextManifestMutable = {
-        serverRevision: nextServerRev,
-        metaRevision: nextMetaRev,
-        materialsRevision: Number(wsData.materialsRevision) || 0,
-        materialsCount: Number(wsData.materialsCount) || 0,
-        materialsChunkCount: Number(wsData.materialsChunkCount) || 0,
-        materialsDigest: String(wsData.materialsDigest || '0:0:0:0'),
-        metaDigest: cleanStr(preservedMetaDigest, 128, 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'),
-        accountChunkCount: pushedMeta.accountChunkCount,
-        warehouseChunkCount: pushedMeta.warehouseChunkCount,
-        tombstoneChunkCount: pushedMeta.tombstoneChunkCount,
-        inboundIndexChunkCount: Number(wsData.inboundIndexChunkCount) || 0,
-        outboundIndexChunkCount: Number(wsData.outboundIndexChunkCount) || 0
-      };
+      let committed: WorkspaceManifestDoc;
+      try {
+        committed = await commitManifestWithTransaction({
+          fbUser,
+          expectedBaseline: {
+            serverRevision: Number(wsData.serverRevision) || 0,
+            metaDigest: String(wsData.metaDigest || 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'),
+            materialsDigest: String(wsData.materialsDigest || '0:0:0:0')
+          },
+          localUpdate: {
+            touched: {
+              users: true,
+              tombstones: true,
+              warehouses: pushWhsToo
+            },
+            metaDigest: cleanStr(preservedMetaDigest, 128, 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'),
+            accountChunkCount: pushedMeta.accountChunkCount,
+            warehouseChunkCount: pushedMeta.warehouseChunkCount,
+            tombstoneChunkCount: pushedMeta.tombstoneChunkCount,
+            bumpMetaRevision: true
+          }
+        });
+      } catch (txErr) {
+        if (txErr instanceof ManifestConflictError) {
+          const rec = await this.reconcileWithCloudDetailed({ forceManifestRefresh: true });
+          if (rec.ok) {
+            const mergedUsers = StorageService.getUsers();
+            return {
+              success: true,
+              count: mergedUsers.length,
+              message: `Đã gộp thay đổi đồng thời và đồng bộ ${mergedUsers.length} tài khoản người dùng lên Cloud Firestore thành công!`
+            };
+          }
+          return {
+            success: false,
+            message: rec.errorMessage || 'Dữ liệu tài khoản vừa thay đổi đồng thời, vui lòng thử lại.'
+          };
+        }
+        throw txErr;
+      }
 
-      knownExistingPaths.add(wsRef.path);
-      await writeSingleProtectedDoc(
-        wsRef,
-        wsPath,
-        {
-          workspaceId: WORKSPACE_ID,
-          name: WORKSPACE_NAME,
-          ownerUid: ownerUidStr,
-          status: 'active',
-          allowSelfJoin: true
-        },
-        nextManifestMutable
-      );
-      cachedWsManifest = {
-        data: {
-          workspaceId: WORKSPACE_ID,
-          name: WORKSPACE_NAME,
-          ownerUid: ownerUidStr,
-          updatedByUid: fbUser.uid,
-          status: 'active',
-          allowSelfJoin: true,
-          ...nextManifestMutable
-        },
-        atMs: Date.now()
-      };
-      lastAppliedCloudServerRev = nextServerRev;
-      lastAppliedCloudMetaRev = nextMetaRev;
-      cloudMetaUsersDirty = false;
-      if (pushWhsToo) cloudMetaWarehousesDirty = false;
-      cloudMetaTombstonesDirty = false;
-      cloudMetaDirty = cloudMetaWarehousesDirty;
-      dirtyUserIds.clear();
-      if (pushWhsToo) dirtyWarehouseIds.clear();
+      clearSyncedOutboxDomains({
+        users: true,
+        tombstones: true,
+        warehouses: pushWhsToo
+      });
 
       const prevCp = readCloudSyncCheckpoint(fbUser.uid);
       if (prevCp) {
         writeCloudSyncCheckpoint({
           ...prevCp,
-          serverRevision: nextServerRev,
-          metaRevision: nextMetaRev,
-          metaDigest: nextManifestMutable.metaDigest,
+          serverRevision: committed.serverRevision,
+          metaRevision: committed.metaRevision,
+          metaDigest: committed.metaDigest,
           chunkDigests: { ...ramChunkDigests }
         });
       }
@@ -5643,14 +5974,9 @@ export const FirestoreSyncService = {
         pushOsd: true,
         forceAll: true
       });
-      cloudMetaDirty = false;
-      cloudMetaUsersDirty = false;
-      cloudMetaWarehousesDirty = false;
-      cloudMetaTombstonesDirty = false;
 
       // 2. Push Materials
       const pushedMats = await pushMaterialsToCloud(0, true);
-      cloudMaterialsDirty = false;
 
       // 3. Push Inbound Receipts (Bulk Siêu Tốc)
       const localInbounds = StorageService.getInboundReceipts();
@@ -5707,75 +6033,55 @@ export const FirestoreSyncService = {
         chunkIndexByCode: new Map(outIdxRes.nextChunkIndexByCode)
       };
 
-      // 5. Update WorkspaceManifest
-      const nextServerRev = (Number(wsData.serverRevision) || 0) + 1;
-      const nextMetaRev = (Number(wsData.metaRevision) || 0) + 1;
-      const nextMatRev = (Number(wsData.materialsRevision) || 0) + 1;
-      const ownerUidStr = cleanStr(wsData.ownerUid || fbUser.uid, 128);
-      const nextManifestMutable = {
-        serverRevision: nextServerRev,
-        metaRevision: nextMetaRev,
-        materialsRevision: nextMatRev,
-        materialsCount: pushedMats.materialsCount,
-        materialsChunkCount: pushedMats.materialsChunkCount,
-        materialsDigest: pushedMats.materialsDigest,
-        metaDigest: fullMetaDigest || pushedMeta.metaDigest,
-        accountChunkCount: pushedMeta.accountChunkCount,
-        warehouseChunkCount: pushedMeta.warehouseChunkCount,
-        tombstoneChunkCount: pushedMeta.tombstoneChunkCount,
-        inboundIndexChunkCount: nextInboundIndexChunkCount,
-        outboundIndexChunkCount: nextOutboundIndexChunkCount
-      };
-
-      knownExistingPaths.add(wsRef.path);
-      lastAppliedCloudServerRev = nextServerRev;
-      lastAppliedCloudMetaRev = nextMetaRev;
-      await writeSingleProtectedDoc(
-        wsRef,
-        wsPath,
-        {
-          workspaceId: WORKSPACE_ID,
-          name: WORKSPACE_NAME,
-          ownerUid: ownerUidStr,
-          status: 'active',
-          allowSelfJoin: true
+      // 5. Update WorkspaceManifest atomically via Firestore Transaction
+      const committed = await commitManifestWithTransaction({
+        fbUser,
+        expectedBaseline: {
+          serverRevision: Number(wsData.serverRevision) || 0,
+          metaDigest: String(wsData.metaDigest || 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'),
+          materialsDigest: String(wsData.materialsDigest || '0:0:0:0')
         },
-        nextManifestMutable
-      );
-      cachedWsManifest = {
-        data: {
-          workspaceId: WORKSPACE_ID,
-          name: WORKSPACE_NAME,
-          ownerUid: ownerUidStr,
-          updatedByUid: fbUser.uid,
-          status: 'active',
-          allowSelfJoin: true,
-          ...nextManifestMutable
+        localUpdate: {
+          touched: {
+            users: true,
+            warehouses: true,
+            tombstones: true,
+            osd: true,
+            inbound: true,
+            outbound: true,
+            materials: true
+          },
+          metaDigest: fullMetaDigest || pushedMeta.metaDigest,
+          accountChunkCount: pushedMeta.accountChunkCount,
+          warehouseChunkCount: pushedMeta.warehouseChunkCount,
+          tombstoneChunkCount: pushedMeta.tombstoneChunkCount,
+          inboundIndexChunkCount: nextInboundIndexChunkCount,
+          outboundIndexChunkCount: nextOutboundIndexChunkCount,
+          materialsCount: pushedMats.materialsCount,
+          materialsChunkCount: pushedMats.materialsChunkCount,
+          materialsDigest: pushedMats.materialsDigest,
+          bumpMetaRevision: true
         },
-        atMs: Date.now()
-      };
+        allowForceOverwrite: true
+      });
 
-      cloudMetaDirty = false;
-      cloudMetaUsersDirty = false;
-      cloudMetaWarehousesDirty = false;
-      cloudMetaTombstonesDirty = false;
-      cloudOsdDirty = false;
-      cloudMaterialsDirty = false;
-      cloudInboundDirty = false;
-      cloudOutboundDirty = false;
-      dirtyUserIds.clear();
-      dirtyWarehouseIds.clear();
-      dirtyMaterialCodes.clear();
-      dirtyInboundCodes.clear();
-      dirtyOutboundCodes.clear();
+      clearSyncedOutboxDomains({
+        users: true,
+        warehouses: true,
+        tombstones: true,
+        osd: true,
+        materials: true,
+        inbound: true,
+        outbound: true
+      });
 
       lastSyncedOsdDigest = computeOsdOnlyDigest(finalOsd, finalTombs);
       writeCloudSyncCheckpoint({
         uid: fbUser.uid,
-        serverRevision: nextServerRev,
-        metaRevision: nextMetaRev,
-        metaDigest: nextManifestMutable.metaDigest,
-        materialsDigest: pushedMats.materialsDigest,
+        serverRevision: committed.serverRevision,
+        metaRevision: committed.metaRevision,
+        metaDigest: committed.metaDigest,
+        materialsDigest: committed.materialsDigest,
         inboundDigest: finalInDigest,
         outboundDigest: finalOutDigest,
         osdDigest: lastSyncedOsdDigest,

@@ -506,3 +506,388 @@ export function computeDomainSyncPlan(input: DomainSyncPlanInput): DomainSyncPla
     anyWorkNeeded
   };
 }
+
+export interface CloudPendingOutbox {
+  users: boolean;
+  warehouses: boolean;
+  tombstones: boolean;
+  osd: boolean;
+  materials: boolean;
+  inbound: boolean;
+  outbound: boolean;
+  userIds: string[];
+  warehouseIds: string[];
+  materialCodes: string[];
+  inboundCodes: string[];
+  outboundCodes: string[];
+  updatedAtMs: number;
+}
+
+const MAX_OUTBOX_KEYS = 2000;
+
+function mergeUniqueStrings(existing: string[], incoming: string[]): string[] {
+  if (incoming.length === 0) return existing;
+  const set = new Set<string>(existing);
+  for (let i = 0; i < incoming.length; i++) {
+    const val = String(incoming[i] || '').trim();
+    if (val) set.add(val);
+  }
+  const arr = Array.from(set);
+  return arr.length > MAX_OUTBOX_KEYS ? arr.slice(arr.length - MAX_OUTBOX_KEYS) : arr;
+}
+
+export function createEmptyPendingOutbox(): CloudPendingOutbox {
+  return {
+    users: false,
+    warehouses: false,
+    tombstones: false,
+    osd: false,
+    materials: false,
+    inbound: false,
+    outbound: false,
+    userIds: [],
+    warehouseIds: [],
+    materialCodes: [],
+    inboundCodes: [],
+    outboundCodes: [],
+    updatedAtMs: 0
+  };
+}
+
+export function sanitizePendingOutbox(raw: unknown): CloudPendingOutbox {
+  const empty = createEmptyPendingOutbox();
+  if (!raw || typeof raw !== 'object') return empty;
+  const obj = raw as Record<string, unknown>;
+  const strArr = (val: unknown): string[] =>
+    Array.isArray(val)
+      ? val
+          .map((x) => (typeof x === 'string' ? x.trim() : ''))
+          .filter(Boolean)
+          .slice(-MAX_OUTBOX_KEYS)
+      : [];
+  return {
+    users: Boolean(obj.users),
+    warehouses: Boolean(obj.warehouses),
+    tombstones: Boolean(obj.tombstones),
+    osd: Boolean(obj.osd),
+    materials: Boolean(obj.materials),
+    inbound: Boolean(obj.inbound),
+    outbound: Boolean(obj.outbound),
+    userIds: strArr(obj.userIds),
+    warehouseIds: strArr(obj.warehouseIds),
+    materialCodes: strArr(obj.materialCodes),
+    inboundCodes: strArr(obj.inboundCodes),
+    outboundCodes: strArr(obj.outboundCodes),
+    updatedAtMs: Number(obj.updatedAtMs) || 0
+  };
+}
+
+export function mergePendingOutboxMutation(
+  prev: CloudPendingOutbox,
+  kind: 'meta' | 'materials' | 'inbound' | 'outbound' | 'osd',
+  codes?: string[],
+  details?: { users?: boolean; warehouses?: boolean; tombstones?: boolean },
+  nowMs = Date.now()
+): CloudPendingOutbox {
+  const next: CloudPendingOutbox = {
+    ...prev,
+    userIds: [...prev.userIds],
+    warehouseIds: [...prev.warehouseIds],
+    materialCodes: [...prev.materialCodes],
+    inboundCodes: [...prev.inboundCodes],
+    outboundCodes: [...prev.outboundCodes],
+    updatedAtMs: nowMs
+  };
+  const cleanCodes = Array.isArray(codes)
+    ? codes.map((c) => String(c || '').trim()).filter(Boolean)
+    : [];
+
+  if (kind === 'meta') {
+    if (!details || (!details.users && !details.warehouses && !details.tombstones)) {
+      next.users = true;
+      next.warehouses = true;
+      next.tombstones = true;
+    } else {
+      if (details.users) next.users = true;
+      if (details.warehouses) next.warehouses = true;
+      if (details.tombstones) next.tombstones = true;
+    }
+    if (details?.users && cleanCodes.length > 0) {
+      next.userIds = mergeUniqueStrings(next.userIds, cleanCodes);
+    }
+    if (details?.warehouses && cleanCodes.length > 0) {
+      next.warehouseIds = mergeUniqueStrings(next.warehouseIds, cleanCodes);
+    }
+  } else if (kind === 'osd') {
+    next.osd = true;
+    if (details?.tombstones) next.tombstones = true;
+  } else if (kind === 'materials') {
+    next.materials = true;
+    if (cleanCodes.length > 0) {
+      next.materialCodes = mergeUniqueStrings(
+        next.materialCodes,
+        cleanCodes.map((c) => normKey(c)).filter(Boolean)
+      );
+    }
+  } else if (kind === 'inbound') {
+    next.inbound = true;
+    if (details?.tombstones) next.tombstones = true;
+    if (cleanCodes.length > 0) {
+      next.inboundCodes = mergeUniqueStrings(
+        next.inboundCodes,
+        cleanCodes.map((c) => normKey(c)).filter(Boolean)
+      );
+    }
+  } else if (kind === 'outbound') {
+    next.outbound = true;
+    if (details?.tombstones) next.tombstones = true;
+    if (cleanCodes.length > 0) {
+      next.outboundCodes = mergeUniqueStrings(
+        next.outboundCodes,
+        cleanCodes.map((c) => normKey(c)).filter(Boolean)
+      );
+    }
+  }
+  return next;
+}
+
+export function clearPendingOutboxDomains(
+  prev: CloudPendingOutbox,
+  cleared: Partial<Record<'users' | 'warehouses' | 'tombstones' | 'osd' | 'materials' | 'inbound' | 'outbound', boolean>>,
+  nowMs = Date.now()
+): CloudPendingOutbox {
+  return {
+    users: cleared.users ? false : prev.users,
+    warehouses: cleared.warehouses ? false : prev.warehouses,
+    tombstones: cleared.tombstones ? false : prev.tombstones,
+    osd: cleared.osd ? false : prev.osd,
+    materials: cleared.materials ? false : prev.materials,
+    inbound: cleared.inbound ? false : prev.inbound,
+    outbound: cleared.outbound ? false : prev.outbound,
+    userIds: cleared.users ? [] : [...prev.userIds],
+    warehouseIds: cleared.warehouses ? [] : [...prev.warehouseIds],
+    materialCodes: cleared.materials ? [] : [...prev.materialCodes],
+    inboundCodes: cleared.inbound ? [] : [...prev.inboundCodes],
+    outboundCodes: cleared.outbound ? [] : [...prev.outboundCodes],
+    updatedAtMs: nowMs
+  };
+}
+
+export function hasAnyPendingOutbox(outbox: CloudPendingOutbox): boolean {
+  return Boolean(
+    outbox.users ||
+      outbox.warehouses ||
+      outbox.tombstones ||
+      outbox.osd ||
+      outbox.materials ||
+      outbox.inbound ||
+      outbox.outbound
+  );
+}
+
+export function hasRemoteManifestChanged(params: {
+  remoteServerRev: number;
+  remoteMetaDigest: string;
+  remoteMaterialsDigest: string;
+  lastAppliedServerRev: number;
+  lastAppliedMetaDigest: string;
+  lastAppliedMaterialsDigest: string;
+}): boolean {
+  if (params.remoteServerRev !== params.lastAppliedServerRev) return true;
+  if (
+    params.lastAppliedMetaDigest &&
+    params.remoteMetaDigest &&
+    params.remoteMetaDigest !== params.lastAppliedMetaDigest
+  ) {
+    return true;
+  }
+  if (
+    params.lastAppliedMaterialsDigest &&
+    params.remoteMaterialsDigest &&
+    params.remoteMaterialsDigest !== params.lastAppliedMaterialsDigest
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function computeLoginMetaPullFlags(params: {
+  remoteMetaDigest?: string | null;
+  accountChunkCount?: number;
+  tombstoneChunkCount?: number;
+  localUsers: User[];
+  localTombstones: TombstoneMap;
+  isAdmin: boolean;
+}): { pullUsers: boolean; pullTombstones: boolean } {
+  const remoteV2 = parseMetaDigestV2(params.remoteMetaDigest);
+  const accCount = Number(params.accountChunkCount) || 0;
+  const tombCount = Number(params.tombstoneChunkCount) || 0;
+  const missingLocalAccounts = accCount > 0 && params.localUsers.length <= 1;
+  const adminMissingPii =
+    params.isAdmin && params.localUsers.some((u) => Boolean(u.emailDigest) && !u.email);
+
+  if (!remoteV2) {
+    return {
+      pullUsers: accCount > 0 || missingLocalAccounts || adminMissingPii,
+      pullTombstones: tombCount > 0
+    };
+  }
+
+  const localU = computeUsersDomainDigest(params.localUsers);
+  const localT = computeTombstonesDomainDigest(params.localTombstones);
+  return {
+    pullUsers: remoteV2.u !== localU || missingLocalAccounts || adminMissingPii,
+    pullTombstones: remoteV2.t !== localT
+  };
+}
+
+export interface TouchedManifestDomains {
+  users?: boolean;
+  warehouses?: boolean;
+  tombstones?: boolean;
+  osd?: boolean;
+  inbound?: boolean;
+  outbound?: boolean;
+  materials?: boolean;
+}
+
+export interface ManifestSnapshotLike {
+  serverRevision: number;
+  metaRevision: number;
+  materialsRevision: number;
+  materialsCount: number;
+  materialsChunkCount: number;
+  materialsDigest: string;
+  metaDigest: string;
+  accountChunkCount: number;
+  warehouseChunkCount: number;
+  tombstoneChunkCount: number;
+  inboundIndexChunkCount: number;
+  outboundIndexChunkCount: number;
+}
+
+export type ManifestTransactionOutcome =
+  | { conflict: true; reason: string }
+  | { conflict: false; manifest: ManifestSnapshotLike };
+
+export function resolveManifestTransactionUpdate(params: {
+  latestRemote: ManifestSnapshotLike;
+  expectedBaseline: {
+    serverRevision: number;
+    metaDigest: string;
+    materialsDigest: string;
+  };
+  localUpdate: {
+    touched: TouchedManifestDomains;
+    metaDigest: string;
+    accountChunkCount?: number;
+    warehouseChunkCount?: number;
+    tombstoneChunkCount?: number;
+    inboundIndexChunkCount?: number;
+    outboundIndexChunkCount?: number;
+    materialsCount?: number;
+    materialsChunkCount?: number;
+    materialsDigest?: string;
+    bumpMetaRevision?: boolean;
+  };
+}): ManifestTransactionOutcome {
+  const { latestRemote, expectedBaseline, localUpdate } = params;
+  const { touched } = localUpdate;
+  const latestRev = Number(latestRemote.serverRevision) || 0;
+  const expectedRev = Number(expectedBaseline.serverRevision) || 0;
+
+  const latestV2 = parseMetaDigestV2(latestRemote.metaDigest);
+  const expectedV2 = parseMetaDigestV2(expectedBaseline.metaDigest);
+  const localV2 = parseMetaDigestV2(localUpdate.metaDigest);
+
+  if (latestRev !== expectedRev) {
+    if (!latestV2 || !expectedV2 || !localV2) {
+      return { conflict: true, reason: 'legacy_revision_changed' };
+    }
+    if (touched.users && latestV2.u !== expectedV2.u) {
+      return { conflict: true, reason: 'users_changed_remotely' };
+    }
+    if (touched.warehouses && latestV2.w !== expectedV2.w) {
+      return { conflict: true, reason: 'warehouses_changed_remotely' };
+    }
+    if (touched.tombstones && latestV2.t !== expectedV2.t) {
+      return { conflict: true, reason: 'tombstones_changed_remotely' };
+    }
+    if (touched.osd && latestV2.o !== expectedV2.o) {
+      return { conflict: true, reason: 'osd_changed_remotely' };
+    }
+    if (touched.inbound && latestV2.in !== expectedV2.in) {
+      return { conflict: true, reason: 'inbound_changed_remotely' };
+    }
+    if (touched.outbound && latestV2.out !== expectedV2.out) {
+      return { conflict: true, reason: 'outbound_changed_remotely' };
+    }
+    if (
+      touched.materials &&
+      String(latestRemote.materialsDigest || '') !== String(expectedBaseline.materialsDigest || '')
+    ) {
+      return { conflict: true, reason: 'materials_changed_remotely' };
+    }
+  }
+
+  const mergedMetaDigest =
+    latestV2 && localV2
+      ? encodeMetaDigestV2({
+          u: touched.users ? localV2.u : latestV2.u,
+          w: touched.warehouses ? localV2.w : latestV2.w,
+          t: touched.tombstones ? localV2.t : latestV2.t,
+          o: touched.osd ? localV2.o : latestV2.o,
+          in: touched.inbound ? localV2.in : latestV2.in,
+          out: touched.outbound ? localV2.out : latestV2.out
+        })
+      : localUpdate.metaDigest;
+
+  const metaTouched =
+    localUpdate.bumpMetaRevision !== undefined
+      ? Boolean(localUpdate.bumpMetaRevision)
+      : Boolean(touched.users || touched.warehouses || touched.tombstones || touched.osd);
+
+  return {
+    conflict: false,
+    manifest: {
+      serverRevision: latestRev + 1,
+      metaRevision: (Number(latestRemote.metaRevision) || 0) + (metaTouched ? 1 : 0),
+      materialsRevision:
+        (Number(latestRemote.materialsRevision) || 0) + (touched.materials ? 1 : 0),
+      materialsCount:
+        touched.materials && localUpdate.materialsCount !== undefined
+          ? localUpdate.materialsCount
+          : Number(latestRemote.materialsCount) || 0,
+      materialsChunkCount:
+        touched.materials && localUpdate.materialsChunkCount !== undefined
+          ? localUpdate.materialsChunkCount
+          : Number(latestRemote.materialsChunkCount) || 0,
+      materialsDigest:
+        touched.materials && localUpdate.materialsDigest !== undefined
+          ? localUpdate.materialsDigest
+          : String(latestRemote.materialsDigest || '0:0:0:0'),
+      metaDigest: mergedMetaDigest,
+      accountChunkCount:
+        touched.users && localUpdate.accountChunkCount !== undefined
+          ? localUpdate.accountChunkCount
+          : Number(latestRemote.accountChunkCount) || 0,
+      warehouseChunkCount:
+        touched.warehouses && localUpdate.warehouseChunkCount !== undefined
+          ? localUpdate.warehouseChunkCount
+          : Number(latestRemote.warehouseChunkCount) || 0,
+      tombstoneChunkCount:
+        touched.tombstones && localUpdate.tombstoneChunkCount !== undefined
+          ? localUpdate.tombstoneChunkCount
+          : Number(latestRemote.tombstoneChunkCount) || 0,
+      inboundIndexChunkCount:
+        touched.inbound && localUpdate.inboundIndexChunkCount !== undefined
+          ? localUpdate.inboundIndexChunkCount
+          : Number(latestRemote.inboundIndexChunkCount) || 0,
+      outboundIndexChunkCount:
+        touched.outbound && localUpdate.outboundIndexChunkCount !== undefined
+          ? localUpdate.outboundIndexChunkCount
+          : Number(latestRemote.outboundIndexChunkCount) || 0
+    }
+  };
+}
+
