@@ -25,8 +25,7 @@ import {
   resolveEditedInboundVoucherCode,
   voucherCodeHasDatePrecision,
   deriveWarehouseAbbrev,
-  collectUsedMaterialCodeKeys,
-  generateUniqueMaterialCode,
+  createInboundMaterialCodeResolver,
   getAuthorizedWarehouses,
   isWarehouseAuthorized
 } from '../../utils/additiveMerge';
@@ -731,14 +730,14 @@ export const InboundManager: React.FC = () => {
   const handleAutoGenerateRowMaterialCode = (rowIdx: number) => {
     setFormItems((prev) => {
       if (rowIdx < 0 || rowIdx >= prev.length) return prev;
-      const usedCodes = collectUsedMaterialCodeKeys({
+      const resolver = createInboundMaterialCodeResolver({
         materials: StorageService.getMaterials(),
         inbounds: StorageService.getInboundReceipts(),
         outbounds: StorageService.getOutboundReceipts(),
         osd: StorageService.getOsdReceipts(),
-        extraCodes: prev.map((it) => it.materialCode)
+        extraItems: prev
       });
-      const generatedCode = generateUniqueMaterialCode(usedCodes, prev[rowIdx]?.materialName);
+      const generatedCode = resolver.resolve(prev[rowIdx]?.materialCode, prev[rowIdx]?.materialName);
       const copy = [...prev];
       copy[rowIdx] = { ...copy[rowIdx], materialCode: generatedCode };
       return copy;
@@ -890,12 +889,12 @@ export const InboundManager: React.FC = () => {
     const userFullName = currentUser?.fullName || 'Võ Dương Phú';
     let createdCount = 0;
     const existingForAutoNumber = StorageService.getInboundReceipts();
-    const usedMaterialCodes = collectUsedMaterialCodeKeys({
+    const materialCodeResolver = createInboundMaterialCodeResolver({
       materials: StorageService.getMaterials(),
       inbounds: existingForAutoNumber,
       outbounds: StorageService.getOutboundReceipts(),
       osd: StorageService.getOsdReceipts(),
-      extraCodes: importedItems.map((it) => it.materialCode)
+      extraItems: importedItems
     });
     const newReceipts: InboundReceipt[] = [];
 
@@ -938,10 +937,7 @@ export const InboundManager: React.FC = () => {
               : Math.round(qty * uPrice * 100) / 100;
           const batchVal = String(item.batchCode || item.packageNo || '').trim();
           const pkgNo = String(item.packageNo || batchVal || `PKG-${idx + 1}`).trim();
-          const rawMatCode = String(item.materialCode || '').trim().toUpperCase();
-          const matCode =
-            rawMatCode || generateUniqueMaterialCode(usedMaterialCodes, item.materialName);
-          usedMaterialCodes.add(normKey(matCode));
+          const matCode = materialCodeResolver.resolve(item.materialCode, item.materialName);
           const plNo = String(item.packingListNo || first?.packingListNo || 'PL-EXCEL-01').trim();
           const dwgNo = String(item.drawingNo || 'N/A').trim();
 
@@ -1112,12 +1108,12 @@ export const InboundManager: React.FC = () => {
     const headerMaker =
       formManufacturer.trim() || editingReceipt?.manufacturer || 'N/A';
 
-    const usedMaterialCodes = collectUsedMaterialCodeKeys({
+    const materialCodeResolver = createInboundMaterialCodeResolver({
       materials: StorageService.getMaterials(),
       inbounds: StorageService.getInboundReceipts(),
       outbounds: StorageService.getOutboundReceipts(),
       osd: StorageService.getOsdReceipts(),
-      extraCodes: formItems.map((it) => it.materialCode)
+      extraItems: formItems
     });
 
     const normalizedItems: InboundItemDetail[] = formItems.map((it) => {
@@ -1132,10 +1128,7 @@ export const InboundManager: React.FC = () => {
           : Math.round(qty * uPrice * 100) / 100;
       const noteText = (it.note ?? it.conditionNote ?? '').trim();
 
-      const rawMatCode = it.materialCode.trim();
-      const resolvedMaterialCode =
-        rawMatCode || generateUniqueMaterialCode(usedMaterialCodes, it.materialName);
-      usedMaterialCodes.add(normKey(resolvedMaterialCode));
+      const resolvedMaterialCode = materialCodeResolver.resolve(it.materialCode, it.materialName);
 
       const itemPl = (it.packingListNo || '').trim();
       let resolvedPl = '';

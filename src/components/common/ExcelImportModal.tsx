@@ -22,6 +22,10 @@ import {
 } from '../../services/excelService';
 import { Warehouse } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
+import {
+  createInboundMaterialCodeResolver,
+  type MaterialCodeResolutionResult
+} from '../../utils/additiveMerge';
 import { PaginationBar } from './PaginationBar';
 
 interface ExcelImportModalProps {
@@ -104,6 +108,20 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     const start = (previewPage - 1) * previewPageSize;
     return parsedRows.slice(start, start + previewPageSize);
   }, [parsedRows, previewPage, previewPageSize]);
+
+  const previewInboundResolvedCodes = useMemo<MaterialCodeResolutionResult[]>(() => {
+    if (type !== 'inbound' || parsedRows.length === 0) return [];
+    const resolver = createInboundMaterialCodeResolver({
+      materials: StorageService.getMaterials(),
+      inbounds: StorageService.getInboundReceipts(),
+      outbounds: StorageService.getOutboundReceipts(),
+      osd: StorageService.getOsdReceipts(),
+      extraItems: parsedRows
+    });
+    return parsedRows.map((row) =>
+      resolver.resolveWithSource(row?.materialCode, row?.materialName)
+    );
+  }, [type, parsedRows]);
 
   if (!isOpen) return null;
 
@@ -701,9 +719,24 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               </td>
                               <td className="p-2.5">
                                 <div className="font-semibold text-slate-900">{r.materialName}</div>
-                                <div className="text-[11px] font-mono text-blue-700">
+                                <div className="text-[11px] font-mono text-blue-700 flex items-center gap-1.5 flex-wrap">
                                   {r.materialCode ? (
-                                    r.materialCode
+                                    <span>{r.materialCode}</span>
+                                  ) : type === 'inbound' && previewInboundResolvedCodes[globalIdx] ? (
+                                    <>
+                                      <span className={previewInboundResolvedCodes[globalIdx].source === 'catalog' ? 'text-emerald-700 font-semibold' : 'text-indigo-700 font-semibold'}>
+                                        {previewInboundResolvedCodes[globalIdx].code}
+                                      </span>
+                                      <span className={`font-sans font-medium text-[10px] px-1.5 py-0.5 rounded ${
+                                        previewInboundResolvedCodes[globalIdx].source === 'catalog'
+                                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                          : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                                      }`}>
+                                        {previewInboundResolvedCodes[globalIdx].source === 'catalog'
+                                          ? 'Mã có sẵn'
+                                          : 'Tự tạo'}
+                                      </span>
+                                    </>
                                   ) : (
                                     <span className="text-slate-400 italic font-sans font-normal text-[11px] bg-slate-100 px-1.5 py-0.5 rounded">
                                       Tự sinh mã

@@ -1663,6 +1663,113 @@ export function generateUniqueMaterialCode(
   return candidate;
 }
 
+export function normalizeMaterialNameLookupKey(raw: string | undefined | null): string {
+  return (raw || '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export interface MaterialCodeResolutionResult {
+  code: string;
+  source: 'explicit' | 'catalog' | 'generated';
+}
+
+export function createInboundMaterialCodeResolver(sources: {
+  materials?: Array<{ code?: string | null; name?: string | null; updatedAt?: number }>;
+  inbounds?: InboundReceipt[];
+  outbounds?: OutboundReceipt[];
+  osd?: OsdReceipt[];
+  extraItems?: Array<{ materialCode?: string | null; materialName?: string | null }>;
+  extraCodes?: Array<string | null | undefined>;
+  prefix?: string;
+}) {
+  const usedCodes = collectUsedMaterialCodeKeys({
+    materials: sources.materials,
+    inbounds: sources.inbounds,
+    outbounds: sources.outbounds,
+    osd: sources.osd,
+    extraCodes: [
+      ...(sources.extraCodes || []),
+      ...(sources.extraItems || []).map((it) => it.materialCode)
+    ]
+  });
+
+  // 1. Ưu tiên tuyệt đối dùng lại mã vật tư sẵn có trong Danh mục vật tư theo tên vật tư
+  const catalogNameToCode = new Map<string, { code: string; updatedAt: number }>();
+  if (Array.isArray(sources.materials)) {
+    for (let i = 0; i < sources.materials.length; i++) {
+      const m = sources.materials[i];
+      const code = String(m?.code || '').trim().toUpperCase();
+      const nameKey = normalizeMaterialNameLookupKey(m?.name);
+      if (!code || !nameKey) continue;
+      const ts = Number(m?.updatedAt) || 0;
+      const prev = catalogNameToCode.get(nameKey);
+      if (!prev || ts >= prev.updatedAt) {
+        catalogNameToCode.set(nameKey, { code, updatedAt: ts });
+      }
+    }
+  }
+
+  // 2. Nếu trong cùng file/phiếu có dòng đã điền sẵn mã cho tên đó (và tên chưa có trong danh mục),
+  //    các dòng để trống mã cùng tên sẽ dùng chung mã này.
+  const batchNameToCode = new Map<string, string>();
+  if (Array.isArray(sources.extraItems)) {
+    for (let i = 0; i < sources.extraItems.length; i++) {
+      const it = sources.extraItems[i];
+      const code = String(it?.materialCode || '').trim().toUpperCase();
+      const nameKey = normalizeMaterialNameLookupKey(it?.materialName);
+      if (!code || !nameKey) continue;
+      if (!catalogNameToCode.has(nameKey) && !batchNameToCode.has(nameKey)) {
+        batchNameToCode.set(nameKey, code);
+      }
+    }
+  }
+
+  const resolveWithSource = (
+    rawCode?: string | null,
+    rawName?: string | null
+  ): MaterialCodeResolutionResult => {
+    const explicit = String(rawCode || '').trim().toUpperCase();
+    if (explicit) {
+      usedCodes.add(normKey(explicit));
+      const nameKey = normalizeMaterialNameLookupKey(rawName);
+      if (nameKey && !catalogNameToCode.has(nameKey) && !batchNameToCode.has(nameKey)) {
+        batchNameToCode.set(nameKey, explicit);
+      }
+      return { code: explicit, source: 'explicit' };
+    }
+
+    const nameKey = normalizeMaterialNameLookupKey(rawName);
+    if (nameKey) {
+      const fromCatalog = catalogNameToCode.get(nameKey);
+      if (fromCatalog) {
+        usedCodes.add(normKey(fromCatalog.code));
+        return { code: fromCatalog.code, source: 'catalog' };
+      }
+
+      const fromBatch = batchNameToCode.get(nameKey);
+      if (fromBatch) {
+        return { code: fromBatch, source: 'generated' };
+      }
+    }
+
+    const generated = generateUniqueMaterialCode(
+      usedCodes,
+      rawName,
+      sources.prefix || 'VT'
+    );
+    if (nameKey) {
+      batchNameToCode.set(nameKey, generated);
+    }
+    return { code: generated, source: 'generated' };
+  };
+
+  return {
+    resolve: (rawCode?: string | null, rawName?: string | null): string =>
+      resolveWithSource(rawCode, rawName).code,
+    resolveWithSource,
+    usedCodes
+  };
+}
+
 interface OrderedReceiptRef {
   kind: 'inbound' | 'outbound';
   primaryTs: number;
