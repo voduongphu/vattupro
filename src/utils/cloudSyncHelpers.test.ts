@@ -24,6 +24,7 @@ import {
   shouldRunLocalBridgeAfterCloud,
   shouldQueueReconcileDuringAuthTransition,
   evaluatePreSyncCheck,
+  resolveConvergedCheckpointDigests,
   type ManifestSnapshotLike
 } from './cloudSyncHelpers.ts';
 import type { User, InboundReceipt } from '../types/inventory.ts';
@@ -785,6 +786,81 @@ describe('cloudSyncHelpers', () => {
     assert.equal(manifestDrift.shouldProceedWithSync, true);
     assert.equal(manifestDrift.shouldSpinImmediately, true);
     assert.equal(manifestDrift.reason, 'remote_manifest_changed');
+  });
+
+  it('resolveConvergedCheckpointDigests prevents infinite pull loops while preserving accurate local dirty detection', () => {
+    const remoteMeta = encodeMetaDigestV2({
+      u: 'u_remote',
+      w: 'w_remote',
+      t: 't_remote',
+      o: 'o_remote',
+      in: 'in_remote',
+      out: 'out_remote'
+    });
+    const localMetaAfterAdditiveMerge = encodeMetaDigestV2({
+      u: 'u_local_plus_extra',
+      w: 'w_remote',
+      t: 't_remote',
+      o: 'o_local_plus_extra',
+      in: 'in_local_extra',
+      out: 'out_remote'
+    });
+
+    // Case 1: manifest did NOT mutate (additive merge left local slightly different from remote),
+    // non-dirty domains must converge remoteSyncedMetaDigest/remoteSyncedMaterialsDigest to remote
+    // so next reconcile pass won't detect false remote diffs and loop forever, while localMetaDigest
+    // remains the true local snapshot so offline local changes are still detected accurately.
+    const noMutateConverged = resolveConvergedCheckpointDigests({
+      manifestMutated: false,
+      remoteMetaDigest: remoteMeta,
+      remoteMaterialsDigest: '50:mat_remote',
+      finalLocalMetaDigest: localMetaAfterAdditiveMerge,
+      finalLocalMaterialsDigest: '52:mat_local_merged',
+      dirty: {
+        users: false,
+        warehouses: false,
+        tombstones: false,
+        osd: false,
+        inbound: false,
+        outbound: false,
+        materials: false
+      }
+    });
+    assert.equal(noMutateConverged.localMetaDigest, localMetaAfterAdditiveMerge);
+    assert.equal(noMutateConverged.localMaterialsDigest, '52:mat_local_merged');
+    assert.equal(noMutateConverged.remoteSyncedMetaDigest, remoteMeta);
+    assert.equal(noMutateConverged.remoteSyncedMaterialsDigest, '50:mat_remote');
+
+    // Case 2: manifest DID mutate on push -> both local & remoteSynced use committed digests
+    const committedMeta = encodeMetaDigestV2({
+      u: 'u_committed',
+      w: 'w_committed',
+      t: 't_committed',
+      o: 'o_committed',
+      in: 'in_committed',
+      out: 'out_committed'
+    });
+    const mutatedConverged = resolveConvergedCheckpointDigests({
+      manifestMutated: true,
+      committedMetaDigest: committedMeta,
+      committedMaterialsDigest: '60:mat_committed',
+      remoteMetaDigest: remoteMeta,
+      remoteMaterialsDigest: '50:mat_remote',
+      finalLocalMetaDigest: committedMeta,
+      finalLocalMaterialsDigest: '60:mat_committed',
+      dirty: {
+        users: false,
+        warehouses: false,
+        tombstones: false,
+        osd: false,
+        inbound: true,
+        outbound: false,
+        materials: true
+      }
+    });
+    assert.equal(mutatedConverged.localMetaDigest, committedMeta);
+    assert.equal(mutatedConverged.remoteSyncedMetaDigest, committedMeta);
+    assert.equal(mutatedConverged.remoteSyncedMaterialsDigest, '60:mat_committed');
   });
 });
 

@@ -79,6 +79,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
           onClose();
           setSuccessMessage('');
         }, 500);
+      } else if (res.redirected) {
+        setSuccessMessage(res.message || 'Đang chuyển hướng sang trang đăng nhập Google...');
       } else if (res.conflict) {
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);

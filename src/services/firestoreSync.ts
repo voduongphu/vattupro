@@ -14,6 +14,10 @@ import {
   db,
   auth,
   signInWithGooglePopup,
+  signInWithGoogleRedirectFallback,
+  consumeGoogleRedirectResult,
+  consumePendingGoogleRedirectLogin,
+  isInIframe,
   signOutAndPurgeFirebaseAuth,
   signOut,
   onAuthStateChanged,
@@ -87,6 +91,7 @@ import {
   hasRemoteManifestChanged,
   computeLoginMetaPullFlags,
   resolveManifestTransactionUpdate,
+  resolveConvergedCheckpointDigests,
   withAsyncTimeout,
   type CloudPendingOutbox,
   type TouchedManifestDomains,
@@ -240,6 +245,8 @@ interface CloudSyncCheckpoint {
   metaRevision: number;
   metaDigest: string;
   materialsDigest: string;
+  remoteMetaDigest?: string;
+  remoteMaterialsDigest?: string;
   inboundDigest: string;
   outboundDigest: string;
   osdDigest: string;
@@ -416,11 +423,13 @@ function hydrateRamStateFromCheckpoint(uid?: string | null): CloudSyncCheckpoint
   if (lastAppliedCloudMetaRev < 0 && typeof cp.metaRevision === 'number') {
     lastAppliedCloudMetaRev = cp.metaRevision;
   }
-  if (!lastAppliedCloudMetaDigest && cp.metaDigest) {
-    lastAppliedCloudMetaDigest = cp.metaDigest;
+  const effectiveRemoteMetaDigest = cp.remoteMetaDigest || cp.metaDigest;
+  const effectiveRemoteMaterialsDigest = cp.remoteMaterialsDigest || cp.materialsDigest;
+  if (!lastAppliedCloudMetaDigest && effectiveRemoteMetaDigest) {
+    lastAppliedCloudMetaDigest = effectiveRemoteMetaDigest;
   }
-  if (!lastAppliedCloudMaterialsDigest && cp.materialsDigest) {
-    lastAppliedCloudMaterialsDigest = cp.materialsDigest;
+  if (!lastAppliedCloudMaterialsDigest && effectiveRemoteMaterialsDigest) {
+    lastAppliedCloudMaterialsDigest = effectiveRemoteMaterialsDigest;
   }
   if (!lastSyncedOsdDigest && cp.osdDigest) {
     lastSyncedOsdDigest = cp.osdDigest;
@@ -3310,8 +3319,11 @@ export const FirestoreSyncService = {
         if (fbUser.email) {
           this.watchActiveSession(fbUser.email);
         }
-        // Kiểm tra & đồng bộ thay đổi (nếu có) ngay khi khôi phục phiên Google
-        void this.reconcileWithCloud();
+        // Chỉ kích hoạt đối chiếu ngay nếu đang có thay đổi cục bộ chưa đẩy;
+        // mọi thay đổi từ Cloud sẽ được onSnapshot của workspace trigger tự động qua SyncService.
+        if (this.hasPendingLocalChanges()) {
+          externalOnRemoteWorkspaceChange?.();
+        }
       } catch (err) {
         console.warn('Cloud workspace bootstrap warning:', err);
         if (isQuotaExceededError(err) || isFirestoreQuotaExhausted()) {
@@ -3352,7 +3364,7 @@ export const FirestoreSyncService = {
     return Boolean(auth.currentUser && auth.currentUser.emailVerified);
   },
 
-  async ensureReadyForAuth(timeoutMs = 2500): Promise<boolean> {
+  async ensureReadyForAuth(timeoutMs = 6000): Promise<boolean> {
     if (!currentState.authReady) {
       let timer: ReturnType<typeof setTimeout> | null = null;
       await Promise.race([
@@ -3529,12 +3541,42 @@ export const FirestoreSyncService = {
     return auth.currentUser;
   },
 
+  async consumePendingGoogleRedirect(): Promise<{
+    hasResult: boolean;
+    fbUser?: FirebaseUser;
+    forceLogoutOtherDevice?: boolean;
+  }> {
+    if (isInIframe()) {
+      return { hasResult: false };
+    }
+    const cred = await consumeGoogleRedirectResult();
+    const pendingMeta = consumePendingGoogleRedirectLogin();
+    const fbUser = cred?.user || (pendingMeta && auth.currentUser ? auth.currentUser : null);
+    if (!fbUser || !fbUser.email) {
+      return { hasResult: false };
+    }
+    emitCloudState({
+      authReady: true,
+      cloudEmail: fbUser.email,
+      cloudDisplayName: fbUser.displayName || null,
+      cloudUid: fbUser.uid,
+      errorMessage: null
+    });
+    return {
+      hasResult: true,
+      fbUser,
+      forceLogoutOtherDevice: Boolean(pendingMeta?.forceLogoutOtherDevice)
+    };
+  },
+
   async authenticateGooglePopup(options?: {
     forceSelectAccount?: boolean;
     reuseExistingIfAvailable?: boolean;
+    forceLogoutOtherDevice?: boolean;
   }): Promise<{
     success: boolean;
     cloudReady: boolean;
+    redirected?: boolean;
     fbUser?: FirebaseUser;
     email?: string | null;
     displayName?: string | null;
@@ -3542,24 +3584,22 @@ export const FirestoreSyncService = {
     message: string;
   }> {
     interactiveAuthInFlight = true;
+    const shouldForcePicker = Boolean(options?.forceSelectAccount);
     try {
       let fbUser: FirebaseUser | null = null;
-      const shouldForcePicker = Boolean(options?.forceSelectAccount);
       const canReuse =
         Boolean(options?.reuseExistingIfAvailable) &&
         !shouldForcePicker &&
-        Boolean(auth.currentUser && auth.currentUser.email);
+        Boolean(auth.currentUser && auth.currentUser.email && auth.currentUser.emailVerified);
 
+      // Tái sử dụng đồng bộ nếu phiên Firebase hiện tại đã xác minh (không await trước signInWithPopup để tránh Safari/Chrome mobile chặn popup)
       if (canReuse && auth.currentUser) {
-        const validToken = await ensureValidFirebaseAuthToken(auth.currentUser);
-        if (validToken && auth.currentUser) {
-          fbUser = auth.currentUser;
-        }
+        fbUser = auth.currentUser;
       }
 
       if (!fbUser) {
         emitCloudState({ status: 'connecting', errorMessage: null });
-        // Gọi signInWithGooglePopup trực tiếp trong call-stack sự kiện click, trả về ngay lập tức khi Popup đóng (~0ms độ trễ)
+        // Gọi signInWithGooglePopup trực tiếp trong call-stack sự kiện click
         const cred = await signInWithGooglePopup(shouldForcePicker || !auth.currentUser);
         fbUser = cred.user;
       }
@@ -3598,6 +3638,28 @@ export const FirestoreSyncService = {
       };
     } catch (err: any) {
       const code = String(err?.code || '');
+      if (
+        !isInIframe() &&
+        (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment')
+      ) {
+        try {
+          const startedRedirect = await signInWithGoogleRedirectFallback(
+            shouldForcePicker || !auth.currentUser,
+            Boolean(options?.forceLogoutOtherDevice)
+          );
+          if (startedRedirect) {
+            return {
+              success: false,
+              cloudReady: false,
+              redirected: true,
+              message: 'Đang chuyển hướng sang trang đăng nhập Google...'
+            };
+          }
+        } catch {
+          // rơi xuống thông báo lỗi popup bên dưới
+        }
+      }
+
       let msg = 'Không thể đăng nhập bằng tài khoản Google. Vui lòng thử lại.';
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         msg = 'Bạn đã đóng cửa sổ chọn tài khoản Google trước khi hoàn tất đăng nhập.';
@@ -3610,8 +3672,11 @@ export const FirestoreSyncService = {
       } else if (code === 'auth/network-request-failed') {
         msg = 'Kết nối mạng bị gián đoạn khi xác thực với Google. Vui lòng kiểm tra mạng và thử lại.';
       }
+      const isVerifiedConnected = Boolean(
+        auth.currentUser && verifiedWorkspaceUid === auth.currentUser.uid
+      );
       emitCloudState({
-        status: auth.currentUser ? 'connected' : 'disconnected',
+        status: isVerifiedConnected ? 'connected' : 'disconnected',
         errorMessage: code === 'auth/popup-closed-by-user' ? null : msg
       });
       return { success: false, cloudReady: false, message: msg };
@@ -3624,13 +3689,14 @@ export const FirestoreSyncService = {
     if (this.isCloudConnected()) {
       return { success: true, email: auth.currentUser?.email };
     }
+    // Luôn chờ Firebase Auth khôi phục IndexedDB persistence (trên điện thoại thường mất 150-800ms)
+    const ok = await this.ensureReadyForAuth(6000);
     const fbUser = auth.currentUser;
-    if (fbUser && fbUser.emailVerified) {
-      const ok = await this.ensureReadyForAuth();
-      if (ok) {
-        void this.reconcileWithCloud();
-        return { success: true, email: fbUser.email };
+    if (ok && fbUser && fbUser.emailVerified) {
+      if (this.hasUnappliedRemoteChanges() || this.hasPendingLocalChanges()) {
+        externalOnRemoteWorkspaceChange?.();
       }
+      return { success: true, email: fbUser.email };
     }
     return { success: false };
   },
@@ -3657,11 +3723,19 @@ export const FirestoreSyncService = {
       };
     }
     try {
+      const tokenOk = await ensureValidFirebaseAuthToken(authRes.fbUser, 10000);
+      if (!tokenOk) {
+        settleConnectingStateIfNeeded('Phiên đăng nhập Google đã hết hạn. Vui lòng chọn lại tài khoản Google.');
+        return {
+          success: false,
+          message: 'Phiên đăng nhập Google đã hết hạn. Vui lòng đăng nhập lại bằng tài khoản Google.'
+        };
+      }
       let wsTimer: ReturnType<typeof setTimeout> | null = null;
       const wsOk = await Promise.race<boolean>([
         ensureWorkspaceReady(authRes.fbUser),
         new Promise<boolean>((resolve) => {
-          wsTimer = setTimeout(() => resolve(false), 5000);
+          wsTimer = setTimeout(() => resolve(false), 18000);
         })
       ]).finally(() => {
         if (wsTimer) clearTimeout(wsTimer);
@@ -3887,6 +3961,9 @@ export const FirestoreSyncService = {
       activePassMaterialsDigest = '';
       hydrateOutboxIntoRamFlags();
       try {
+        if (!StorageService.isHydratedReady()) {
+          await StorageService.init();
+        }
         const ok = await ensureWorkspaceReady(fbUser);
         if (!ok) {
           return {
@@ -3983,7 +4060,9 @@ export const FirestoreSyncService = {
 
         const remoteV2 = parseMetaDigestV2(nextMetaDigest);
         const cpV2 = parseMetaDigestV2(checkpoint?.metaDigest);
-        const hasV2Checkpoint = Boolean(checkpoint && cpV2 && remoteV2);
+        const cpRemoteV2 = parseMetaDigestV2(checkpoint?.remoteMetaDigest || checkpoint?.metaDigest);
+        const cpRemoteMaterialsDigest = checkpoint?.remoteMaterialsDigest || checkpoint?.materialsDigest;
+        const hasV2Checkpoint = Boolean(checkpoint && cpRemoteV2 && remoteV2);
 
         const dirtyFlags = {
           users: cloudMetaUsersDirty || Boolean(cpV2 && cpV2.u !== localU),
@@ -4059,21 +4138,27 @@ export const FirestoreSyncService = {
         const missingLocalMaterials = nextMaterialsChunkCount > 0 && localMats.length === 0;
 
         const effectivePullUsers = hasV2Checkpoint
-          ? (remoteV2!.u !== cpV2!.u && plan.pullUsers) || missingLocalAccounts || adminMissingPii
+          ? (remoteV2!.u !== cpRemoteV2!.u && plan.pullUsers) || missingLocalAccounts || adminMissingPii
           : plan.pullUsers;
         const effectivePullWarehouses = hasV2Checkpoint
-          ? (remoteV2!.w !== cpV2!.w && plan.pullWarehouses) || missingLocalWhs
+          ? (remoteV2!.w !== cpRemoteV2!.w && plan.pullWarehouses) || missingLocalWhs
           : plan.pullWarehouses;
         const effectivePullTombstones = hasV2Checkpoint
-          ? remoteV2!.t !== cpV2!.t && plan.pullTombstones
+          ? remoteV2!.t !== cpRemoteV2!.t && plan.pullTombstones
           : plan.pullTombstones;
         const effectivePullOsd = hasV2Checkpoint
-          ? (remoteV2!.o !== cpV2!.o && plan.pullOsd) ||
+          ? (remoteV2!.o !== cpRemoteV2!.o && plan.pullOsd) ||
             (plan.osdRemoteCount > 0 && localOsd.length === 0)
           : plan.pullOsd;
+        const effectivePullInbound = hasV2Checkpoint
+          ? (remoteV2!.in !== cpRemoteV2!.in && plan.pullInbound) || missingLocalInbound
+          : plan.pullInbound;
+        const effectivePullOutbound = hasV2Checkpoint
+          ? (remoteV2!.out !== cpRemoteV2!.out && plan.pullOutbound) || missingLocalOutbound
+          : plan.pullOutbound;
         const remoteMatsChanged =
           !checkpoint ||
-          nextMaterialsDigest !== checkpoint.materialsDigest ||
+          nextMaterialsDigest !== cpRemoteMaterialsDigest ||
           missingLocalMaterials;
         const effectivePullMaterials =
           remoteMatsChanged &&
@@ -4086,8 +4171,8 @@ export const FirestoreSyncService = {
           effectivePullTombstones ||
           effectivePullOsd ||
           effectivePullMaterials ||
-          plan.pullInbound ||
-          plan.pullOutbound ||
+          effectivePullInbound ||
+          effectivePullOutbound ||
           plan.pushUsers ||
           plan.pushWarehouses ||
           plan.pushTombstones ||
@@ -4116,20 +4201,31 @@ export const FirestoreSyncService = {
           lastAppliedCloudMetaDigest = expectedBaseline.metaDigest;
           lastAppliedCloudMaterialsDigest = expectedBaseline.materialsDigest;
           lastSyncedOsdDigest = preOsdDigest;
-          if (!checkpoint || !cpV2) {
+          if (!checkpoint || !cpV2 || !checkpoint.remoteMetaDigest) {
+            const localFullMetaDigest = computeCloudSharedMetaDigest(
+              localUsers,
+              localWhs,
+              localTombs,
+              localOsd,
+              localInbounds,
+              localOutbounds
+            );
+            const converged = resolveConvergedCheckpointDigests({
+              manifestMutated: false,
+              remoteMetaDigest: expectedBaseline.metaDigest,
+              remoteMaterialsDigest: expectedBaseline.materialsDigest,
+              finalLocalMetaDigest: localFullMetaDigest,
+              finalLocalMaterialsDigest: preMatDigest,
+              dirty: dirtyFlags
+            });
             writeCloudSyncCheckpoint({
               uid: fbUser.uid,
               serverRevision: remoteServerRev,
               metaRevision: nextMetaRevision,
-              metaDigest: computeCloudSharedMetaDigest(
-                localUsers,
-                localWhs,
-                localTombs,
-                localOsd,
-                localInbounds,
-                localOutbounds
-              ),
-              materialsDigest: preMatDigest,
+              metaDigest: converged.localMetaDigest,
+              materialsDigest: converged.localMaterialsDigest,
+              remoteMetaDigest: converged.remoteSyncedMetaDigest,
+              remoteMaterialsDigest: converged.remoteSyncedMaterialsDigest,
               inboundDigest: localIn,
               outboundDigest: localOut,
               osdDigest: preOsdDigest,
@@ -4247,7 +4343,7 @@ export const FirestoreSyncService = {
 
         const shouldPullInbound = !remoteV2
           ? plan.pullInbound || missingLocalInbound
-          : (postPullInDiff && (!hasV2Checkpoint || remoteV2.in !== cpV2!.in)) ||
+          : (postPullInDiff && (!hasV2Checkpoint || remoteV2.in !== cpRemoteV2!.in)) ||
             missingLocalInbound;
         const shouldPushInbound = !remoteV2
           ? dirtyFlags.inbound || !checkpointMatchesServer
@@ -4255,7 +4351,7 @@ export const FirestoreSyncService = {
 
         const shouldPullOutbound = !remoteV2
           ? plan.pullOutbound || missingLocalOutbound
-          : (postPullOutDiff && (!hasV2Checkpoint || remoteV2.out !== cpV2!.out)) ||
+          : (postPullOutDiff && (!hasV2Checkpoint || remoteV2.out !== cpRemoteV2!.out)) ||
             missingLocalOutbound;
         const shouldPushOutbound = !remoteV2
           ? dirtyFlags.outbound || !checkpointMatchesServer
@@ -4635,8 +4731,8 @@ export const FirestoreSyncService = {
 
         // 5. Cập nhật WorkspaceManifest bằng Firestore Transaction chỉ khi có dữ liệu thay đổi mới đẩy lên Cloud
         let finalServerRev = remoteServerRev;
-        let committedMetaDigest = finalMetaDigest;
-        let committedMatDigest = finalMatDigest;
+        let committedMetaDigestFromServer: string | undefined;
+        let committedMatDigestFromServer: string | undefined;
         if (manifestMutated) {
           pushedChanges = true;
           const committedManifest = await commitManifestWithTransaction({
@@ -4663,8 +4759,8 @@ export const FirestoreSyncService = {
           });
           finalServerRev = committedManifest.serverRevision;
           nextMetaRevision = committedManifest.metaRevision;
-          committedMetaDigest = committedManifest.metaDigest;
-          committedMatDigest = committedManifest.materialsDigest;
+          committedMetaDigestFromServer = committedManifest.metaDigest;
+          committedMatDigestFromServer = committedManifest.materialsDigest;
           // Chỉ xóa outbox của các miền vừa đẩy SAU KHI giao dịch WorkspaceManifest thành công
           clearSyncedOutboxDomains(pushedDomains);
         } else {
@@ -4674,13 +4770,34 @@ export const FirestoreSyncService = {
           lastAppliedCloudMaterialsDigest = expectedBaseline.materialsDigest;
         }
 
+        const converged = resolveConvergedCheckpointDigests({
+          manifestMutated,
+          committedMetaDigest: committedMetaDigestFromServer,
+          committedMaterialsDigest: committedMatDigestFromServer,
+          remoteMetaDigest: expectedBaseline.metaDigest,
+          remoteMaterialsDigest: expectedBaseline.materialsDigest,
+          finalLocalMetaDigest: finalMetaDigest,
+          finalLocalMaterialsDigest: finalMatDigest,
+          dirty: {
+            users: Boolean(dirtyFlags.users && !pushedDomains.users),
+            warehouses: Boolean(dirtyFlags.warehouses && !pushedDomains.warehouses),
+            tombstones: Boolean(dirtyFlags.tombstones && !pushedDomains.tombstones),
+            osd: Boolean(dirtyFlags.osd && !pushedDomains.osd),
+            inbound: Boolean(dirtyFlags.inbound && !pushedDomains.inbound),
+            outbound: Boolean(dirtyFlags.outbound && !pushedDomains.outbound),
+            materials: Boolean(dirtyFlags.materials && !pushedDomains.materials)
+          }
+        });
+
         lastSyncedOsdDigest = computeOsdOnlyDigest(finalOsd, finalTombs);
         writeCloudSyncCheckpoint({
           uid: fbUser.uid,
           serverRevision: finalServerRev,
           metaRevision: nextMetaRevision,
-          metaDigest: committedMetaDigest,
-          materialsDigest: committedMatDigest,
+          metaDigest: converged.localMetaDigest,
+          materialsDigest: converged.localMaterialsDigest,
+          remoteMetaDigest: converged.remoteSyncedMetaDigest,
+          remoteMaterialsDigest: converged.remoteSyncedMaterialsDigest,
           inboundDigest: finalInDigest,
           outboundDigest: finalOutDigest,
           osdDigest: lastSyncedOsdDigest,
@@ -4723,11 +4840,13 @@ export const FirestoreSyncService = {
             errorMessage: msg
           };
         }
+        const errMsg = err instanceof Error ? err.message : String(err);
+        settleConnectingStateIfNeeded(errMsg);
         return {
           ok: false,
           pulledChanges,
           pushedChanges,
-          errorMessage: err instanceof Error ? err.message : String(err)
+          errorMessage: errMsg
         };
       }
     };
@@ -5092,7 +5211,7 @@ export const FirestoreSyncService = {
     deviceId: string,
     deviceLabel: string,
     forceLogoutOtherDevice: boolean,
-    timeoutMs = 12000
+    timeoutMs = 20000
   ): Promise<{
     handled: boolean;
     success: boolean;
@@ -5110,7 +5229,7 @@ export const FirestoreSyncService = {
     }
 
     let timedOut = false;
-    const effectiveTimeoutMs = Math.max(timeoutMs, 12000);
+    const effectiveTimeoutMs = Math.max(timeoutMs, 20000);
     const attemptId = ++activeInteractiveAuthAttemptId;
 
     const executeFastCloudLogin = async (): Promise<{
@@ -5126,6 +5245,11 @@ export const FirestoreSyncService = {
     }> => {
       interactiveAuthInFlight = true;
       try {
+        const tokenOk = await ensureValidFirebaseAuthToken(fbUser, 10000);
+        if (!tokenOk || timedOut || activeInteractiveAuthAttemptId !== attemptId) {
+          settleConnectingStateIfNeeded();
+          return { handled: false, success: false, message: '' };
+        }
         const ok = await ensureWorkspaceReady(fbUser);
         if (!ok || !fbUser.email || timedOut || activeInteractiveAuthAttemptId !== attemptId) {
           settleConnectingStateIfNeeded();

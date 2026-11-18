@@ -4,6 +4,8 @@ import {
   initializeAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
   onAuthStateChanged,
   indexedDBLocalPersistence,
@@ -12,7 +14,8 @@ import {
   inMemoryPersistence,
   browserPopupRedirectResolver,
   type Auth,
-  type User as FirebaseUser
+  type User as FirebaseUser,
+  type UserCredential
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -23,16 +26,32 @@ import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 
+const PENDING_REDIRECT_LOGIN_KEY = 'vtp_pending_google_redirect_login_v1';
+
+function isLikelyMobileDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(
+    navigator.userAgent || ''
+  );
+}
+
+export function isInIframe(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
 function createFastFirestore(): Firestore {
   try {
-    // Tự động phát hiện và chuyển sang Long-Polling ngay khi mạng/proxy chặn WebChannel (tránh treo 10-15 giây khi đăng nhập)
-    return initializeFirestore(
-      app,
-      {
-        experimentalAutoDetectLongPolling: true
-      },
-      firebaseConfig.firestoreDatabaseId
-    );
+    // Trên điện thoại di động / mạng 4G / proxy NAT, ép dùng Long-Polling ngay từ đầu giúp tránh treo 8-15 giây khi dò WebChannel;
+    // trên máy tính vẫn giữ auto-detect để tối ưu độ trễ WebChannel.
+    const settings = isLikelyMobileDevice()
+      ? { experimentalForceLongPolling: true }
+      : { experimentalAutoDetectLongPolling: true };
+    return initializeFirestore(app, settings, firebaseConfig.firestoreDatabaseId);
   } catch {
     return getFirestore(app, firebaseConfig.firestoreDatabaseId);
   }
@@ -65,8 +84,60 @@ export const auth = createResilientAuth();
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
+export function markPendingGoogleRedirectLogin(forceLogoutOtherDevice = false): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(
+      PENDING_REDIRECT_LOGIN_KEY,
+      JSON.stringify({ at: Date.now(), forceLogoutOtherDevice })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+export function consumePendingGoogleRedirectLogin(): { forceLogoutOtherDevice: boolean } | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_REDIRECT_LOGIN_KEY);
+    if (!raw) return null;
+    window.sessionStorage.removeItem(PENDING_REDIRECT_LOGIN_KEY);
+    const parsed = JSON.parse(raw) as { at?: number; forceLogoutOtherDevice?: boolean };
+    if (!parsed?.at || Date.now() - parsed.at > 5 * 60 * 1000) {
+      return null;
+    }
+    return { forceLogoutOtherDevice: Boolean(parsed.forceLogoutOtherDevice) };
+  } catch {
+    return null;
+  }
+}
+
+export function hasPendingGoogleRedirectFlag(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return Boolean(window.sessionStorage.getItem(PENDING_REDIRECT_LOGIN_KEY));
+  } catch {
+    return false;
+  }
+}
+
+let cachedRedirectResultPromise: Promise<UserCredential | null> | null = null;
+
+export function consumeGoogleRedirectResult(): Promise<UserCredential | null> {
+  if (typeof window === 'undefined' || isInIframe()) {
+    return Promise.resolve(null);
+  }
+  if (!cachedRedirectResultPromise) {
+    cachedRedirectResultPromise = getRedirectResult(auth, browserPopupRedirectResolver).catch(
+      () => null
+    );
+  }
+  return cachedRedirectResultPromise;
+}
+
 export function purgeStaleFirebasePendingKeys(): void {
   if (typeof window === 'undefined') return;
+  if (hasPendingGoogleRedirectFlag()) return;
   const storages: Storage[] = [];
   try {
     storages.push(window.sessionStorage);
@@ -101,18 +172,43 @@ export function purgeStaleFirebasePendingKeys(): void {
   }
 }
 
-export function signInWithGooglePopup(forceSelectAccount = true) {
-  purgeStaleFirebasePendingKeys();
+function buildGoogleAuthProvider(forceSelectAccount = true): GoogleAuthProvider {
   const provider = new GoogleAuthProvider();
   provider.addScope('email');
   provider.addScope('profile');
   if (forceSelectAccount) {
     provider.setCustomParameters({ prompt: 'select_account' });
   }
-  return signInWithPopup(auth, provider, browserPopupRedirectResolver);
+  return provider;
+}
+
+export function signInWithGooglePopup(forceSelectAccount = true) {
+  purgeStaleFirebasePendingKeys();
+  return signInWithPopup(auth, buildGoogleAuthProvider(forceSelectAccount), browserPopupRedirectResolver);
+}
+
+export async function signInWithGoogleRedirectFallback(
+  forceSelectAccount = true,
+  forceLogoutOtherDevice = false
+): Promise<boolean> {
+  if (typeof window === 'undefined' || isInIframe()) {
+    return false;
+  }
+  markPendingGoogleRedirectLogin(forceLogoutOtherDevice);
+  await signInWithRedirect(
+    auth,
+    buildGoogleAuthProvider(forceSelectAccount),
+    browserPopupRedirectResolver
+  );
+  return true;
 }
 
 export async function signOutAndPurgeFirebaseAuth(): Promise<void> {
+  try {
+    window.sessionStorage?.removeItem(PENDING_REDIRECT_LOGIN_KEY);
+  } catch {
+    // ignore
+  }
   try {
     await signOut(auth);
   } catch {

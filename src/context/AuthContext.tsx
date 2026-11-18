@@ -24,6 +24,7 @@ export interface ReplacedOtherDeviceAlert {
 export interface LoginActionResult {
   success: boolean;
   message: string;
+  redirected?: boolean;
   conflict?: boolean;
   needsCloudConnect?: boolean;
   cloudConnectedOnly?: boolean;
@@ -177,6 +178,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       void SyncService.autoConnectAndSyncIfPossible();
     } else {
       setCurrentUser(null);
+      void (async () => {
+        const res = await SyncService.resumePendingGoogleRedirectLogin();
+        if (!res) return;
+        refreshUsers();
+        if (res.success && res.user) {
+          if (res.replacedSession) {
+            const prevDevice = res.replacedSession.deviceLabel || 'Thiết bị khác';
+            setReplacedOtherDeviceAlert({
+              deviceLabel: prevDevice,
+              loginAt: res.replacedSession.loginAt,
+              message: `Đã yêu cầu đăng xuất thành công phiên đang mở trên "${prevDevice}" và chuyển sang thiết bị hiện tại.`
+            });
+          }
+          setCurrentUser(res.user);
+        }
+      })();
     }
   }, []);
 
@@ -260,6 +277,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!res.success || !res.user) {
       return {
         success: false,
+        redirected: res.redirected,
         cloudConnectedOnly: res.cloudConnectedOnly,
         conflict: res.conflict,
         activeSession: res.activeSession,

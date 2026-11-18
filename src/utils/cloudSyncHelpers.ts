@@ -1035,3 +1035,71 @@ export function evaluatePreSyncCheck(input: PreSyncCheckInput): PreSyncCheckResu
   };
 }
 
+export interface ConvergedCheckpointInput {
+  manifestMutated: boolean;
+  committedMetaDigest?: string;
+  committedMaterialsDigest?: string;
+  remoteMetaDigest: string;
+  remoteMaterialsDigest: string;
+  finalLocalMetaDigest: string;
+  finalLocalMaterialsDigest: string;
+  dirty: {
+    users: boolean;
+    warehouses: boolean;
+    tombstones: boolean;
+    osd: boolean;
+    inbound: boolean;
+    outbound: boolean;
+    materials: boolean;
+  };
+}
+
+export interface ConvergedCheckpointOutput {
+  localMetaDigest: string;
+  localMaterialsDigest: string;
+  remoteSyncedMetaDigest: string;
+  remoteSyncedMaterialsDigest: string;
+}
+
+export function resolveConvergedCheckpointDigests(
+  input: ConvergedCheckpointInput
+): ConvergedCheckpointOutput {
+  const localMetaDigest = input.finalLocalMetaDigest;
+  const localMaterialsDigest = input.finalLocalMaterialsDigest;
+
+  if (input.manifestMutated) {
+    return {
+      localMetaDigest,
+      localMaterialsDigest,
+      remoteSyncedMetaDigest: input.committedMetaDigest || localMetaDigest,
+      remoteSyncedMaterialsDigest: input.committedMaterialsDigest || localMaterialsDigest
+    };
+  }
+
+  const remoteV2 = parseMetaDigestV2(input.remoteMetaDigest);
+  const localV2 = parseMetaDigestV2(localMetaDigest);
+  let remoteSyncedMetaDigest = input.remoteMetaDigest || localMetaDigest;
+  if (remoteV2 && localV2) {
+    remoteSyncedMetaDigest = encodeMetaDigestV2({
+      u: input.dirty.users ? localV2.u : remoteV2.u,
+      w: input.dirty.warehouses ? localV2.w : remoteV2.w,
+      t: input.dirty.tombstones ? localV2.t : remoteV2.t,
+      o: input.dirty.osd ? localV2.o : remoteV2.o,
+      in: input.dirty.inbound ? localV2.in : remoteV2.in,
+      out: input.dirty.outbound ? localV2.out : remoteV2.out
+    });
+  }
+
+  const remoteSyncedMaterialsDigest = input.dirty.materials
+    ? localMaterialsDigest
+    : input.remoteMaterialsDigest || localMaterialsDigest;
+
+  return {
+    localMetaDigest,
+    localMaterialsDigest,
+    remoteSyncedMetaDigest,
+    remoteSyncedMaterialsDigest
+  };
+}
+
+

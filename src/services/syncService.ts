@@ -89,6 +89,7 @@ export interface UnifiedAuthSession {
 export interface LoginServerResult {
   success: boolean;
   message: string;
+  redirected?: boolean;
   conflict?: boolean;
   cloudConnectedOnly?: boolean;
   needsCloudConnect?: boolean;
@@ -1448,6 +1449,49 @@ async function reconcileInternal(options?: {
     };
   }
 
+  if (!StorageService.isHydratedReady()) {
+    await StorageService.init();
+  }
+
+  // Trên điện thoại, Firebase Auth IndexedDB thường mất 200-1000ms mới khôi phục xong sau khi mở app.
+  // Chờ Auth sẵn sàng trước khi quyết định isCloudActive để tránh rớt về fallback cục bộ hoặc bỏ lỡ đám mây.
+  const bootSess = getStoredUnifiedSession();
+  if (
+    (options?.trigger === 'startup' || options?.trigger === 'manual') &&
+    (!FirestoreSyncService.getState().authReady || Boolean(bootSess?.session.sessionToken.startsWith('cloud.'))) &&
+    !FirestoreSyncService.isCloudConnected()
+  ) {
+    await FirestoreSyncService.ensureReadyForAuth(5000);
+  }
+
+  if (authTransitionCount > 0) {
+    if (shouldQueueReconcileDuringAuthTransition(options)) {
+      pendingReconcile = true;
+      if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    }
+    return {
+      cloudSuccess: false,
+      localSuccess: false,
+      error: 'Đang hoàn tất xác thực đăng nhập, vui lòng thử lại sau giây lát.'
+    };
+  }
+
+  if (isReconciling && activeReconcilePromise) {
+    const isStrongTrigger =
+      Boolean(options?.forceManifestRefresh) ||
+      options?.trigger === 'mutation' ||
+      metaDirty ||
+      materialsDirty ||
+      localReceiptsDirty;
+    if (isStrongTrigger) {
+      pendingReconcile = true;
+      if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    } else if (options?.trigger === 'remote') {
+      pendingRemoteReconcile = true;
+    }
+    return await activeReconcilePromise;
+  }
+
   // Bước kiểm tra lastSyncTimestamp trước khi bắt đầu chu kỳ đồng bộ:
   // Chỉ kích hoạt trạng thái quay vòng tải khi thực sự có thay đổi cục bộ hoặc dữ liệu mới từ máy chủ
   const hasLocalDirtyFlags =
@@ -1840,7 +1884,22 @@ function connectWebSocket(force = false): void {
           if (msg.activeSessions && authTransitionCount === 0) {
             inspectManifestActiveSessions(msg.activeSessions);
           }
-          void reconcileInternal();
+          const currentSess = getStoredUnifiedSession();
+          const isCloudMode =
+            FirestoreSyncService.isCloudConnected() ||
+            FirestoreSyncService.hasAuthenticatedCloudUser() ||
+            Boolean(currentSess?.session.sessionToken.startsWith('cloud.'));
+          if (!isCloudMode) {
+            const srvRev = Number(msg.serverRevision) || 0;
+            const matRev = Number(msg.materialsRevision) || 0;
+            if (
+              !hasCompletedInitialLocalSync ||
+              srvRev > lastKnownServerRev ||
+              matRev > lastPulledMaterialsRev
+            ) {
+              void reconcileInternal();
+            }
+          }
           return;
         }
 
@@ -2623,8 +2682,17 @@ export const SyncService = {
 
       const authRes = await FirestoreSyncService.authenticateGooglePopup({
         forceSelectAccount: Boolean(options?.forceSelectAccount),
-        reuseExistingIfAvailable: Boolean(options?.reuseExistingAccount || forceFlag)
+        reuseExistingIfAvailable: Boolean(options?.reuseExistingAccount || forceFlag),
+        forceLogoutOtherDevice: forceFlag
       });
+
+      if (authRes.redirected) {
+        return {
+          success: false,
+          redirected: true,
+          message: authRes.message || 'Đang chuyển hướng sang trang đăng nhập Google...'
+        };
+      }
 
       if (!authRes.success || !authRes.email) {
         return {
@@ -2648,7 +2716,7 @@ export const SyncService = {
           deviceId,
           deviceLabel,
           forceFlag,
-          12000
+          20000
         );
 
         if (
@@ -2663,7 +2731,7 @@ export const SyncService = {
             deviceId,
             deviceLabel,
             true,
-            12000
+            20000
           );
         }
 
@@ -2817,8 +2885,10 @@ export const SyncService = {
         setTimeout(() => {
           if (authRes.fbUser) {
             void FirestoreSyncService.syncActiveSessionToCloudIfConnected(issuedServerSession).catch(() => {});
+            void FirestoreSyncService.autoConnectIfPossible().catch(() => {});
+          } else {
+            void reconcileInternal({ trigger: 'startup' });
           }
-          void reconcileInternal();
         }, 120);
 
         return {
@@ -2898,6 +2968,180 @@ export const SyncService = {
           success: true,
           user: matched,
           replacedSession: prevStatic && prevStatic.deviceId !== deviceId ? prevStatic : undefined,
+          message: `Đăng nhập thành công với ${emailLower}!`
+        };
+      }
+    } finally {
+      authTransitionCount = Math.max(0, authTransitionCount - 1);
+    }
+  },
+
+  async resumePendingGoogleRedirectLogin(): Promise<LoginServerResult | null> {
+    const redirectRes = await FirestoreSyncService.consumePendingGoogleRedirect();
+    if (!redirectRes.hasResult || !redirectRes.fbUser || !redirectRes.fbUser.email) {
+      return null;
+    }
+
+    authTransitionCount++;
+    const forceFlag = Boolean(redirectRes.forceLogoutOtherDevice);
+    try {
+      await StorageService.init();
+      const fbUser = redirectRes.fbUser;
+      const emailLower = fbUser.email!.trim().toLowerCase();
+      const displayName = fbUser.displayName || null;
+      const uid = fbUser.uid || null;
+      const deviceId = getDeviceId();
+      const deviceLabel = getDeviceLabel();
+
+      let cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
+        fbUser,
+        deviceId,
+        deviceLabel,
+        forceFlag,
+        20000
+      );
+      if (
+        cloudRes.handled &&
+        cloudRes.conflict &&
+        !forceFlag &&
+        cloudRes.activeSession &&
+        revokedLocalTokens.has(cloudRes.activeSession.sessionToken)
+      ) {
+        cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
+          fbUser,
+          deviceId,
+          deviceLabel,
+          true,
+          20000
+        );
+      }
+
+      if (cloudRes.handled) {
+        if (!cloudRes.success || !cloudRes.user || !cloudRes.session) {
+          if (!cloudRes.conflict) {
+            await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
+          }
+          return {
+            success: false,
+            conflict: cloudRes.conflict,
+            activeSession: cloudRes.activeSession,
+            user: cloudRes.user,
+            message: cloudRes.message || 'Không thể đăng nhập bằng tài khoản Google này.'
+          };
+        }
+
+        pendingInvalidation = null;
+        clearPersistedKickNotice();
+        saveStoredUnifiedSession({
+          user: cloudRes.user,
+          session: cloudRes.session
+        });
+
+        setTimeout(() => {
+          void reconcileInternal({ trigger: 'startup', skipLocalServer: true });
+        }, 120);
+
+        return {
+          success: true,
+          user: cloudRes.user,
+          replacedSession: cloudRes.replacedSession,
+          message: cloudRes.message
+        };
+      }
+
+      // Fallback cục bộ qua máy chủ hoặc Storage nếu Cloud lỗi nhất thời
+      try {
+        const res = await fetchJson<{
+          success: boolean;
+          conflict?: boolean;
+          activeSession?: ActiveUserSession;
+          message: string;
+          user?: User;
+          session?: ActiveUserSession;
+          replacedSession?: ActiveUserSession;
+          users?: User[];
+        }>('/api/auth/google-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: emailLower,
+            displayName,
+            uid,
+            deviceId,
+            deviceLabel,
+            localUsers: StorageService.getUsers(),
+            forceLogoutOtherDevice: forceFlag
+          })
+        });
+
+        if (res.success && res.user && res.session) {
+          pendingInvalidation = null;
+          clearPersistedKickNotice();
+          saveStoredUnifiedSession({
+            user: res.user,
+            session: res.session
+          });
+          if (Array.isArray(res.users) && res.users.length > 0) {
+            StorageService.applyRemoteMeta({ users: res.users });
+          } else {
+            StorageService.applyRemoteMeta({ users: [res.user] });
+          }
+          setTimeout(() => {
+            void FirestoreSyncService.syncActiveSessionToCloudIfConnected(res.session!).catch(() => {});
+            void FirestoreSyncService.autoConnectIfPossible().catch(() => {});
+          }, 120);
+          return {
+            success: true,
+            user: res.user,
+            replacedSession: res.replacedSession,
+            message: res.message
+          };
+        }
+        return {
+          success: false,
+          conflict: Boolean(res.conflict),
+          activeSession: res.activeSession,
+          user: res.user,
+          message: res.message || 'Không thể đăng nhập bằng tài khoản Google này.'
+        };
+      } catch {
+        const resolved = resolveGoogleUserRecord(StorageService.getUsers(), {
+          email: emailLower,
+          displayName,
+          uid,
+          nowMs: Date.now()
+        });
+        if (!resolved.allowed) {
+          await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
+          return {
+            success: false,
+            message: resolved.message || 'Tài khoản Google này đang bị khóa truy cập.'
+          };
+        }
+        const matched =
+          resolved.isNew || resolved.mutated
+            ? StorageService.upsertGoogleUser(resolved.user)
+            : resolved.user;
+        const userKey = normUserKey(matched.username);
+        const nowMs = Date.now();
+        const staticSession: ActiveUserSession = {
+          userId: matched.id,
+          username: matched.username,
+          userKey,
+          sessionToken: `static-${nowMs}-${Math.random().toString(36).slice(2, 10)}`,
+          issuedAtMs: nowMs,
+          deviceId,
+          deviceLabel,
+          loginAt: new Date(nowMs).toISOString(),
+          lastSeenAt: nowMs
+        };
+        saveStaticSessionEntry(userKey, staticSession);
+        pendingInvalidation = null;
+        clearPersistedKickNotice();
+        saveStoredUnifiedSession({ user: matched, session: staticSession });
+        return {
+          success: true,
+          user: matched,
           message: `Đăng nhập thành công với ${emailLower}!`
         };
       }
@@ -3073,7 +3317,7 @@ export const SyncService = {
 
       // Đảm bảo IndexedDB cục bộ và phiên Google Cloud trên trình duyệt Chrome đã sẵn sàng trước khi xác thực
       await StorageService.init();
-      await FirestoreSyncService.ensureReadyForAuth(2500);
+      await FirestoreSyncService.ensureReadyForAuth(5000);
 
       // Ưu tiên Cloud Firestore nếu thiết bị có phiên Google Đám mây hợp lệ; nếu lỗi tự động chuyển tiếp xuống /api/auth/login
       if (FirestoreSyncService.canAttemptCloudAuth()) {
@@ -3357,7 +3601,7 @@ export const SyncService = {
 
     try {
       await StorageService.init();
-      await FirestoreSyncService.ensureReadyForAuth(2500);
+      await FirestoreSyncService.ensureReadyForAuth(5000);
 
       if (FirestoreSyncService.canAttemptCloudAuth()) {
         const cloudRes = await FirestoreSyncService.requestLogoutOtherDeviceWithCloud(

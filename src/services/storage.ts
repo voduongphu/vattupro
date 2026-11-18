@@ -1820,15 +1820,19 @@ export const StorageService = {
     forceFromReceipts?: boolean;
     emitMutation?: boolean;
     notify?: boolean;
+    fromRemoteSync?: boolean;
   }): { added: number; updated: number; changed: boolean } {
     const inbounds = this.getInboundReceipts();
     const outbounds = this.getOutboundReceipts();
     const hasReceipts = inbounds.length > 0 || outbounds.length > 0;
+    const isRemoteSync = Boolean(options?.fromRemoteSync);
 
     let wasBaselineDone = safeLocalGetRaw(AUTO_MAT_SYNC_BASELINE_KEY) === 'true';
     const inBootBaselineWindow =
-      bootBaselineStartedAtMs > 0 && Date.now() - bootBaselineStartedAtMs < 15_000;
-    const isBaselineRun = (!wasBaselineDone && hasReceipts) || inBootBaselineWindow;
+      !isRemoteSync &&
+      bootBaselineStartedAtMs > 0 &&
+      Date.now() - bootBaselineStartedAtMs < 15_000;
+    const isBaselineRun = !isRemoteSync && ((!wasBaselineDone && hasReceipts) || inBootBaselineWindow);
     const forceRefresh = Boolean(options?.forceFromReceipts) || isBaselineRun;
 
     const rawStoredMaterials = getItem<MaterialItem[]>(STORAGE_KEYS.MATERIALS, []);
@@ -1934,7 +1938,9 @@ export const StorageService = {
           Number(tombstones.materials[curr.id]) || 0
         );
         const isAutoNote = isAutoSyncedMaterialNote(curr.notes);
-        const shouldOverwrite = forceRefresh || cand.latestMutationTs >= currTs || isAutoNote;
+        const shouldOverwrite = isRemoteSync
+          ? cand.latestMutationTs > currTs
+          : forceRefresh || cand.latestMutationTs >= currTs || isAutoNote;
 
         if (shouldOverwrite) {
           const nextName = cand.name || curr.name || cand.code;
@@ -1977,9 +1983,11 @@ export const StorageService = {
             nextNotes !== (curr.notes || '');
 
           if (fieldsDiff || needTombBump) {
-            const nextUpdatedAt = forceRefresh
-              ? Math.max(now, maxMatTombTs + 1, cand.latestMutationTs, currTs + 1)
-              : Math.max(cand.latestMutationTs, currTs + 1);
+            const nextUpdatedAt = isRemoteSync
+              ? Math.max(cand.latestMutationTs, currTs)
+              : forceRefresh
+                ? Math.max(now, maxMatTombTs + 1, cand.latestMutationTs, currTs + 1)
+                : Math.max(cand.latestMutationTs, currTs + 1);
             dedupedActive[existIdx] = {
               ...curr,
               code: cand.code,
@@ -2000,7 +2008,7 @@ export const StorageService = {
             updated++;
             changed = true;
           }
-        } else {
+        } else if (!isRemoteSync) {
           // Trường hợp Admin vừa chỉnh tay danh mục sau ngày lập phiếu: chỉ điền bổ sung các trường đang trống
           const nextPackingListNo = curr.packingListNo || cand.packingListNo || '';
           const nextShipment = curr.shipment || cand.shipment || '';
@@ -2041,7 +2049,7 @@ export const StorageService = {
       }
     });
 
-    if (!wasBaselineDone && hasReceipts) {
+    if (!isRemoteSync && !wasBaselineDone && hasReceipts) {
       bootBaselineStartedAtMs = Date.now();
       try {
         localStorage.setItem(AUTO_MAT_SYNC_BASELINE_KEY, 'true');
@@ -2446,7 +2454,7 @@ export const StorageService = {
         this.saveMaterials(cleanMat.list);
       }
 
-      const matSync = this.syncMaterialsFromReceipts();
+      const matSync = this.syncMaterialsFromReceipts({ fromRemoteSync: true });
       if (matSync.changed) {
         anyChanged = true;
       }
@@ -2492,7 +2500,7 @@ export const StorageService = {
       }
     }
 
-    const matSync = this.syncMaterialsFromReceipts();
+    const matSync = this.syncMaterialsFromReceipts({ fromRemoteSync: true });
     if (matSync.changed) {
       changed = true;
     }
@@ -2510,7 +2518,7 @@ export const StorageService = {
     if (merged.changed) {
       this.saveInboundReceipts(merged.list);
     }
-    const matSync = this.syncMaterialsFromReceipts();
+    const matSync = this.syncMaterialsFromReceipts({ fromRemoteSync: true });
     if (merged.changed || matSync.changed) {
       inventoryVersion++;
       notifySubscribers();
@@ -2526,7 +2534,7 @@ export const StorageService = {
     if (merged.changed) {
       this.saveOutboundReceipts(merged.list);
     }
-    const matSync = this.syncMaterialsFromReceipts();
+    const matSync = this.syncMaterialsFromReceipts({ fromRemoteSync: true });
     if (merged.changed || matSync.changed) {
       inventoryVersion++;
       notifySubscribers();

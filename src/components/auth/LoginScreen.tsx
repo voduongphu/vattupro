@@ -101,6 +101,8 @@ export const LoginScreen: React.FC = () => {
         setConflictSession(null);
         setConflictMessage('');
         setSuccessMessage(res.message || 'Đăng nhập Google thành công! Đang chuyển vào hệ thống...');
+      } else if (res.redirected) {
+        setSuccessMessage(res.message || 'Đang chuyển hướng sang trang đăng nhập Google...');
       } else if (res.conflict) {
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);

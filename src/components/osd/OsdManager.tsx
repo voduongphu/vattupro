@@ -188,18 +188,23 @@ export const OsdManager: React.FC = () => {
       loadData();
     });
 
-    // 4. Lắng nghe trạng thái mạng trực tuyến / ngoại tuyến
+    // 4. Lắng nghe trạng thái mạng trực tuyến / ngoại tuyến (chỉ đồng bộ tự động khi chuyển từ ngoại tuyến -> có mạng)
+    let wasOnline = SyncService.isOnline();
+    setIsOffline(!wasOnline);
     const unsubNetwork = SyncService.subscribeNetworkStatus((online) => {
       setIsOffline(!online);
       if (online) {
-        // Tự động kiểm tra đồng bộ khi vừa có mạng lại
-        void SyncService.syncNow().then((res) => {
-          loadData();
-          if (res.success) {
-            setSyncFeedback({ type: 'success', message: res.message, timestamp: Date.now() });
-          }
-        });
+        if (!wasOnline) {
+          wasOnline = true;
+          void SyncService.syncNow().then((res) => {
+            loadData();
+            if (res.success) {
+              setSyncFeedback({ type: 'success', message: res.message, timestamp: Date.now() });
+            }
+          });
+        }
       } else {
+        wasOnline = false;
         setSyncFeedback({
           type: 'warning',
           message: 'Thiết bị đang ngắt kết nối mạng. Dữ liệu biên bản OSD được lưu an toàn tại máy và sẽ tự động đồng bộ khi có mạng.',
@@ -224,8 +229,8 @@ export const OsdManager: React.FC = () => {
       }
     });
 
-    // 7. Khi chưa kết nối Cloud realtime (chế độ server nội bộ), chủ động kéo OSD mới nhất khi mở trang
-    if (!FirestoreSyncService.isCloudConnected()) {
+    // 7. Khi chưa kết nối Cloud realtime (chế độ server nội bộ) và đang online, chủ động kéo OSD mới nhất 1 lần khi mở trang
+    if (!FirestoreSyncService.isCloudConnected() && !FirestoreSyncService.hasAuthenticatedCloudUser() && wasOnline) {
       void SyncService.syncNow().then((res) => {
         loadData();
         if (res.success) {
