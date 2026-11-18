@@ -2271,8 +2271,8 @@ export const InboundManager: React.FC = () => {
 
       {/* Modal Lập / Chỉnh Sửa Phiếu Nhập Kho (Chuẩn QN-OPR-PR11-FM05.01) */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-6xl max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 lg:p-5">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-[96vw] 2xl:max-w-[1760px] max-h-[94dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div
@@ -2727,21 +2727,21 @@ export const InboundManager: React.FC = () => {
                 </div>
 
                 <div className="border border-slate-200 rounded-xl overflow-x-auto">
-                  <table className="w-full text-left text-xs min-w-[1120px]">
+                  <table className="w-full text-left text-xs min-w-[1460px]">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
                       <tr>
-                        <th className="p-2 w-10 text-center">STT</th>
-                        <th className="p-2 w-48">Mã vật tư</th>
-                        <th className="p-2 min-w-[210px]">Tên vật tư (*)</th>
-                        <th className="p-2 w-36">Số kiện (Package No.)</th>
-                        <th className="p-2 w-32">Mã lô</th>
-                        <th className="p-2 w-24 text-right">Số lượng (cây/tấm)</th>
-                        <th className="p-2 w-20 text-center">ĐVT</th>
-                        <th className="p-2 w-28 text-right">Khối lượng (Kg)</th>
-                        <th className="p-2 w-28 text-right">Đơn giá (VNĐ)</th>
-                        <th className="p-2 w-28 text-right">Thành tiền (VNĐ)</th>
-                        <th className="p-2 w-40">Vị trí lưu kho/bãi</th>
-                        <th className="p-2 w-36">Ghi chú</th>
+                        <th className="p-2 w-11 text-center">STT</th>
+                        <th className="p-2 min-w-[235px]">Mã vật tư</th>
+                        <th className="p-2 min-w-[260px]">Tên vật tư (*)</th>
+                        <th className="p-2 min-w-[170px]">Số kiện (Package No.)</th>
+                        <th className="p-2 min-w-[160px]">Mã lô</th>
+                        <th className="p-2 min-w-[110px] text-right">Số lượng (cây/tấm)</th>
+                        <th className="p-2 min-w-[84px] text-center">ĐVT</th>
+                        <th className="p-2 min-w-[125px] text-right">Khối lượng (Kg)</th>
+                        <th className="p-2 min-w-[125px] text-right">Đơn giá (VNĐ)</th>
+                        <th className="p-2 min-w-[125px] text-right">Thành tiền (VNĐ)</th>
+                        <th className="p-2 min-w-[185px]">Vị trí lưu kho/bãi</th>
+                        <th className="p-2 min-w-[160px]">Ghi chú</th>
                         <th className="p-2 w-14 text-center sticky right-0 bg-slate-100 z-10 shadow-[-2px_0_4px_rgba(0,0,0,0.06)] border-l border-slate-200">
                           Xóa
                         </th>
