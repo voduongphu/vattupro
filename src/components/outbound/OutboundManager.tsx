@@ -1340,6 +1340,7 @@ export const OutboundManager: React.FC = () => {
           st.shipment.toLowerCase().includes(q) ||
           st.packageNo.toLowerCase().includes(q) ||
           st.drawingNo.toLowerCase().includes(q) ||
+          (st.storageLocation && st.storageLocation.toLowerCase().includes(q)) ||
           (st.warehouseName && st.warehouseName.toLowerCase().includes(q))
         );
       }
@@ -1371,7 +1372,8 @@ export const OutboundManager: React.FC = () => {
           st.packageNo.toLowerCase().includes(q) ||
           st.packingListNo.toLowerCase().includes(q) ||
           st.shipment.toLowerCase().includes(q) ||
-          st.drawingNo.toLowerCase().includes(q)
+          st.drawingNo.toLowerCase().includes(q) ||
+          (st.storageLocation && st.storageLocation.toLowerCase().includes(q))
         );
       })
       .slice(0, 10);
@@ -2332,7 +2334,7 @@ export const OutboundManager: React.FC = () => {
                           setQuickStockQuery(e.target.value);
                           setIsQuickStockOpen(true);
                         }}
-                        placeholder="🔍 Tìm nhanh vật tư từ Tồn kho (gõ Mã VT, Tên VT, Mã lô / Số kiện, Packing List...)"
+                        placeholder="🔍 Tìm nhanh vật tư từ Tồn kho (gõ Mã VT, Tên VT, Vị trí lưu kho/bãi, Mã lô / Số kiện, Packing List...)"
                         className="w-full pl-9 pr-9 py-2 bg-white border border-blue-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none shadow-xs"
                       />
                       <Search className="w-4 h-4 text-blue-600 absolute left-3 top-2.5" />
@@ -2422,8 +2424,14 @@ export const OutboundManager: React.FC = () => {
                                   <div className="text-slate-800 font-semibold truncate mt-1">
                                     {st.materialName}
                                   </div>
-                                  <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                                  <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-2 mt-0.5">
                                     <span>Kho: {st.warehouseName || 'Hiện tại'}</span>
+                                    {st.storageLocation && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="text-emerald-700 font-semibold">Vị trí: {st.storageLocation}</span>
+                                      </>
+                                    )}
                                     <span>•</span>
                                     <span>ĐVT: {st.unit}</span>
                                     {st.drawingNo && st.drawingNo !== 'N/A' && (
@@ -2711,7 +2719,7 @@ export const OutboundManager: React.FC = () => {
                     setStockSearch(e.target.value);
                     setStockPage(1);
                   }}
-                  placeholder="Gõ tìm nhanh Mã vật tư, Tên vật tư, Mã lô / Số kiện, Packing List..."
+                  placeholder="Gõ tìm nhanh Mã vật tư, Tên vật tư, Vị trí lưu kho/bãi, Mã lô / Số kiện, Packing List..."
                   className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 sm:top-2.5" />
@@ -2820,9 +2828,14 @@ export const OutboundManager: React.FC = () => {
                                 </span>
                               </td>
                               <td className="p-2.5">
-                                <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                                <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded inline-block">
                                   {st.warehouseName || 'Kho hiện tại'}
                                 </span>
+                                {st.storageLocation && (
+                                  <span className="block mt-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                                    Vị trí: {st.storageLocation}
+                                  </span>
+                                )}
                               </td>
                               <td className="p-2.5 text-right font-bold text-slate-900 font-mono tabular-nums">
                                 {st.currentQuantity.toLocaleString('vi-VN')}

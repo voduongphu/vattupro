@@ -256,6 +256,7 @@ export interface InventoryStockRecord {
   packageName: string;
   category: string;
   drawingNo: string;
+  storageLocation?: string;
   
   // Tồn kho hiện tại (Tổng SL tồn = Tổng SL nhập + Tổng SL nhập trả kho - Tổng SL xuất kho - Tổng SL tái xuất)
   currentQuantity: number;
@@ -286,6 +287,7 @@ export interface StockFilterParams {
   packageName?: string;
   category?: string;
   drawingNo?: string;
+  storageLocation?: string;
   searchQuery?: string;
   startDate?: string;
   endDate?: string;

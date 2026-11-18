@@ -58,6 +58,24 @@ const FORM_ITEM_PAGE_SIZE = 100;
 export type ReceiptSortField = 'date' | 'code';
 export type SortOrder = 'asc' | 'desc';
 
+function summarizeReceiptStorageLocations(items: InboundItemDetail[]): string {
+  if (!Array.isArray(items) || items.length === 0) return '';
+  const seen = new Set<string>();
+  for (let i = 0; i < items.length; i++) {
+    const raw = (items[i]?.storageLocation || '').trim();
+    if (!raw) continue;
+    const parts = raw.split(/\s*\|\s*/);
+    for (let j = 0; j < parts.length; j++) {
+      const part = parts[j].trim();
+      if (!part) continue;
+      const upper = part.toUpperCase();
+      if (upper === 'N/A' || upper === 'NA' || upper === '-' || upper === '--') continue;
+      seen.add(part);
+    }
+  }
+  return seen.size > 0 ? Array.from(seen).join(' | ') : '';
+}
+
 export const InboundManager: React.FC = () => {
   const { currentUser, isAdmin } = useAuth();
   const [receipts, setReceipts] = useState<InboundReceipt[]>([]);
@@ -112,6 +130,7 @@ export const InboundManager: React.FC = () => {
   const [formShipment, setFormShipment] = useState('');
   const [formPackingListNo, setFormPackingListNo] = useState('');
   const [formDriverVehicle, setFormDriverVehicle] = useState('');
+  const [formStorageLocation, setFormStorageLocation] = useState('');
 
   // Chế độ chỉnh sửa phiếu nhập kho (chỉ dành cho Admin; null = lập phiếu mới)
   const [editingReceipt, setEditingReceipt] = useState<InboundReceipt | null>(null);
@@ -215,6 +234,25 @@ export const InboundManager: React.FC = () => {
     return map;
   }, [materials]);
 
+  const availableStorageLocations = useMemo(() => {
+    const set = new Set<string>();
+    for (let i = 0; i < receipts.length; i++) {
+      const items = receipts[i].items || [];
+      for (let j = 0; j < items.length; j++) {
+        const raw = (items[j]?.storageLocation || '').trim();
+        if (!raw) continue;
+        const parts = raw.split(/\s*\|\s*/);
+        for (let k = 0; k < parts.length; k++) {
+          const p = parts[k].trim();
+          if (p && p.toUpperCase() !== 'N/A' && p !== '-') {
+            set.add(p);
+          }
+        }
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'vi')).slice(0, 200);
+  }, [receipts]);
+
   const createBlankInboundItem = (idxOffset = 0): InboundItemDetail => ({
     id: `item-${Date.now()}-${idxOffset}-${Math.random().toString(36).substring(2, 6)}`,
     materialCode: '',
@@ -233,7 +271,7 @@ export const InboundManager: React.FC = () => {
     quantity: 1,
     unitPrice: 0,
     totalPrice: 0,
-    storageLocation: '',
+    storageLocation: formStorageLocation.trim(),
     conditionNote: '',
     note: ''
   });
@@ -271,7 +309,7 @@ export const InboundManager: React.FC = () => {
       quantity: defaultQty,
       unitPrice: 0,
       totalPrice: 0,
-      storageLocation: '',
+      storageLocation: formStorageLocation.trim(),
       conditionNote: '',
       note: ''
     };
@@ -484,6 +522,7 @@ export const InboundManager: React.FC = () => {
     setFormShipment('');
     setFormPackingListNo('');
     setFormDriverVehicle('');
+    setFormStorageLocation('');
     setFormError('');
     setFormItemSearch('');
     setFormItemPage(1);
@@ -584,6 +623,12 @@ export const InboundManager: React.FC = () => {
       rcp.packingListNo && rcp.packingListNo !== 'PL-EXCEL' ? rcp.packingListNo : ''
     );
     setFormDriverVehicle(rcp.driverVehicleNo || '');
+    const distinctEditLocations = new Set(
+      (rcp.items || [])
+        .map((it) => (it.storageLocation || '').trim())
+        .filter((loc) => loc && loc.toUpperCase() !== 'N/A')
+    );
+    setFormStorageLocation(distinctEditLocations.size === 1 ? Array.from(distinctEditLocations)[0] : '');
     setFormError('');
     setFormItemSearch('');
     setFormItemPage(1);
@@ -595,6 +640,7 @@ export const InboundManager: React.FC = () => {
       id: it.id || `item-edit-${Date.now()}-${idx}`,
       packageNo: it.packageNo ?? '',
       batchCode: it.batchCode ?? '',
+      storageLocation: (it.storageLocation || '').trim(),
       note: it.note ?? it.conditionNote ?? ''
     }));
     setFormItems(
@@ -963,7 +1009,7 @@ export const InboundManager: React.FC = () => {
             quantity: qty,
             unitPrice: uPrice,
             totalPrice: tPrice,
-            storageLocation: item.storageLocation || 'Kho tổng',
+            storageLocation: String(item.storageLocation || '').trim(),
             warehouseName: targetWh.name,
             conditionNote: item.conditionNote || '',
             note: item.note ?? item.conditionNote ?? ''
@@ -1171,6 +1217,7 @@ export const InboundManager: React.FC = () => {
         weightKg: Math.max(0, Math.round((Number(it.weightKg) || 0) * 100) / 100),
         unitPrice: uPrice,
         totalPrice: tPrice,
+        storageLocation: (it.storageLocation || '').trim() || formStorageLocation.trim(),
         conditionNote: noteText,
         note: noteText
       };
@@ -1353,7 +1400,8 @@ export const InboundManager: React.FC = () => {
                   (it.batchCode && it.batchCode.toLowerCase().includes(q)) ||
                   it.packageNo.toLowerCase().includes(q) ||
                   it.packageName.toLowerCase().includes(q) ||
-                  it.drawingNo.toLowerCase().includes(q)
+                  it.drawingNo.toLowerCase().includes(q) ||
+                  (it.storageLocation && it.storageLocation.toLowerCase().includes(q))
                 ) {
                   return true;
                 }
@@ -1487,7 +1535,8 @@ export const InboundManager: React.FC = () => {
         it.packageName.toLowerCase().includes(q) ||
         it.packingListNo.toLowerCase().includes(q) ||
         it.drawingNo.toLowerCase().includes(q) ||
-        it.category.toLowerCase().includes(q)
+        it.category.toLowerCase().includes(q) ||
+        (it.storageLocation && it.storageLocation.toLowerCase().includes(q))
     );
   }, [viewingReceipt, deferredDetailSearch]);
 
@@ -1521,6 +1570,7 @@ export const InboundManager: React.FC = () => {
           (it.materialName || '').toLowerCase().includes(q) ||
           (it.batchCode || '').toLowerCase().includes(q) ||
           (it.packageNo || '').toLowerCase().includes(q) ||
+          (it.storageLocation || '').toLowerCase().includes(q) ||
           (it.note || '').toLowerCase().includes(q);
         if (!hit) continue;
       }
@@ -1821,7 +1871,7 @@ export const InboundManager: React.FC = () => {
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Tìm theo Số phiếu (PNK...), Đơn vị giao hàng, Hợp đồng, Đề xuất số, Mã lô, Mã/Tên vật tư..."
+            placeholder="Tìm theo Số phiếu (PNK...), Đơn vị giao hàng, Hợp đồng, Vị trí lưu kho/bãi, Mã lô, Mã/Tên vật tư..."
             className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-3" />
@@ -2116,6 +2166,17 @@ export const InboundManager: React.FC = () => {
                           <div className="text-xs font-medium text-slate-500">Bộ phận: —</div>
                         )}
                         <div className="text-[11px] text-slate-500">Kho: {r.warehouseName}</div>
+                        {(() => {
+                          const locSummary = summarizeReceiptStorageLocations(r.items);
+                          return locSummary ? (
+                            <div
+                              className="text-[11px] text-emerald-700 font-medium mt-0.5 line-clamp-1"
+                              title={`Vị trí lưu kho/bãi: ${locSummary}`}
+                            >
+                              Vị trí: {locSummary}
+                            </div>
+                          ) : null;
+                        })()}
                       </td>
 
                       <td className="px-5 py-4">
@@ -2435,6 +2496,43 @@ export const InboundManager: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Vị trí lưu kho/bãi mặc định cho phiếu & gợi ý */}
+                <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-lg p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                    <label className="block font-semibold text-emerald-900 uppercase">
+                      Vị trí lưu kho/bãi (mặc định cho phiếu)
+                    </label>
+                    {formStorageLocation.trim() && formItems.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const targetLoc = formStorageLocation.trim();
+                          setFormItems((prev) =>
+                            prev.map((it) => ({ ...it, storageLocation: targetLoc }))
+                          );
+                          showToast(`Đã áp dụng vị trí "${targetLoc}" cho tất cả dòng vật tư.`);
+                        }}
+                        className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-white border border-emerald-300 hover:bg-emerald-50 px-2.5 py-0.5 rounded-md transition"
+                      >
+                        Áp dụng cho tất cả dòng
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    list="inbound-storage-location-list"
+                    value={formStorageLocation}
+                    onChange={(e) => setFormStorageLocation(e.target.value)}
+                    placeholder="VD: Bãi A - Khu 01 - Hàng 03, Kho kín K1 - Kệ B2... (có thể sửa riêng từng dòng bên dưới)"
+                    className="w-full px-2.5 py-1.5 bg-white border border-emerald-300 rounded-lg font-medium text-slate-800 outline-none focus:border-emerald-500"
+                  />
+                  <datalist id="inbound-storage-location-list">
+                    {availableStorageLocations.map((loc) => (
+                      <option key={loc} value={loc} />
+                    ))}
+                  </datalist>
+                </div>
+
                 {/* Thông tin chứng từ & Logistics bổ trợ (tùy chọn) */}
                 <div className="pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
@@ -2642,6 +2740,7 @@ export const InboundManager: React.FC = () => {
                         <th className="p-2 w-28 text-right">Khối lượng (Kg)</th>
                         <th className="p-2 w-28 text-right">Đơn giá (VNĐ)</th>
                         <th className="p-2 w-28 text-right">Thành tiền (VNĐ)</th>
+                        <th className="p-2 w-40">Vị trí lưu kho/bãi</th>
                         <th className="p-2 w-36">Ghi chú</th>
                         <th className="p-2 w-14 text-center sticky right-0 bg-slate-100 z-10 shadow-[-2px_0_4px_rgba(0,0,0,0.06)] border-l border-slate-200">
                           Xóa
@@ -2651,7 +2750,7 @@ export const InboundManager: React.FC = () => {
                     <tbody className="divide-y divide-slate-100">
                       {visibleFormItems.length === 0 ? (
                         <tr>
-                          <td colSpan={12} className="p-6 text-center text-slate-400">
+                          <td colSpan={13} className="p-6 text-center text-slate-400">
                             Không có dòng vật tư nào khớp từ khóa lọc.
                           </td>
                         </tr>
@@ -2787,6 +2886,22 @@ export const InboundManager: React.FC = () => {
                               {Number(item.totalPrice) > 0
                                 ? Number(item.totalPrice).toLocaleString('en-US')
                                 : '-'}
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                list="inbound-storage-location-list"
+                                value={item.storageLocation ?? ''}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'storageLocation', e.target.value)
+                                }
+                                placeholder={
+                                  formStorageLocation.trim()
+                                    ? formStorageLocation.trim()
+                                    : 'VD: Bãi A - Kệ 01'
+                                }
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded outline-none text-xs focus:border-emerald-500"
+                              />
                             </td>
                             <td className="p-2">
                               <input
@@ -3270,10 +3385,16 @@ export const InboundManager: React.FC = () => {
                     {viewingReceipt.requestNo || '-'}
                   </span>
                 </div>
-                <div className="col-span-2 md:col-span-3">
+                <div className="col-span-2 md:col-span-2">
                   <span className="text-slate-400 block">Nội dung:</span>
                   <span className="font-medium text-slate-800">
                     {viewingReceipt.notes || '-'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block">Vị trí lưu kho/bãi:</span>
+                  <span className="font-semibold text-emerald-700">
+                    {summarizeReceiptStorageLocations(viewingReceipt.items) || '-'}
                   </span>
                 </div>
                 <div>
@@ -3293,7 +3414,7 @@ export const InboundManager: React.FC = () => {
                     setDetailSearch(e.target.value);
                     setDetailPage(1);
                   }}
-                  placeholder="Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô trong phiếu..."
+                  placeholder="Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô, Vị trí lưu kho/bãi trong phiếu..."
                   className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 sm:top-2.5" />
@@ -3313,13 +3434,14 @@ export const InboundManager: React.FC = () => {
                         <th className="p-2.5 text-center">ĐVT</th>
                         <th className="p-2.5 text-right">Khối Lượng (Kg)</th>
                         <th className="p-2.5 text-right">Thành Tiền (VNĐ)</th>
+                        <th className="p-2.5">Vị trí lưu kho/bãi</th>
                         <th className="p-2.5">Ghi Chú</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {pagedDetailItems.length === 0 ? (
                         <tr>
-                          <td colSpan={10} className="p-8 text-center text-slate-400">
+                          <td colSpan={11} className="p-8 text-center text-slate-400">
                             Không tìm thấy mặt hàng phù hợp từ khóa.
                           </td>
                         </tr>
@@ -3364,6 +3486,15 @@ export const InboundManager: React.FC = () => {
                               <td className="p-2.5 text-right font-mono text-slate-700 tabular-nums">
                                 {lineTotal > 0 ? lineTotal.toLocaleString('en-US') : '-'}
                               </td>
+                              <td className="p-2.5 text-[11px] font-medium text-emerald-800">
+                                {it.storageLocation ? (
+                                  <span className="inline-block px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200">
+                                    {it.storageLocation}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">-</span>
+                                )}
+                              </td>
                               <td className="p-2.5 text-[11px] text-slate-600">
                                 {it.note ?? it.conditionNote ?? ''}
                               </td>
@@ -3398,6 +3529,7 @@ export const InboundManager: React.FC = () => {
                             ? detailTotals.totalAmount.toLocaleString('en-US')
                             : '-'}
                         </td>
+                        <td></td>
                         <td></td>
                       </tr>
                     </tfoot>

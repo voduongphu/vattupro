@@ -167,6 +167,7 @@ let cachedFilterOptions: {
   availableMakers: string[];
   availableSuppliers: string[];
   availableCategories: string[];
+  availableLocations: string[];
   totalPLCount: number;
   totalShipmentCount: number;
 } = {
@@ -175,6 +176,7 @@ let cachedFilterOptions: {
   availableMakers: [],
   availableSuppliers: [],
   availableCategories: [],
+  availableLocations: [],
   totalPLCount: 0,
   totalShipmentCount: 0
 };
@@ -454,6 +456,8 @@ interface AggEntry {
   packageName: string;
   category: string;
   drawingNo: string;
+  storageLocation: string;
+  storageLocations?: Set<string>;
   inboundQuantity: number;
   inboundWeightKg: number;
   returnInboundQuantity: number;
@@ -485,6 +489,17 @@ function cleanStockDisplayValue(raw: string | undefined | null, fallback = 'N/A'
     return fallback;
   }
   return trimmed;
+}
+
+function collectMeaningfulLocations(target: Set<string>, raw?: string | null): void {
+  if (!raw) return;
+  const parts = String(raw).split(/\s*\|\s*/);
+  for (let i = 0; i < parts.length; i++) {
+    const cleaned = cleanStockDisplayValue(parts[i], '');
+    if (cleaned) {
+      target.add(cleaned);
+    }
+  }
 }
 
 function normStockKeyPart(raw: string | undefined | null): string {
@@ -554,6 +569,7 @@ function mergeAggMetadata(
     drawingNo: string;
     manufacturer: string;
     supplier: string;
+    storageLocation?: string;
     date: string;
   }
 ): void {
@@ -605,6 +621,17 @@ function mergeAggMetadata(
     }
   } else if (entry.supplier === 'N/A' && incoming.supplier !== 'N/A') {
     entry.supplier = incoming.supplier;
+  }
+
+  if (incoming.storageLocation) {
+    if (!entry.storageLocations) {
+      entry.storageLocations = new Set<string>();
+      collectMeaningfulLocations(entry.storageLocations, entry.storageLocation);
+    }
+    collectMeaningfulLocations(entry.storageLocations, incoming.storageLocation);
+    if (entry.storageLocations.size > 0) {
+      entry.storageLocation = Array.from(entry.storageLocations).join(' | ');
+    }
   }
 
   if (incoming.packingListNo && incoming.packingListNo !== 'N/A' && !isVoucherCodeLike(incoming.packingListNo)) {
@@ -666,6 +693,11 @@ function finalizeAggEntries(groupMap: Map<string, AggEntry>): InventoryStockReco
         ? Array.from(e.warehouseNames).join(', ')
         : e.warehouseName;
 
+    const storageLocation =
+      e.storageLocations && e.storageLocations.size > 0
+        ? Array.from(e.storageLocations).join(' | ')
+        : cleanStockDisplayValue(e.storageLocation, '');
+
     records[idx++] = {
       id: key,
       warehouseId: e.warehouseId,
@@ -681,6 +713,7 @@ function finalizeAggEntries(groupMap: Map<string, AggEntry>): InventoryStockReco
       packageName: e.packageName,
       category: e.category,
       drawingNo: e.drawingNo,
+      storageLocation,
       inboundQuantity: inQty,
       inboundWeightKg: inWeight,
       returnInboundQuantity: retInQty,
@@ -697,7 +730,7 @@ function finalizeAggEntries(groupMap: Map<string, AggEntry>): InventoryStockReco
   return records;
 }
 
-function buildAggregatedRecords(
+export function buildAggregatedRecords(
   inbounds: InboundReceipt[],
   outbounds: OutboundReceipt[],
   whMap: Map<string, string>,
@@ -831,6 +864,7 @@ function buildAggregatedRecords(
       const dispSup = cleanStockDisplayValue(item.supplier, 'N/A');
       const dispCat = cleanStockDisplayValue(item.category, 'N/A');
       const dispDwg = cleanStockDisplayValue(item.drawingNo, 'N/A');
+      const dispLoc = cleanStockDisplayValue(item.storageLocation, '');
 
       const plKey = dispPl === 'N/A' ? 'N/A' : dispPl.toUpperCase();
       const shpKey = dispShp === 'N/A' ? 'N/A' : dispShp.toUpperCase();
@@ -843,6 +877,8 @@ function buildAggregatedRecords(
 
       let entry = groupMap.get(key);
       if (!entry) {
+        const locSet = new Set<string>();
+        collectMeaningfulLocations(locSet, dispLoc);
         entry = {
           warehouseId: whId,
           warehouseName: whName,
@@ -857,6 +893,8 @@ function buildAggregatedRecords(
           packageName: dispPkgName,
           category: dispCat,
           drawingNo: dispDwg,
+          storageLocation: locSet.size > 0 ? Array.from(locSet).join(' | ') : '',
+          storageLocations: locSet.size > 0 ? locSet : undefined,
           inboundQuantity: isReturn ? 0 : itemQty,
           inboundWeightKg: isReturn ? 0 : itemW,
           returnInboundQuantity: isReturn ? itemQty : 0,
@@ -888,6 +926,7 @@ function buildAggregatedRecords(
           drawingNo: dispDwg,
           manufacturer: dispMaker,
           supplier: dispSup,
+          storageLocation: dispLoc,
           date: rDate
         });
       }
@@ -959,6 +998,7 @@ function buildAggregatedRecords(
           packageName: dispPkgName,
           category: dispCat,
           drawingNo: dispDwg,
+          storageLocation: '',
           inboundQuantity: 0,
           inboundWeightKg: 0,
           returnInboundQuantity: 0,
@@ -990,6 +1030,7 @@ function buildAggregatedRecords(
           drawingNo: dispDwg,
           manufacturer: dispMaker,
           supplier: dispSup,
+          storageLocation: '',
           date: iDate
         });
       }
@@ -1000,7 +1041,7 @@ function buildAggregatedRecords(
 }
 
 // Gộp các bản ghi trùng 5 trường: Số Packing List + Shipment + Package (Kiện hàng) + Mã vật tư + Tên vật tư
-function mergeRecordsForInventoryReport(records: InventoryStockRecord[]): InventoryStockRecord[] {
+export function mergeRecordsForInventoryReport(records: InventoryStockRecord[]): InventoryStockRecord[] {
   const reportMap = new Map<string, AggEntry>();
 
   for (let i = 0; i < records.length; i++) {
@@ -1020,6 +1061,8 @@ function mergeRecordsForInventoryReport(records: InventoryStockRecord[]): Invent
     if (!entry) {
       const whSet = new Set<string>();
       if (r.warehouseName) whSet.add(r.warehouseName);
+      const locSet = new Set<string>();
+      collectMeaningfulLocations(locSet, r.storageLocation);
       entry = {
         warehouseId: r.warehouseId,
         warehouseName: r.warehouseName,
@@ -1035,6 +1078,8 @@ function mergeRecordsForInventoryReport(records: InventoryStockRecord[]): Invent
         packageName: cleanPkgName,
         category: cleanStockDisplayValue(r.category, 'N/A'),
         drawingNo: cleanStockDisplayValue(r.drawingNo, 'N/A'),
+        storageLocation: locSet.size > 0 ? Array.from(locSet).join(' | ') : '',
+        storageLocations: locSet.size > 0 ? locSet : undefined,
         inboundQuantity: r.inboundQuantity,
         inboundWeightKg: r.inboundWeightKg,
         returnInboundQuantity: r.returnInboundQuantity || 0,
@@ -1074,6 +1119,7 @@ function mergeRecordsForInventoryReport(records: InventoryStockRecord[]): Invent
         drawingNo: cleanStockDisplayValue(r.drawingNo, 'N/A'),
         manufacturer: cleanStockDisplayValue(r.manufacturer, 'N/A'),
         supplier: cleanStockDisplayValue(r.supplier, 'N/A'),
+        storageLocation: r.storageLocation || '',
         date: r.lastUpdated || ''
       });
     }
@@ -1082,7 +1128,7 @@ function mergeRecordsForInventoryReport(records: InventoryStockRecord[]): Invent
   return finalizeAggEntries(reportMap);
 }
 
-function applyStockAttributeFilters(
+export function applyStockAttributeFilters(
   baseRecords: InventoryStockRecord[],
   filter?: StockFilterParams,
   skipWarehouseFilter = false
@@ -1131,6 +1177,10 @@ function applyStockAttributeFilters(
     filter.drawingNo && filter.drawingNo !== 'all'
       ? filter.drawingNo.normalize('NFC').toLowerCase().trim()
       : '';
+  const locQ =
+    filter.storageLocation && filter.storageLocation !== 'all'
+      ? filter.storageLocation.normalize('NFC').toLowerCase().trim()
+      : '';
   const searchQ = filter.searchQuery ? filter.searchQuery.normalize('NFC').toLowerCase().trim() : '';
 
   if (
@@ -1144,6 +1194,7 @@ function applyStockAttributeFilters(
     !pkgNameQ &&
     !catQ &&
     !dwgQ &&
+    !locQ &&
     !searchQ
   ) {
     return baseRecords;
@@ -1162,6 +1213,7 @@ function applyStockAttributeFilters(
     if (pkgNameQ && !r.packageName.toLowerCase().includes(pkgNameQ)) continue;
     if (catQ && !r.category.toLowerCase().includes(catQ)) continue;
     if (dwgQ && !r.drawingNo.toLowerCase().includes(dwgQ)) continue;
+    if (locQ && !(r.storageLocation || '').toLowerCase().includes(locQ)) continue;
     if (searchQ) {
       const hit =
         r.materialName.toLowerCase().includes(searchQ) ||
@@ -1173,7 +1225,8 @@ function applyStockAttributeFilters(
         r.drawingNo.toLowerCase().includes(searchQ) ||
         r.category.toLowerCase().includes(searchQ) ||
         r.manufacturer.toLowerCase().includes(searchQ) ||
-        r.supplier.toLowerCase().includes(searchQ);
+        r.supplier.toLowerCase().includes(searchQ) ||
+        (r.storageLocation || '').toLowerCase().includes(searchQ);
       if (!hit) continue;
     }
     result.push(r);
@@ -2566,6 +2619,7 @@ export const StorageService = {
     const makerSet = new Set<string>();
     const supSet = new Set<string>();
     const catSet = new Set<string>();
+    const locSet = new Set<string>();
 
     for (let i = 0; i < records.length; i++) {
       const r = records[i];
@@ -2574,6 +2628,7 @@ export const StorageService = {
       if (r.manufacturer && r.manufacturer !== 'N/A') makerSet.add(r.manufacturer);
       if (r.supplier && r.supplier !== 'N/A') supSet.add(r.supplier);
       if (r.category && r.category !== 'N/A') catSet.add(r.category);
+      if (r.storageLocation) collectMeaningfulLocations(locSet, r.storageLocation);
     }
 
     const takeFirst = (set: Set<string>, limit: number): string[] => {
@@ -2592,6 +2647,7 @@ export const StorageService = {
       availableMakers: takeFirst(makerSet, 150),
       availableSuppliers: takeFirst(supSet, 150),
       availableCategories: takeFirst(catSet, 150),
+      availableLocations: takeFirst(locSet, 150),
       totalPLCount: plSet.size,
       totalShipmentCount: shpSet.size
     };
@@ -2611,6 +2667,7 @@ export const StorageService = {
     const makerSet = new Set<string>();
     const supSet = new Set<string>();
     const catSet = new Set<string>();
+    const locSet = new Set<string>();
 
     for (let i = 0; i < baseRecords.length; i++) {
       const r = baseRecords[i];
@@ -2620,6 +2677,7 @@ export const StorageService = {
       if (r.manufacturer && r.manufacturer !== 'N/A') makerSet.add(r.manufacturer);
       if (r.supplier && r.supplier !== 'N/A') supSet.add(r.supplier);
       if (r.category && r.category !== 'N/A') catSet.add(r.category);
+      if (r.storageLocation) collectMeaningfulLocations(locSet, r.storageLocation);
     }
 
     const takeFirst = (set: Set<string>, limit: number): string[] => {
@@ -2637,6 +2695,7 @@ export const StorageService = {
       availableMakers: takeFirst(makerSet, 150),
       availableSuppliers: takeFirst(supSet, 150),
       availableCategories: takeFirst(catSet, 150),
+      availableLocations: takeFirst(locSet, 150),
       totalPLCount: plSet.size,
       totalShipmentCount: shpSet.size
     };

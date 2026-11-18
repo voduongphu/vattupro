@@ -28,6 +28,7 @@ export const InventoryReport: React.FC = () => {
   const [packageName, setPackageName] = useState('');
   const [category, setCategory] = useState('');
   const [drawingNo, setDrawingNo] = useState('');
+  const [storageLocation, setStorageLocation] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -45,6 +46,7 @@ export const InventoryReport: React.FC = () => {
   const defPackageName = useDeferredValue(packageName);
   const defCategory = useDeferredValue(category);
   const defDrawingNo = useDeferredValue(drawingNo);
+  const defStorageLocation = useDeferredValue(storageLocation);
   const defSearchQuery = useDeferredValue(searchQuery);
 
   const [syncTick, setSyncTick] = useState(0);
@@ -85,6 +87,7 @@ export const InventoryReport: React.FC = () => {
       packageName: defPackageName || undefined,
       category: defCategory || undefined,
       drawingNo: defDrawingNo || undefined,
+      storageLocation: defStorageLocation || undefined,
       searchQuery: defSearchQuery || undefined,
       startDate: startDate || undefined,
       endDate: endDate || undefined
@@ -102,6 +105,7 @@ export const InventoryReport: React.FC = () => {
     defPackageName,
     defCategory,
     defDrawingNo,
+    defStorageLocation,
     defSearchQuery,
     startDate,
     endDate
@@ -113,7 +117,8 @@ export const InventoryReport: React.FC = () => {
     availableShipments,
     availableMakers,
     availableSuppliers,
-    availableCategories
+    availableCategories,
+    availableLocations
   } = useMemo(
     () => StorageService.getInventoryFilterOptions(allowedWarehouseIds),
     [records, allowedWarehouseIds]
@@ -133,6 +138,7 @@ export const InventoryReport: React.FC = () => {
     setPackageName('');
     setCategory('');
     setDrawingNo('');
+    setStorageLocation('');
     setSearchQuery('');
     setStartDate('');
     setEndDate('');
@@ -159,6 +165,7 @@ export const InventoryReport: React.FC = () => {
       'Tồn SL': r.currentQuantity,
       'Tồn KL (kg)': r.currentWeightKg,
       'Kho Bãi': r.warehouseName,
+      'Vị trí lưu kho/bãi': r.storageLocation || '-',
       'Hạng Mục': r.category,
       'Bản Vẽ Kỹ Thuật': r.drawingNo,
       'Nhà Sản Xuất': r.manufacturer,
@@ -298,7 +305,7 @@ export const InventoryReport: React.FC = () => {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Tìm kiếm tổng hợp (mã vật tư, tên kiện, hạng mục, bản vẽ, packing list, shipment...)"
+            placeholder="Tìm kiếm tổng hợp (mã vật tư, tên kiện, vị trí lưu kho/bãi, hạng mục, bản vẽ, packing list, shipment...)"
             className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px] sm:min-h-0"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-2.5" />
@@ -437,6 +444,22 @@ export const InventoryReport: React.FC = () => {
             />
           </div>
 
+          {/* Vị trí lưu kho/bãi */}
+          <div>
+            <label className="block text-[11px] font-semibold text-emerald-700 uppercase mb-1">Vị trí lưu kho/bãi</label>
+            <input
+              type="text"
+              value={storageLocation}
+              onChange={(e) => setStorageLocation(e.target.value)}
+              placeholder="Bãi A, Kệ B2..."
+              list="loc-list"
+              className="w-full px-2.5 py-1.5 bg-emerald-50/40 border border-emerald-200 rounded-lg outline-none focus:border-emerald-500"
+            />
+            <datalist id="loc-list">
+              {availableLocations.map(l => <option key={l} value={l} />)}
+            </datalist>
+          </div>
+
           {/* Từ ngày */}
           <div>
             <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">Từ ngày</label>
@@ -553,6 +576,7 @@ export const InventoryReport: React.FC = () => {
                 <th className="p-3 w-32">KIỆN HÀNG</th>
                 <th className="p-3 w-32">MÃ VẬT TƯ</th>
                 <th className="p-3 w-56">VẬT TƯ THIẾT BỊ</th>
+                <th className="p-3 w-36">VỊ TRÍ LƯU KHO/BÃI</th>
                 <th className="p-3 w-16 text-center">ĐVT</th>
                 <th className="p-3 text-right bg-blue-50/50 text-blue-900">TỔNG NHẬP</th>
                 <th className="p-3 text-right bg-indigo-50/60 text-indigo-900">NHẬP TRẢ KHO</th>
@@ -565,7 +589,7 @@ export const InventoryReport: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {pagedRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="p-12 text-center text-slate-400 text-sm">
+                  <td colSpan={14} className="p-12 text-center text-slate-400 text-sm">
                     Không có bản ghi tồn kho nào khớp với các điều kiện lọc đã chọn.
                   </td>
                 </tr>
@@ -591,6 +615,18 @@ export const InventoryReport: React.FC = () => {
                     </td>
                     <td className="p-3">
                       <span className="font-semibold text-slate-900 block text-xs">{r.materialName}</span>
+                    </td>
+                    <td className="p-3">
+                      {r.storageLocation ? (
+                        <span
+                          className="inline-block px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-medium"
+                          title={r.storageLocation}
+                        >
+                          {r.storageLocation}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">-</span>
+                      )}
                     </td>
                     <td className="p-3 text-center font-medium text-slate-600">{r.unit}</td>
                     
@@ -633,7 +669,7 @@ export const InventoryReport: React.FC = () => {
             </tbody>
             <tfoot className="bg-slate-100/90 font-bold border-t-2 border-slate-300">
               <tr>
-                <td colSpan={7} className="p-3 text-right uppercase text-slate-700 text-xs">
+                <td colSpan={8} className="p-3 text-right uppercase text-slate-700 text-xs">
                   Tổng Cộng Báo Cáo:
                 </td>
                 <td className="p-3 text-right font-mono text-blue-700">

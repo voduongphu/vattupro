@@ -481,6 +481,12 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                       <span className="font-semibold text-slate-900 block">• Số lượng, ĐVT & KL (Kg) (*)</span>
                       <span className="text-[11px] text-slate-400">Số lượng (cây/tấm), ĐVT, Kg</span>
                     </div>
+                    {type === 'inbound' && (
+                      <div className="bg-emerald-50/70 p-2 rounded-lg border border-emerald-200">
+                        <span className="font-bold text-emerald-800 block">• Vị trí lưu kho/bãi</span>
+                        <span className="text-[11px] text-emerald-700 font-medium">Bãi A - Khu 01, Kho K1 - Kệ B2...</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -638,6 +644,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           <th className="p-2.5 text-center">ĐVT</th>
                           <th className="p-2.5 text-right">KL (Kg)</th>
                           {type === 'inbound' && <th className="p-2.5 text-right">Thành tiền (VNĐ)</th>}
+                          {type === 'inbound' && <th className="p-2.5">Vị trí lưu kho/bãi</th>}
                           <th className="p-2.5">Ghi chú</th>
                           <th className="p-2.5 text-center">Xóa</th>
                         </tr>
@@ -762,6 +769,17 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               {type === 'inbound' && (
                                 <td className="p-2.5 text-right font-mono font-semibold text-emerald-700">
                                   {lineAmount > 0 ? lineAmount.toLocaleString('vi-VN') : '-'}
+                                </td>
+                              )}
+                              {type === 'inbound' && (
+                                <td className="p-2.5 max-w-[160px] truncate text-slate-700 font-medium" title={rowAny.storageLocation || ''}>
+                                  {rowAny.storageLocation ? (
+                                    <span className="inline-block px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px]">
+                                      {rowAny.storageLocation}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">-</span>
+                                  )}
                                 </td>
                               )}
                               <td className="p-2.5 max-w-[160px] truncate text-slate-500" title={rowAny.note || ''}>

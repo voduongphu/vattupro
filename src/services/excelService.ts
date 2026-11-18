@@ -45,7 +45,7 @@ export const INBOUND_EXCEL_COLUMNS = [
   { key: 'manufacturer', label: 'Nhà sản xuất (*)', sample: 'Kitz Corporation (Japan)' },
   { key: 'supplier', label: 'Nhà cung cấp (*)', sample: 'Công ty CP Kỹ thuật PetroSteel' },
   { key: 'unitPrice', label: 'Đơn giá (VNĐ)', sample: 45000000 },
-  { key: 'storageLocation', label: 'Vị trí kho', sample: 'Khu A - Dãy 02 - Kệ 01' },
+  { key: 'storageLocation', label: 'Vị trí lưu kho/bãi', sample: 'Khu A - Dãy 02 - Kệ 01' },
   { key: 'conditionNote', label: 'Tình trạng kiện hàng', sample: 'Mới 100%, nguyên niêm phong gỗ' }
 ];
 
@@ -192,7 +192,8 @@ export function downloadInboundTemplate(): void {
       'Shipment': 'SHP-01',
       'Package No.': '183A0108',
       'Nhà sản xuất': 'API 5L Maker',
-      'Nhà cung cấp': 'Việt Xuân Mới'
+      'Nhà cung cấp': 'Việt Xuân Mới',
+      'Vị trí lưu kho/bãi': 'Bãi A - Khu 01 - Hàng 03'
     },
     {
       'Số phiếu (*)': 'PNK25-0001',
@@ -217,7 +218,8 @@ export function downloadInboundTemplate(): void {
       'Shipment': 'SHP-01',
       'Package No.': '183A0248',
       'Nhà sản xuất': 'API 5L Maker',
-      'Nhà cung cấp': 'Việt Xuân Mới'
+      'Nhà cung cấp': 'Việt Xuân Mới',
+      'Vị trí lưu kho/bãi': 'Bãi A - Khu 01 - Hàng 04'
     },
     {
       'Số phiếu (*)': 'PNK25-0002',
@@ -242,7 +244,8 @@ export function downloadInboundTemplate(): void {
       'Shipment': 'SHP-01',
       'Package No.': '183A0494',
       'Nhà sản xuất': 'API 5L Maker',
-      'Nhà cung cấp': 'Việt Xuân Mới'
+      'Nhà cung cấp': 'Việt Xuân Mới',
+      'Vị trí lưu kho/bãi': 'Kho kín K1 - Kệ B2'
     }
   ];
 
@@ -252,15 +255,16 @@ export function downloadInboundTemplate(): void {
     { wch: 16 }, { wch: 16 }, { wch: 32 }, { wch: 28 }, { wch: 44 },
     { wch: 15 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 15 },
     { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 18 }, { wch: 15 },
-    { wch: 20 }, { wch: 22 }
+    { wch: 20 }, { wch: 22 }, { wch: 26 }
   ];
 
   const guideRows = [
     { 'HƯỚNG DẪN': 'QUY TẮC TẠO PHIẾU NHẬP KHO (MẪU QN-OPR-PR11-FM05.01) TỪ FILE EXCEL', 'CHI TIẾT': '' },
     { 'HƯỚNG DẪN': '1. Cột Số phiếu (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu (ví dụ PNK25-0019) sẽ được gom lại thành 1 Phiếu Nhập Kho duy nhất.' },
     { 'HƯỚNG DẪN': '2. Cột Hình thức nhập', 'CHI TIẾT': 'Điền "Nhập mới" hoặc "Nhập trả kho" (nếu để trống sẽ mặc định là "Nhập mới"). Các dòng "Nhập trả kho" sẽ tự động cộng vào cột NHẬP TRẢ KHO trong Báo cáo Nhập-Xuất-Tồn.' },
-    { 'HƯỚNG DẪN': '3. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Đơn vị giao hàng, Hợp đồng, Đề xuất số, Nội dung, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Đơn giá (VNĐ), Thành tiền (VNĐ), Ghi chú.' },
-    { 'HƯỚNG DẪN': '4. Tương thích ngược', 'CHI TIẾT': 'Tương thích hoàn toàn với cả các file Excel mẫu cũ theo Packing List, Shipment, Package No.' }
+    { 'HƯỚNG DẪN': '3. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Đơn vị giao hàng, Hợp đồng, Đề xuất số, Nội dung, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Đơn giá (VNĐ), Thành tiền (VNĐ), Vị trí lưu kho/bãi, Ghi chú.' },
+    { 'HƯỚNG DẪN': '4. Vị trí lưu kho/bãi', 'CHI TIẾT': 'Nhập khu vực/kệ/bãi cụ thể (ví dụ: Bãi A - Khu 01 - Hàng 03, Kho kín K1 - Kệ B2) để dễ dàng truy xuất vị trí vật tư khi cần.' },
+    { 'HƯỚNG DẪN': '5. Tương thích ngược', 'CHI TIẾT': 'Tương thích hoàn toàn với cả các file Excel mẫu cũ theo Packing List, Shipment, Package No.' }
   ];
   const wsGuide = XLSX.utils.json_to_sheet(guideRows);
   wsGuide['!cols'] = [{ wch: 30 }, { wch: 88 }];
@@ -864,6 +868,7 @@ interface SheetVoucherMeta {
   requestNo?: string;
   notes?: string;
   warehouseName?: string;
+  storageLocation?: string;
   inboundType?: 'new' | 'return';
   outboundType?: 'issue' | 'transfer';
 }
@@ -971,6 +976,12 @@ function extractSheetVoucherMeta(rows: any[][], headerIdx: number): SheetVoucher
       ) {
         const val = extractAfterColonOrNextCell(row, c, text);
         if (val) meta.warehouseName = val;
+      } else if (
+        !meta.storageLocation &&
+        (norm.startsWith('vitriluukho') || norm.startsWith('vitribai') || norm.startsWith('vitrikho') || norm.startsWith('vitri'))
+      ) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.storageLocation = val;
       }
     }
   }
@@ -1201,6 +1212,22 @@ export async function parseInboundExcel(
     if (norm.includes('dexuatso') || norm.includes('sodexuat') || norm === 'dexuat' || norm.includes('requestno')) return 'requestNo';
     if (norm === 'noidung' || norm.includes('noidungnhap')) return 'receiptNotes';
     if (norm.includes('soxe') || norm.includes('phuongtien') || norm.includes('biensoxe') || norm.includes('drivervehicle')) return 'driverVehicleNo';
+    if (
+      norm.includes('vitriluukho') ||
+      norm.includes('vitribai') ||
+      norm.includes('vitrikho') ||
+      norm.includes('vitri') ||
+      norm.includes('luukho') ||
+      norm.includes('khobai') ||
+      norm.includes('binlocation') ||
+      norm === 'rack' ||
+      norm === 'shelf' ||
+      norm === 'bay' ||
+      norm === 'bin' ||
+      norm.includes('location')
+    ) {
+      return 'storageLocation';
+    }
     if (norm.includes('nhapvaokho') || norm.includes('khotiepnhan') || norm.includes('khonhap') || norm.includes('tenkho') || norm === 'kho' || norm.includes('warehouse')) return 'warehouseName';
     if (norm.includes('packing') || norm.includes('sopackinglist') || norm === 'pl' || norm.includes('phieupacking')) return 'packingListNo';
     if (norm === 'malo' || norm.includes('batchcode') || norm === 'lotno' || norm === 'heatno') return 'batchCode';
@@ -1218,7 +1245,6 @@ export async function parseInboundExcel(
     if (norm.includes('nhacungcap') || norm.includes('ncc') || norm.includes('supplier') || norm.includes('vendor')) return 'supplier';
     if (norm.includes('dongia') || norm.includes('unitprice') || norm === 'gia') return 'unitPrice';
     if ((norm.includes('thanhtien') || norm.includes('totalprice') || norm === 'amount') && !norm.includes('tongthanhtien')) return 'totalPrice';
-    if (norm.includes('vitri') || norm.includes('vitrikho') || norm.includes('location')) return 'storageLocation';
     if (norm === 'ghichu' || norm === 'note' || norm === 'remarks' || norm === 'remark') return 'note';
     if (norm.includes('tinhtrang') || norm.includes('ghichu')) return 'conditionNote';
     return null;
@@ -1304,6 +1330,7 @@ export async function parseInboundExcel(
     if (!item.requestNo && sheetMeta.requestNo) item.requestNo = sheetMeta.requestNo;
     if (!item.receiptNotes && sheetMeta.notes) item.receiptNotes = sheetMeta.notes;
     if (!item.warehouseName && sheetMeta.warehouseName) item.warehouseName = sheetMeta.warehouseName;
+    if (!item.storageLocation && sheetMeta.storageLocation) item.storageLocation = sheetMeta.storageLocation;
 
     if (!item.materialName && (item.materialCode || item.packageName)) {
       item.materialName = item.materialCode || item.packageName;
@@ -1829,7 +1856,7 @@ export function buildInboundReceiptWorkbook(receipt: InboundReceipt): XLSX.WorkB
       'Bản vẽ kỹ thuật': it.drawingNo || '',
       'Nhà sản xuất': it.manufacturer || receipt.manufacturer || '',
       'Nhà cung cấp': it.supplier || receipt.supplier || '',
-      'Vị trí kho': it.storageLocation || ''
+      'Vị trí lưu kho/bãi': it.storageLocation || ''
     };
   });
 
@@ -1839,7 +1866,7 @@ export function buildInboundReceiptWorkbook(receipt: InboundReceipt): XLSX.WorkB
     { wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 30 }, { wch: 28 },
     { wch: 44 }, { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 },
     { wch: 15 }, { wch: 16 }, { wch: 24 }, { wch: 18 }, { wch: 18 },
-    { wch: 16 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 18 }
+    { wch: 16 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 24 }
   ];
 
   const wb = XLSX.utils.book_new();
@@ -2129,7 +2156,7 @@ export function exportInboundReceiptsToExcel(
         'Bản vẽ kỹ thuật': it.drawingNo || '',
         'Nhà sản xuất': it.manufacturer || receipt.manufacturer || '',
         'Nhà cung cấp': it.supplier || receipt.supplier || '',
-        'Vị trí kho': it.storageLocation || ''
+        'Vị trí lưu kho/bãi': it.storageLocation || ''
       });
     }
   }
@@ -2140,7 +2167,7 @@ export function exportInboundReceiptsToExcel(
     { wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 30 }, { wch: 28 },
     { wch: 44 }, { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 },
     { wch: 15 }, { wch: 16 }, { wch: 24 }, { wch: 18 }, { wch: 18 },
-    { wch: 16 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 18 }
+    { wch: 16 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 24 }
   ];
 
   const wsSummary = XLSX.utils.json_to_sheet(summaryRows, { dense: true } as any);
