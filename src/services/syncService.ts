@@ -34,7 +34,8 @@ import {
 } from '../utils/versionVector';
 import {
   shouldQueueReconcileDuringAuthTransition,
-  shouldRunLocalBridgeAfterCloud
+  shouldRunLocalBridgeAfterCloud,
+  evaluatePreSyncCheck
 } from '../utils/cloudSyncHelpers';
 
 export {
@@ -114,6 +115,7 @@ const DEVICE_ID_STORAGE_KEY = 'vtp_device_id_v1';
 const UNIFIED_SESSION_STORAGE_KEY = 'vtp_auth_session_v5';
 const KICK_NOTICE_STORAGE_KEY = 'vtp_session_kick_notice_v1';
 const STATIC_SESSIONS_STORAGE_KEY = 'vtp_static_active_sessions_v1';
+const LAST_SYNC_TIMESTAMP_STORAGE_KEY = 'vtp_last_sync_timestamp_v1';
 const STATIC_TTL_MS = 90_000;
 const LEGACY_SESSION_KEYS = [
   'vtp_inventory_session_v3',
@@ -129,6 +131,7 @@ const PULL_MATERIAL_PAGE_SIZE = 3500;
 
 let isStarted = false;
 let isReconciling = false;
+let isSpinnerActive = false;
 let pendingReconcile = false;
 let pendingRemoteReconcile = false;
 let pendingForceManifestRefresh = false;
@@ -150,6 +153,7 @@ let hasCompletedInitialLocalSync = false;
 let lastKnownServerRev = 0;
 let lastPulledMaterialsRev = 0;
 let lastInteractionCheckMs = 0;
+let lastLocalMutationTimestamp = 0;
 let wsFailCount = 0;
 let nextWsAllowedAtMs = 0;
 let ws: WebSocket | null = null;
@@ -158,6 +162,34 @@ let sessionHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let pushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let authChannel: BroadcastChannel | null = null;
 let lastKnownOsdRev = 0;
+
+function readStoredLastSyncTimestamp(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const raw = window.localStorage.getItem(LAST_SYNC_TIMESTAMP_STORAGE_KEY);
+    const num = Number(raw);
+    return Number.isFinite(num) && num > 0 ? num : 0;
+  } catch {
+    return 0;
+  }
+}
+
+let lastSyncTimestamp = readStoredLastSyncTimestamp();
+
+function writeStoredLastSyncTimestamp(ts: number): void {
+  const clean = Number.isFinite(ts) && ts > 0 ? Math.floor(ts) : 0;
+  lastSyncTimestamp = clean;
+  if (typeof window === 'undefined') return;
+  try {
+    if (clean > 0) {
+      window.localStorage.setItem(LAST_SYNC_TIMESTAMP_STORAGE_KEY, String(clean));
+    } else {
+      window.localStorage.removeItem(LAST_SYNC_TIMESTAMP_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
 
 // Lưu thông báo đá phiên nếu xảy ra trong lúc Bootstrap trước khi AuthProvider kịp mount
 let pendingInvalidation: SessionInvalidationInfo | null = null;
@@ -232,6 +264,8 @@ function purgeLegacySessionKeys(): void {
 }
 
 function notifySyncState(syncing: boolean): void {
+  if (isSpinnerActive === syncing) return;
+  isSpinnerActive = syncing;
   syncStateListeners.forEach((cb) => {
     try {
       cb(syncing);
@@ -1139,7 +1173,9 @@ async function pushAllMaterialsChunked(): Promise<void> {
   materialsDirty = false;
 }
 
-async function reconcileLocalServerOnly(): Promise<boolean> {
+async function reconcileLocalServerOnly(options?: {
+  onWorkDetected?: () => void;
+}): Promise<boolean> {
   let pulledChanges = false;
   const tokenBeforeManifest = getStoredUnifiedSession()?.session.sessionToken || '';
   const manifest = await fetchJson<ServerManifest>(`/api/sync/manifest?t=${Date.now()}`);
@@ -1160,6 +1196,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   if (Array.isArray(manifest.osd)) {
     const osdChanged = StorageService.applyRemoteOsdReceipts(manifest.osd);
     if (osdChanged) {
+      pulledChanges = true;
       notifyOsdListeners(StorageService.getOsdReceipts());
     }
     lastKnownOsdRev = Math.max(lastKnownOsdRev, Number((manifest as any).osdRevision) || 0);
@@ -1176,15 +1213,16 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
     !materialsDirty &&
     !localReceiptsDirty
   ) {
-    return false;
+    return pulledChanges;
   }
 
   const localUsers = StorageService.getUsers();
   const localWhs = StorageService.getWarehouses();
   const localTombstones = StorageService.getTombstones();
-  const localMetaDigest = computeMetaDigest(localUsers, localWhs, localTombstones, StorageService.getOsdReceipts());
+  computeMetaDigest(localUsers, localWhs, localTombstones, StorageService.getOsdReceipts());
 
   if (metaDirty) {
+    options?.onWorkDetected?.();
     const metaRes = await fetchJson<{
       serverRevision: number;
       users: User[];
@@ -1242,6 +1280,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   }
 
   if (inboundCodesToPull.length > 0) {
+    options?.onWorkDetected?.();
     await pullMissingReceipts('inbound', inboundCodesToPull);
     pulledChanges = true;
   }
@@ -1274,6 +1313,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   }
 
   if (outboundCodesToPull.length > 0) {
+    options?.onWorkDetected?.();
     await pullMissingReceipts('outbound', outboundCodesToPull);
     pulledChanges = true;
   }
@@ -1298,6 +1338,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
     }
   }
   if (inboundsToPush.length > 0) {
+    options?.onWorkDetected?.();
     await pushReceiptsChunked('inbound', inboundsToPush);
   }
 
@@ -1319,17 +1360,20 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
     }
   }
   if (outboundsToPush.length > 0) {
+    options?.onWorkDetected?.();
     await pushReceiptsChunked('outbound', outboundsToPush);
   }
 
   const currentMats = StorageService.getMaterials();
   const prePullMatDigest = computeMaterialsDigest(currentMats);
   if (manifest.materialsCount > 0 && (currentMats.length === 0 || prePullMatDigest !== manifest.materialsDigest)) {
+    options?.onWorkDetected?.();
     await pullAllMaterials();
     pulledChanges = true;
   }
 
   if (materialsDirty) {
+    options?.onWorkDetected?.();
     await pushAllMaterialsChunked();
     materialsDirty = false;
   }
@@ -1404,11 +1448,55 @@ async function reconcileInternal(options?: {
     };
   }
 
+  // Bước kiểm tra lastSyncTimestamp trước khi bắt đầu chu kỳ đồng bộ:
+  // Chỉ kích hoạt trạng thái quay vòng tải khi thực sự có thay đổi cục bộ hoặc dữ liệu mới từ máy chủ
+  const hasLocalDirtyFlags =
+    metaDirty ||
+    materialsDirty ||
+    localReceiptsDirty ||
+    FirestoreSyncService.hasPendingLocalChanges();
+  const remoteUpdatedAtMs = FirestoreSyncService.getLatestRemoteUpdatedAtMs();
+  const hasRemoteManifestChanges = FirestoreSyncService.hasUnappliedRemoteChanges();
+  const isCloudActive =
+    FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser();
+
+  const preCheck = evaluatePreSyncCheck({
+    lastSyncTimestamp,
+    lastLocalMutationTimestamp,
+    hasLocalDirtyFlags,
+    hasRemoteManifestChanges,
+    remoteUpdatedAtMs,
+    forceCheckRemote:
+      Boolean(options?.forceManifestRefresh) ||
+      options?.trigger === 'manual' ||
+      options?.trigger === 'startup' ||
+      !isCloudActive ||
+      !FirestoreSyncService.isRealtimeWorkspaceAttached()
+  });
+
+  if (!preCheck.shouldProceedWithSync) {
+    return {
+      cloudSuccess: isCloudActive,
+      localSuccess: false,
+      pulledChanges: false,
+      pushedChanges: false
+    };
+  }
+
   pendingReconcile = false;
   pendingRemoteReconcile = false;
   pendingForceManifestRefresh = false;
   isReconciling = true;
-  notifySyncState(true);
+  let spinnerActivated = false;
+  const activateSpinner = () => {
+    if (!spinnerActivated) {
+      spinnerActivated = true;
+      notifySyncState(true);
+    }
+  };
+  if (preCheck.shouldSpinImmediately) {
+    activateSpinner();
+  }
 
   const runPromise = (async () => {
     let cloudSuccess = false;
@@ -1417,6 +1505,7 @@ async function reconcileInternal(options?: {
     let pushedChanges = false;
     let cloudQuotaExceeded = false;
     let syncError: string | undefined;
+    const passStartedAt = Date.now();
 
     try {
       // Đảm bảo xả sạch hàng đợi ghi đĩa cục bộ IndexedDB trước khi đọc và đẩy dữ liệu
@@ -1428,7 +1517,8 @@ async function reconcileInternal(options?: {
         (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())
       ) {
         const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed({
-          forceManifestRefresh: Boolean(options?.forceManifestRefresh)
+          forceManifestRefresh: Boolean(options?.forceManifestRefresh),
+          onWorkDetected: activateSpinner
         });
         cloudSuccess = cloudRes.ok;
         pulledChanges = Boolean(cloudRes.pulledChanges);
@@ -1456,7 +1546,10 @@ async function reconcileInternal(options?: {
           })
         ) {
           try {
-            await reconcileLocalServerOnly();
+            const localBridgePulled = await reconcileLocalServerOnly({
+              onWorkDetected: activateSpinner
+            });
+            if (localBridgePulled) pulledChanges = true;
             localSuccess = true;
           } catch {
             // bỏ qua nếu máy chủ cục bộ không khả dụng
@@ -1469,7 +1562,10 @@ async function reconcileInternal(options?: {
         }
         // 2. Fallback đồng bộ máy chủ cục bộ /api/sync khi chưa kết nối Google Cloud
         try {
-          await reconcileLocalServerOnly();
+          const localOnlyPulled = await reconcileLocalServerOnly({
+            onWorkDetected: activateSpinner
+          });
+          if (localOnlyPulled) pulledChanges = true;
           localSuccess = true;
           updateNetworkStatus(true);
         } catch (localErr) {
@@ -1480,6 +1576,15 @@ async function reconcileInternal(options?: {
         }
       }
 
+      if ((cloudSuccess || localSuccess) && !cloudQuotaExceeded) {
+        const latestRemoteTs = FirestoreSyncService.getLatestRemoteUpdatedAtMs();
+        const nextSyncedAt =
+          lastLocalMutationTimestamp <= passStartedAt
+            ? Math.max(Date.now(), latestRemoteTs || 0)
+            : passStartedAt;
+        writeStoredLastSyncTimestamp(nextSyncedAt);
+      }
+
       await StorageService.flush();
     } catch (err) {
       syncError = err instanceof Error ? err.message : String(err);
@@ -1487,7 +1592,9 @@ async function reconcileInternal(options?: {
     } finally {
       isReconciling = false;
       activeReconcilePromise = null;
-      notifySyncState(false);
+      if (spinnerActivated) {
+        notifySyncState(false);
+      }
 
       const shouldRunFollowUp =
         (pendingReconcile || (pendingRemoteReconcile && FirestoreSyncService.hasUnappliedRemoteChanges())) &&
@@ -1862,6 +1969,7 @@ export const SyncService = {
     });
 
     StorageService.onLocalMutation((kind, codes, details) => {
+      lastLocalMutationTimestamp = Date.now();
       if (kind === 'materials') {
         materialsDirty = true;
       } else if (kind === 'meta' || kind === 'osd') {
@@ -2041,7 +2149,6 @@ export const SyncService = {
       pushDebounceTimer = null;
     }
 
-    notifySyncState(true);
     try {
       // Đảm bảo commit toàn bộ hàng đợi ghi IndexedDB trước khi phân tán luồng đồng bộ
       await StorageService.flush();
@@ -2184,7 +2291,9 @@ export const SyncService = {
         osdCount: StorageService.getOsdReceipts().length
       };
     } finally {
-      notifySyncState(false);
+      if (isSpinnerActive && !isReconciling) {
+        notifySyncState(false);
+      }
     }
   },
 
@@ -3493,6 +3602,10 @@ export const SyncService = {
     FirestoreSyncService.watchActiveSession(null);
     clearStoredUnifiedSession();
     clearBrowserAuthCookiesAndArtifacts(current?.session.userKey);
+    writeStoredLastSyncTimestamp(0);
+    lastLocalMutationTimestamp = 0;
+    hasCompletedInitialLocalSync = false;
+    lastKnownServerRev = 0;
 
     let releaseTask: Promise<void> | null = null;
     releaseTask = (async () => {
@@ -3595,13 +3708,17 @@ export const SyncService = {
   subscribeSyncState(listener: (syncing: boolean) => void): () => void {
     syncStateListeners.add(listener);
     try {
-      listener(isReconciling);
+      listener(isSpinnerActive);
     } catch {
       // ignore
     }
     return () => {
       syncStateListeners.delete(listener);
     };
+  },
+
+  getLastSyncTimestamp(): number {
+    return lastSyncTimestamp;
   },
 
   subscribeOsd(listener: (osdList: OsdReceipt[]) => void): () => void {

@@ -39,6 +39,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isCheckingSync, setIsCheckingSync] = useState(false);
   const [isConnectingCloud, setIsConnectingCloud] = useState(false);
   const [isForcingRemoteLogout, setIsForcingRemoteLogout] = useState(false);
   const [remoteLogoutNotice, setRemoteLogoutNotice] = useState<{
@@ -60,9 +61,10 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
   }, [remoteLogoutNotice]);
 
   const handleUnifiedSync = async () => {
+    if (isCheckingSync || isSyncing || isConnectingCloud) return;
     setIsUserMenuOpen(false);
     setDismissedCloudErrorMsg(null);
-    setIsSyncing(true);
+    setIsCheckingSync(true);
     try {
       const res = await SyncService.syncCloudChangesOnly();
       setRemoteLogoutNotice({
@@ -75,7 +77,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
         message: `Lỗi đồng bộ: ${err?.message || String(err)}`
       });
     } finally {
-      setIsSyncing(false);
+      setIsCheckingSync(false);
     }
   };
 
@@ -165,7 +167,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                 <button
                   type="button"
                   onClick={handleUnifiedSync}
-                  disabled={isSyncing || isConnectingCloud}
+                  disabled={isSyncing || isConnectingCloud || isCheckingSync}
                   title={
                     quotaExceeded
                       ? cloudState.errorMessage || t('cloudQuotaExceeded')

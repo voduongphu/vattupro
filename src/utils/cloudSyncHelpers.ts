@@ -948,3 +948,90 @@ export function shouldQueueReconcileDuringAuthTransition(options?: {
 }): boolean {
   return options?.trigger === 'mutation' || Boolean(options?.forceManifestRefresh);
 }
+
+export interface PreSyncCheckInput {
+  lastSyncTimestamp: number;
+  lastLocalMutationTimestamp: number;
+  hasLocalDirtyFlags: boolean;
+  hasRemoteManifestChanges?: boolean;
+  remoteUpdatedAtMs?: number;
+  forceCheckRemote?: boolean;
+}
+
+export interface PreSyncCheckResult {
+  shouldProceedWithSync: boolean;
+  shouldSpinImmediately: boolean;
+  localChangedSinceLastSync: boolean;
+  remoteChangedSinceLastSync: boolean;
+  reason:
+    | 'local_dirty'
+    | 'local_mutation_after_last_sync'
+    | 'remote_newer_than_last_sync'
+    | 'remote_manifest_changed'
+    | 'initial_sync_check_silently'
+    | 'forced_remote_check_silently'
+    | 'no_changes_since_last_sync';
+}
+
+export function evaluatePreSyncCheck(input: PreSyncCheckInput): PreSyncCheckResult {
+  const lastSync = Math.max(0, Number(input.lastSyncTimestamp) || 0);
+  const lastLocalMutation = Math.max(0, Number(input.lastLocalMutationTimestamp) || 0);
+  const remoteUpdatedAt = Math.max(0, Number(input.remoteUpdatedAtMs) || 0);
+
+  const localMutationNewer = lastLocalMutation > 0 && lastLocalMutation > lastSync;
+  const localChangedSinceLastSync = Boolean(input.hasLocalDirtyFlags) || localMutationNewer;
+  const remoteTimestampNewer = lastSync > 0 && remoteUpdatedAt > 0 && remoteUpdatedAt > lastSync;
+  const remoteChangedSinceLastSync =
+    Boolean(input.hasRemoteManifestChanges) || remoteTimestampNewer;
+
+  if (localChangedSinceLastSync) {
+    return {
+      shouldProceedWithSync: true,
+      shouldSpinImmediately: true,
+      localChangedSinceLastSync: true,
+      remoteChangedSinceLastSync,
+      reason: input.hasLocalDirtyFlags ? 'local_dirty' : 'local_mutation_after_last_sync'
+    };
+  }
+
+  if (remoteChangedSinceLastSync) {
+    return {
+      shouldProceedWithSync: true,
+      shouldSpinImmediately: true,
+      localChangedSinceLastSync: false,
+      remoteChangedSinceLastSync: true,
+      reason: input.hasRemoteManifestChanges
+        ? 'remote_manifest_changed'
+        : 'remote_newer_than_last_sync'
+    };
+  }
+
+  if (lastSync <= 0) {
+    return {
+      shouldProceedWithSync: true,
+      shouldSpinImmediately: false,
+      localChangedSinceLastSync: false,
+      remoteChangedSinceLastSync: false,
+      reason: 'initial_sync_check_silently'
+    };
+  }
+
+  if (input.forceCheckRemote) {
+    return {
+      shouldProceedWithSync: true,
+      shouldSpinImmediately: false,
+      localChangedSinceLastSync: false,
+      remoteChangedSinceLastSync: false,
+      reason: 'forced_remote_check_silently'
+    };
+  }
+
+  return {
+    shouldProceedWithSync: false,
+    shouldSpinImmediately: false,
+    localChangedSinceLastSync: false,
+    remoteChangedSinceLastSync: false,
+    reason: 'no_changes_since_last_sync'
+  };
+}
+

@@ -23,6 +23,7 @@ import {
   withAsyncTimeout,
   shouldRunLocalBridgeAfterCloud,
   shouldQueueReconcileDuringAuthTransition,
+  evaluatePreSyncCheck,
   type ManifestSnapshotLike
 } from './cloudSyncHelpers.ts';
 import type { User, InboundReceipt } from '../types/inventory.ts';
@@ -702,4 +703,88 @@ describe('cloudSyncHelpers', () => {
       true
     );
   });
+
+  it('evaluatePreSyncCheck gates sync cycle and spinner using lastSyncTimestamp', () => {
+    // 1. Neither local nor remote changed since lastSyncTimestamp -> skip without spinning
+    const idleRes = evaluatePreSyncCheck({
+      lastSyncTimestamp: 5000,
+      lastLocalMutationTimestamp: 4500,
+      hasLocalDirtyFlags: false,
+      hasRemoteManifestChanges: false,
+      remoteUpdatedAtMs: 4900,
+      forceCheckRemote: false
+    });
+    assert.equal(idleRes.shouldProceedWithSync, false);
+    assert.equal(idleRes.shouldSpinImmediately, false);
+    assert.equal(idleRes.reason, 'no_changes_since_last_sync');
+
+    // 2. Manual/startup forced check with no known diff -> check silently without spinning upfront
+    const forcedQuiet = evaluatePreSyncCheck({
+      lastSyncTimestamp: 5000,
+      lastLocalMutationTimestamp: 5000,
+      hasLocalDirtyFlags: false,
+      hasRemoteManifestChanges: false,
+      remoteUpdatedAtMs: 5000,
+      forceCheckRemote: true
+    });
+    assert.equal(forcedQuiet.shouldProceedWithSync, true);
+    assert.equal(forcedQuiet.shouldSpinImmediately, false);
+    assert.equal(forcedQuiet.reason, 'forced_remote_check_silently');
+
+    // 3. Initial sync (lastSyncTimestamp === 0) -> proceed silently until actual diff is detected
+    const initialQuiet = evaluatePreSyncCheck({
+      lastSyncTimestamp: 0,
+      lastLocalMutationTimestamp: 0,
+      hasLocalDirtyFlags: false,
+      hasRemoteManifestChanges: false
+    });
+    assert.equal(initialQuiet.shouldProceedWithSync, true);
+    assert.equal(initialQuiet.shouldSpinImmediately, false);
+    assert.equal(initialQuiet.reason, 'initial_sync_check_silently');
+
+    // 4. Local mutation newer than lastSyncTimestamp -> proceed AND spin immediately
+    const localMutated = evaluatePreSyncCheck({
+      lastSyncTimestamp: 5000,
+      lastLocalMutationTimestamp: 5200,
+      hasLocalDirtyFlags: false
+    });
+    assert.equal(localMutated.shouldProceedWithSync, true);
+    assert.equal(localMutated.shouldSpinImmediately, true);
+    assert.equal(localMutated.localChangedSinceLastSync, true);
+    assert.equal(localMutated.reason, 'local_mutation_after_last_sync');
+
+    // 5. Dirty flags set -> proceed AND spin immediately
+    const dirtyRes = evaluatePreSyncCheck({
+      lastSyncTimestamp: 5000,
+      lastLocalMutationTimestamp: 4000,
+      hasLocalDirtyFlags: true
+    });
+    assert.equal(dirtyRes.shouldProceedWithSync, true);
+    assert.equal(dirtyRes.shouldSpinImmediately, true);
+    assert.equal(dirtyRes.reason, 'local_dirty');
+
+    // 6. Remote server updatedAt newer than lastSyncTimestamp -> proceed AND spin immediately
+    const remoteNewer = evaluatePreSyncCheck({
+      lastSyncTimestamp: 5000,
+      lastLocalMutationTimestamp: 4000,
+      hasLocalDirtyFlags: false,
+      remoteUpdatedAtMs: 5500
+    });
+    assert.equal(remoteNewer.shouldProceedWithSync, true);
+    assert.equal(remoteNewer.shouldSpinImmediately, true);
+    assert.equal(remoteNewer.remoteChangedSinceLastSync, true);
+    assert.equal(remoteNewer.reason, 'remote_newer_than_last_sync');
+
+    // 7. Remote manifest revision/digest drift -> proceed AND spin immediately
+    const manifestDrift = evaluatePreSyncCheck({
+      lastSyncTimestamp: 5000,
+      lastLocalMutationTimestamp: 4000,
+      hasLocalDirtyFlags: false,
+      hasRemoteManifestChanges: true
+    });
+    assert.equal(manifestDrift.shouldProceedWithSync, true);
+    assert.equal(manifestDrift.shouldSpinImmediately, true);
+    assert.equal(manifestDrift.reason, 'remote_manifest_changed');
+  });
 });
+

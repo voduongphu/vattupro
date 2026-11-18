@@ -83,6 +83,7 @@ import {
   sanitizePendingOutbox,
   mergePendingOutboxMutation,
   clearPendingOutboxDomains,
+  hasAnyPendingOutbox,
   hasRemoteManifestChanged,
   computeLoginMetaPullFlags,
   resolveManifestTransactionUpdate,
@@ -185,6 +186,7 @@ let lastAppliedCloudMaterialsDigest = '';
 let latestObservedRemoteServerRev = -1;
 let latestObservedRemoteMetaDigest = '';
 let latestObservedRemoteMaterialsDigest = '';
+let latestObservedRemoteUpdatedAtMs = 0;
 let isCloudReconciling = false;
 let pendingCloudReconcile = false;
 let pendingForceManifestRefresh = false;
@@ -193,6 +195,7 @@ let passStartedLocalMutationSeq = 0;
 let activePassServerRev = -1;
 let activePassMetaDigest = '';
 let activePassMaterialsDigest = '';
+const activeWorkDetectedCallbacks = new Set<() => void>();
 let reconcileInFlightPromise: Promise<{
   ok: boolean;
   pulledChanges: boolean;
@@ -444,6 +447,7 @@ function resetCloudSessionCaches(clearStorage = false): void {
   latestObservedRemoteServerRev = -1;
   latestObservedRemoteMetaDigest = '';
   latestObservedRemoteMaterialsDigest = '';
+  latestObservedRemoteUpdatedAtMs = 0;
   lastSyncedOsdDigest = '';
   cloudInboundIndexCache = null;
   cloudOutboundIndexCache = null;
@@ -1934,6 +1938,21 @@ function attachOsdRealtimeListener(): void {
   );
 }
 
+function extractTimestampMs(val: unknown): number {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (val && typeof val === 'object') {
+    const obj = val as { toMillis?: () => number; seconds?: number };
+    if (typeof obj.toMillis === 'function') {
+      const ms = obj.toMillis();
+      return Number.isFinite(ms) ? ms : 0;
+    }
+    if (typeof obj.seconds === 'number' && Number.isFinite(obj.seconds)) {
+      return obj.seconds * 1000;
+    }
+  }
+  return 0;
+}
+
 function attachWorkspaceRealtimeListener(): void {
   attachOsdRealtimeListener();
   if (workspaceUnsub || !auth.currentUser) return;
@@ -1950,9 +1969,13 @@ function attachWorkspaceRealtimeListener(): void {
       const rev = Number(data.serverRevision) || 0;
       const remoteMetaDigest = String(data.metaDigest || '');
       const remoteMatDigest = String(data.materialsDigest || '');
+      const remoteUpdatedAt = extractTimestampMs((data as unknown as Record<string, unknown>).updatedAt);
       latestObservedRemoteServerRev = Math.max(latestObservedRemoteServerRev, rev);
       latestObservedRemoteMetaDigest = remoteMetaDigest;
       latestObservedRemoteMaterialsDigest = remoteMatDigest;
+      if (remoteUpdatedAt > latestObservedRemoteUpdatedAtMs) {
+        latestObservedRemoteUpdatedAtMs = remoteUpdatedAt;
+      }
       if (
         !interactiveAuthInFlight &&
         hasRemoteManifestChanged({
@@ -3459,6 +3482,30 @@ export const FirestoreSyncService = {
     return cloudOsdDirty;
   },
 
+  hasPendingLocalChanges(): boolean {
+    if (
+      cloudMetaDirty ||
+      cloudMetaUsersDirty ||
+      cloudMetaWarehousesDirty ||
+      cloudMetaTombstonesDirty ||
+      cloudOsdDirty ||
+      cloudMaterialsDirty ||
+      cloudInboundDirty ||
+      cloudOutboundDirty
+    ) {
+      return true;
+    }
+    return hasAnyPendingOutbox(readPendingOutbox());
+  },
+
+  getLatestRemoteUpdatedAtMs(): number {
+    return latestObservedRemoteUpdatedAtMs;
+  },
+
+  isRealtimeWorkspaceAttached(): boolean {
+    return Boolean(workspaceUnsub);
+  },
+
   hasUnappliedRemoteChanges(): boolean {
     if (latestObservedRemoteServerRev < 0) return false;
     return hasRemoteManifestChanged({
@@ -3738,7 +3785,10 @@ export const FirestoreSyncService = {
     return res.ok;
   },
 
-  async reconcileWithCloudDetailed(options?: { forceManifestRefresh?: boolean }): Promise<{
+  async reconcileWithCloudDetailed(options?: {
+    forceManifestRefresh?: boolean;
+    onWorkDetected?: () => void;
+  }): Promise<{
     ok: boolean;
     pulledChanges: boolean;
     pushedChanges?: boolean;
@@ -3785,6 +3835,10 @@ export const FirestoreSyncService = {
       };
     }
 
+    if (options?.onWorkDetected) {
+      activeWorkDetectedCallbacks.add(options.onWorkDetected);
+    }
+
     if (isCloudReconciling && reconcileInFlightPromise) {
       const hasNewLocalMutation = currentLocalMutationSeq !== passStartedLocalMutationSeq;
       const hasNewRemoteChange =
@@ -3806,6 +3860,16 @@ export const FirestoreSyncService = {
 
     isCloudReconciling = true;
     const initialForceRefresh = Boolean(options?.forceManifestRefresh);
+
+    const notifyWorkDetected = () => {
+      activeWorkDetectedCallbacks.forEach((cb) => {
+        try {
+          cb();
+        } catch {
+          // ignore
+        }
+      });
+    };
 
     const runSinglePass = async (forceRefresh: boolean): Promise<{
       ok: boolean;
@@ -4085,6 +4149,9 @@ export const FirestoreSyncService = {
           });
           return { ok: true, pulledChanges: false, pushedChanges: false };
         }
+
+        // Chỉ kích hoạt trạng thái quay vòng biểu tượng tải khi thực sự có dữ liệu cần kéo hoặc đẩy
+        notifyWorkDetected();
 
         // 1. Đồng bộ Meta chọn lọc từng miền (Users / Warehouses / Tombstones / OSD)
         if (
@@ -4719,6 +4786,7 @@ export const FirestoreSyncService = {
       } finally {
         isCloudReconciling = false;
         reconcileInFlightPromise = null;
+        activeWorkDetectedCallbacks.clear();
       }
     })();
 
