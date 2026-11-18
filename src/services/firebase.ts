@@ -28,7 +28,7 @@ const app = initializeApp(firebaseConfig);
 
 const PENDING_REDIRECT_LOGIN_KEY = 'vtp_pending_google_redirect_login_v1';
 
-function isLikelyMobileDevice(): boolean {
+export function isLikelyMobileDevice(): boolean {
   if (typeof navigator === 'undefined') return false;
   return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(
     navigator.userAgent || ''

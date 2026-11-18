@@ -31,6 +31,7 @@ import {
   resetFirestoreCircuitForRetry,
   FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
   OperationType,
+  isLikelyMobileDevice,
   type FirebaseUser
 } from './firebase';
 import { StorageService } from './storage';
@@ -93,6 +94,11 @@ import {
   resolveManifestTransactionUpdate,
   resolveConvergedCheckpointDigests,
   withAsyncTimeout,
+  extractCountFromDigestPart,
+  getAdaptiveCloudFetchConfig,
+  isRetryableCloudReadError,
+  retryAsyncWithBackoff,
+  runWithConcurrencyLimit,
   type CloudPendingOutbox,
   type TouchedManifestDomains,
   type ManifestSnapshotLike,
@@ -182,7 +188,12 @@ let workspaceReadyUid: string | null = null;
 let verifiedWorkspaceUid: string | null = null;
 let cachedWsManifest: { data: WorkspaceManifestDoc; atMs: number } | null = null;
 let interactiveAuthInFlight = false;
+let deferredRemoteChangeDuringAuth = false;
 let activeInteractiveAuthAttemptId = 0;
+
+function getCloudFetchConfig() {
+  return getAdaptiveCloudFetchConfig(isLikelyMobileDevice());
+}
 let adminPiiLoadedForMetaRev = -1;
 let lastAppliedCloudServerRev = -1;
 let lastAppliedCloudMetaRev = -1;
@@ -739,12 +750,32 @@ function isNotFoundError(err: unknown): boolean {
   return code === 'not-found' || code === 'firestore/not-found' || msg.includes('No document to update');
 }
 
-async function safeGetDoc(ref: DocumentReference, pathLabel: string, timeoutMs = 15000) {
+async function safeGetDoc(
+  ref: DocumentReference,
+  pathLabel: string,
+  timeoutMs?: number,
+  maxRetries?: number
+) {
+  const cfg = getCloudFetchConfig();
+  const effectiveTimeoutMs = timeoutMs ?? cfg.readTimeoutMs;
+  const effectiveRetries = maxRetries ?? cfg.maxReadRetries;
+
   try {
-    const snap = await withAsyncTimeout(
-      getDoc(ref),
-      timeoutMs,
-      'Kết nối Cloud Firestore phản hồi quá chậm. Vui lòng kiểm tra mạng và thử lại.'
+    const snap = await retryAsyncWithBackoff(
+      () =>
+        withAsyncTimeout(
+          getDoc(ref),
+          effectiveTimeoutMs,
+          'Kết nối Cloud Firestore phản hồi quá chậm. Vui lòng kiểm tra mạng và thử lại.'
+        ),
+      {
+        maxRetries: effectiveRetries,
+        baseDelayMs: cfg.retryBaseDelayMs,
+        shouldRetry: (err) =>
+          !isQuotaExceededError(err) &&
+          !isPermissionError(err) &&
+          isRetryableCloudReadError(err)
+      }
     );
     clearFirestoreQuotaExhaustedFlag();
     if (snap.exists()) {
@@ -1056,10 +1087,9 @@ async function commitBatchChunk(chunk: StagedDocWrite[], uid: string): Promise<v
       for (let i = 0; i < chunk.length; i++) {
         knownExistingPaths.delete(chunk[i].ref.path);
       }
-      for (let i = 0; i < chunk.length; i += 50) {
-        const slice = chunk.slice(i, i + 50);
-        await Promise.all(slice.map((w) => safeGetDoc(w.ref, w.pathLabel)));
-      }
+      await runWithConcurrencyLimit(chunk, getCloudFetchConfig().concurrency, (w) =>
+        safeGetDoc(w.ref, w.pathLabel)
+      );
       try {
         await buildAndCommit();
         clearFirestoreQuotaExhaustedFlag();
@@ -1105,10 +1135,9 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
   // Chỉ kiểm tra sự tồn tại cho các doc chưa rõ trạng thái và không được đánh dấu là mới
   const unknownWrites = writes.filter((w) => !w.isKnownNew && !knownExistingPaths.has(w.ref.path));
   if (unknownWrites.length > 0) {
-    for (let i = 0; i < unknownWrites.length; i += 50) {
-      const slice = unknownWrites.slice(i, i + 50);
-      await Promise.all(slice.map((w) => safeGetDoc(w.ref, w.pathLabel)));
-    }
+    await runWithConcurrencyLimit(unknownWrites, getCloudFetchConfig().concurrency, (w) =>
+      safeGetDoc(w.ref, w.pathLabel)
+    );
   }
 
   const batchTasks: Array<Promise<void>> = [];
@@ -1986,7 +2015,6 @@ function attachWorkspaceRealtimeListener(): void {
         latestObservedRemoteUpdatedAtMs = remoteUpdatedAt;
       }
       if (
-        !interactiveAuthInFlight &&
         hasRemoteManifestChanged({
           remoteServerRev: rev,
           remoteMetaDigest,
@@ -1996,7 +2024,12 @@ function attachWorkspaceRealtimeListener(): void {
           lastAppliedMaterialsDigest: lastAppliedCloudMaterialsDigest
         })
       ) {
-        externalOnRemoteWorkspaceChange?.();
+        if (interactiveAuthInFlight) {
+          deferredRemoteChangeDuringAuth = true;
+        } else {
+          deferredRemoteChangeDuringAuth = false;
+          externalOnRemoteWorkspaceChange?.();
+        }
       }
     },
     (err) => {
@@ -2044,6 +2077,7 @@ interface PullMetaFlags {
   pullTombstones?: boolean;
   pullOsd?: boolean;
   osdRemoteCount?: number;
+  deferAttachmentPreload?: boolean;
 }
 
 async function pullMetaFromCloud(
@@ -2055,76 +2089,92 @@ async function pullMetaFromCloud(
     pullTombstones: true,
     pullOsd: true
   }
-): Promise<void> {
+): Promise<OsdReceipt[]> {
   const pullUsers = flags.pullUsers !== false;
   const pullWarehouses = flags.pullWarehouses !== false;
   const pullTombstones = flags.pullTombstones !== false;
   const pullOsd = flags.pullOsd !== false;
   const osdRemoteCount = Number(flags.osdRemoteCount) || 0;
+  const cfg = getCloudFetchConfig();
 
-  const tombReads: Promise<any>[] = [];
+  type MetaChunkTask = {
+    kind: 'tomb' | 'acc' | 'wh' | 'osd';
+    idx: number;
+    ref: DocumentReference;
+    pathLabel: string;
+  };
+  const tasks: MetaChunkTask[] = [];
+
   if (pullTombstones) {
     for (let i = 0; i < (Number(wsData.tombstoneChunkCount) || 0); i++) {
       const cid = `tomb_${i}`;
-      tombReads.push(
-        safeGetDoc(
-          doc(db, 'workspaces', WORKSPACE_ID, 'tombstoneChunks', cid),
-          `workspaces/${WORKSPACE_ID}/tombstoneChunks/${cid}`
-        )
-      );
+      tasks.push({
+        kind: 'tomb',
+        idx: i,
+        ref: doc(db, 'workspaces', WORKSPACE_ID, 'tombstoneChunks', cid),
+        pathLabel: `workspaces/${WORKSPACE_ID}/tombstoneChunks/${cid}`
+      });
     }
   }
 
-  const accReads: Promise<any>[] = [];
   if (pullUsers) {
     for (let i = 0; i < (Number(wsData.accountChunkCount) || 0); i++) {
       const cid = `accounts_${i}`;
-      accReads.push(
-        safeGetDoc(
-          doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
-          `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`
-        )
-      );
+      tasks.push({
+        kind: 'acc',
+        idx: i,
+        ref: doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
+        pathLabel: `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`
+      });
     }
   }
 
-  const whReads: Promise<any>[] = [];
   if (pullWarehouses) {
     for (let i = 0; i < (Number(wsData.warehouseChunkCount) || 0); i++) {
       const cid = `warehouses_${i}`;
-      whReads.push(
-        safeGetDoc(
-          doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
-          `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`
-        )
-      );
+      tasks.push({
+        kind: 'wh',
+        idx: i,
+        ref: doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
+        pathLabel: `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`
+      });
     }
   }
 
-  const osdReads: Promise<any>[] = [];
   if (pullOsd) {
-    osdReads.push(
-      safeGetDoc(
-        doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', 'osd_0'),
-        `workspaces/${WORKSPACE_ID}/metaChunks/osd_0`
-      )
-    );
+    tasks.push({
+      kind: 'osd',
+      idx: 0,
+      ref: doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', 'osd_0'),
+      pathLabel: `workspaces/${WORKSPACE_ID}/metaChunks/osd_0`
+    });
     if (osdRemoteCount > CLOUD_CHUNK_SIZE) {
-      osdReads.push(
-        safeGetDoc(
-          doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', 'osd_1'),
-          `workspaces/${WORKSPACE_ID}/metaChunks/osd_1`
-        )
-      );
+      tasks.push({
+        kind: 'osd',
+        idx: 1,
+        ref: doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', 'osd_1'),
+        pathLabel: `workspaces/${WORKSPACE_ID}/metaChunks/osd_1`
+      });
     }
   }
 
-  const [tombSnaps, accSnaps, whSnaps, osdSnaps] = await Promise.all([
-    Promise.all(tombReads),
-    Promise.all(accReads),
-    Promise.all(whReads),
-    Promise.all(osdReads)
-  ]);
+  const fetchedSnaps = await runWithConcurrencyLimit(tasks, cfg.concurrency, (t) =>
+    safeGetDoc(t.ref, t.pathLabel)
+  );
+
+  const tombSnaps: any[] = [];
+  const accSnaps: any[] = [];
+  const whSnaps: any[] = [];
+  const osdSnaps: any[] = [];
+
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    const snap = fetchedSnaps[i];
+    if (t.kind === 'tomb') tombSnaps[t.idx] = snap;
+    else if (t.kind === 'acc') accSnaps[t.idx] = snap;
+    else if (t.kind === 'wh') whSnaps[t.idx] = snap;
+    else if (t.kind === 'osd') osdSnaps[t.idx] = snap;
+  }
 
   if (pullOsd && osdRemoteCount === 0 && osdSnaps.length === 1 && osdSnaps[0]?.exists()) {
     const osd0Items = Array.isArray(osdSnaps[0].data().items) ? osdSnaps[0].data().items : [];
@@ -2141,7 +2191,7 @@ async function pullMetaFromCloud(
   if (pullOsd) {
     for (let i = 0; i < osdSnaps.length; i++) {
       const snap = osdSnaps[i];
-      if (!snap.exists()) continue;
+      if (!snap || !snap.exists()) continue;
       const items = Array.isArray(snap.data().items) ? snap.data().items : [];
       ramChunkDigests[`osd_${i}`] = computeItemsChunkDigest(items);
       for (const raw of items) {
@@ -2156,7 +2206,7 @@ async function pullMetaFromCloud(
   if (pullTombstones) {
     for (let i = 0; i < tombSnaps.length; i++) {
       const snap = tombSnaps[i];
-      if (!snap.exists()) continue;
+      if (!snap || !snap.exists()) continue;
       const items = Array.isArray(snap.data().items) ? snap.data().items : [];
       ramChunkDigests[`tomb_${i}`] = computeItemsChunkDigest(items);
       for (const entry of items) {
@@ -2182,7 +2232,7 @@ async function pullMetaFromCloud(
   if (pullUsers) {
     for (let i = 0; i < accSnaps.length; i++) {
       const snap = accSnaps[i];
-      if (!snap.exists()) continue;
+      if (!snap || !snap.exists()) continue;
       const items = Array.isArray(snap.data().items) ? snap.data().items : [];
       ramChunkDigests[`accounts_${i}`] = computeItemsChunkDigest(items);
       for (const raw of items) {
@@ -2205,7 +2255,7 @@ async function pullMetaFromCloud(
   if (pullWarehouses) {
     for (let i = 0; i < whSnaps.length; i++) {
       const snap = whSnaps[i];
-      if (!snap.exists()) continue;
+      if (!snap || !snap.exists()) continue;
       const items = Array.isArray(snap.data().items) ? snap.data().items : [];
       ramChunkDigests[`warehouses_${i}`] = computeItemsChunkDigest(items);
       for (const raw of items) {
@@ -2219,7 +2269,7 @@ async function pullMetaFromCloud(
   // Nếu là Admin, chỉ tải PII (email, phone) cho bản ghi mới hoặc có updatedAt khác bản cục bộ
   const targetMetaRev = Number(wsData.metaRevision) || 0;
   if (isCloudAdmin(fbUser) && (pullUsers || pullWarehouses)) {
-    const piiTasks: Promise<void>[] = [];
+    const piiTasks: Array<() => Promise<void>> = [];
     if (pullUsers) {
       for (const u of remoteUsers) {
         const localMatch =
@@ -2237,24 +2287,23 @@ async function pullMetaFromCloud(
           continue;
         }
         const piiId = makeSafeDocId('accpii', u.id || normUserKey(u.username));
-        piiTasks.push(
-          safeGetDoc(
+        piiTasks.push(async () => {
+          const snap = await safeGetDoc(
             doc(db, 'workspaces', WORKSPACE_ID, 'accountPrivate', piiId),
             `workspaces/${WORKSPACE_ID}/accountPrivate/${piiId}`
-          ).then((snap) => {
-            if (snap.exists()) {
-              const d = snap.data();
-              const email = cleanStr(d.email, 200, '');
-              const phone = cleanStr(d.phone, 64, '');
-              if (email) {
-                u.email = email;
-                u.emailDigest = computeEmailAuthDigest(email) || u.emailDigest;
-              }
-              if (phone) u.phone = phone;
-              ramChunkDigests[`accpii_${piiId}`] = computeRecordDigest({ email, phone });
+          );
+          if (snap.exists()) {
+            const d = snap.data();
+            const email = cleanStr(d.email, 200, '');
+            const phone = cleanStr(d.phone, 64, '');
+            if (email) {
+              u.email = email;
+              u.emailDigest = computeEmailAuthDigest(email) || u.emailDigest;
             }
-          })
-        );
+            if (phone) u.phone = phone;
+            ramChunkDigests[`accpii_${piiId}`] = computeRecordDigest({ email, phone });
+          }
+        });
       }
     }
 
@@ -2268,24 +2317,23 @@ async function pullMetaFromCloud(
           continue;
         }
         const piiId = makeSafeDocId('whpii', w.id || normKey(w.code));
-        piiTasks.push(
-          safeGetDoc(
+        piiTasks.push(async () => {
+          const snap = await safeGetDoc(
             doc(db, 'workspaces', WORKSPACE_ID, 'warehousePrivate', piiId),
             `workspaces/${WORKSPACE_ID}/warehousePrivate/${piiId}`
-          ).then((snap) => {
-            if (snap.exists()) {
-              const d = snap.data();
-              const phone = cleanStr(d.phone, 64, '');
-              if (phone) w.phone = phone;
-              ramChunkDigests[`whpii_${piiId}`] = computeRecordDigest({ phone });
-            }
-          })
-        );
+          );
+          if (snap.exists()) {
+            const d = snap.data();
+            const phone = cleanStr(d.phone, 64, '');
+            if (phone) w.phone = phone;
+            ramChunkDigests[`whpii_${piiId}`] = computeRecordDigest({ phone });
+          }
+        });
       }
     }
 
     if (piiTasks.length > 0) {
-      await Promise.all(piiTasks);
+      await runWithConcurrencyLimit(piiTasks, cfg.concurrency, (fn) => fn());
     }
     if (pullUsers) {
       adminPiiLoadedForMetaRev = targetMetaRev;
@@ -2302,9 +2350,12 @@ async function pullMetaFromCloud(
 
   if (pullOsd) {
     StorageService.applyRemoteOsdReceipts(remoteOsd);
-    void preloadOsdAttachments(remoteOsd);
+    if (!flags.deferAttachmentPreload) {
+      void preloadOsdAttachments(remoteOsd);
+    }
     externalOnRemoteOsdChange?.(remoteOsd);
   }
+  return remoteOsd;
 }
 
 interface PushMetaOptions {
@@ -2714,15 +2765,15 @@ async function pullReceiptIndexMap(
     return { entries, chunkIndexByCode };
   }
 
-  const snaps = await Promise.all(
-    Array.from({ length: indexChunkCount }, (_, idx) => {
-      const cid = `idx_${idx}`;
-      return safeGetDoc(
-        doc(db, 'workspaces', WORKSPACE_ID, subcol, cid),
-        `workspaces/${WORKSPACE_ID}/${subcol}/${cid}`
-      );
-    })
-  );
+  const cfg = getCloudFetchConfig();
+  const idxIndices = Array.from({ length: indexChunkCount }, (_, idx) => idx);
+  const snaps = await runWithConcurrencyLimit(idxIndices, cfg.concurrency, (idx) => {
+    const cid = `idx_${idx}`;
+    return safeGetDoc(
+      doc(db, 'workspaces', WORKSPACE_ID, subcol, cid),
+      `workspaces/${WORKSPACE_ID}/${subcol}/${cid}`
+    );
+  });
 
   for (let idx = 0; idx < snaps.length; idx++) {
     const snap = snaps[idx];
@@ -2771,14 +2822,18 @@ async function pullSingleInboundFromCloud(entry: CloudReceiptIndexEntry): Promis
   const h = headerSnap.data();
   const cCount = Number(h.chunkCount) || 0;
 
-  const itemSnaps = await Promise.all(
-    Array.from({ length: cCount }, (_, idx) => {
+  const cfg = getCloudFetchConfig();
+  const itemIndices = Array.from({ length: cCount }, (_, idx) => idx);
+  const itemSnaps = await runWithConcurrencyLimit(
+    itemIndices,
+    cfg.itemChunkConcurrency,
+    (idx) => {
       const cid = `${entry.docId}_c${idx}`;
       return safeGetDoc(
         doc(db, 'workspaces', WORKSPACE_ID, 'inboundItems', cid),
         `workspaces/${WORKSPACE_ID}/inboundItems/${cid}`
       );
-    })
+    }
   );
 
   const allItems: InboundItemDetail[] = [];
@@ -2952,14 +3007,18 @@ async function pullSingleOutboundFromCloud(entry: CloudReceiptIndexEntry): Promi
   const h = headerSnap.data();
   const cCount = Number(h.chunkCount) || 0;
 
-  const itemSnaps = await Promise.all(
-    Array.from({ length: cCount }, (_, idx) => {
+  const cfg = getCloudFetchConfig();
+  const itemIndices = Array.from({ length: cCount }, (_, idx) => idx);
+  const itemSnaps = await runWithConcurrencyLimit(
+    itemIndices,
+    cfg.itemChunkConcurrency,
+    (idx) => {
       const cid = `${entry.docId}_c${idx}`;
       return safeGetDoc(
         doc(db, 'workspaces', WORKSPACE_ID, 'outboundItems', cid),
         `workspaces/${WORKSPACE_ID}/outboundItems/${cid}`
       );
-    })
+    }
   );
 
   const allItems: OutboundItemDetail[] = [];
@@ -3165,33 +3224,33 @@ async function writeReceiptIndexChunks(
 
 async function pullMaterialsFromCloud(chunkCount: number): Promise<void> {
   if (chunkCount <= 0) return;
-  for (let start = 0; start < chunkCount; start += 25) {
-    const end = Math.min(chunkCount, start + 25);
-    const snaps = await Promise.all(
-      Array.from({ length: end - start }, (_, idx) => {
-        const cIdx = start + idx;
-        const cid = `chunk_${cIdx}`;
-        return safeGetDoc(
-          doc(db, 'workspaces', WORKSPACE_ID, 'materialChunks', cid),
-          `workspaces/${WORKSPACE_ID}/materialChunks/${cid}`
-        );
-      })
+  const cfg = getCloudFetchConfig();
+  const indices = Array.from({ length: chunkCount }, (_, i) => i);
+  const snaps = await runWithConcurrencyLimit(indices, cfg.concurrency, (cIdx) => {
+    const cid = `chunk_${cIdx}`;
+    return safeGetDoc(
+      doc(db, 'workspaces', WORKSPACE_ID, 'materialChunks', cid),
+      `workspaces/${WORKSPACE_ID}/materialChunks/${cid}`
     );
-    const batchItems: MaterialItem[] = [];
-    for (let idx = 0; idx < snaps.length; idx++) {
-      const snap = snaps[idx];
-      if (!snap.exists()) continue;
-      const arr = Array.isArray(snap.data().items) ? snap.data().items : [];
-      ramChunkDigests[`mat_${start + idx}`] = computeItemsChunkDigest(arr);
-      for (const raw of arr) {
-        if (raw && typeof raw === 'object') {
-          batchItems.push(deserializeMaterial(raw));
-        }
+  });
+
+  const allItems: MaterialItem[] = [];
+  const nextChunkDigests: Record<string, string> = {};
+  for (let idx = 0; idx < snaps.length; idx++) {
+    const snap = snaps[idx];
+    if (!snap || !snap.exists()) continue;
+    const arr = Array.isArray(snap.data().items) ? snap.data().items : [];
+    nextChunkDigests[`mat_${idx}`] = computeItemsChunkDigest(arr);
+    for (const raw of arr) {
+      if (raw && typeof raw === 'object') {
+        allItems.push(deserializeMaterial(raw));
       }
     }
-    if (batchItems.length > 0) {
-      StorageService.applyRemoteMaterials(batchItems);
-    }
+  }
+
+  Object.assign(ramChunkDigests, nextChunkDigests);
+  if (allItems.length > 0) {
+    StorageService.applyRemoteMaterials(allItems);
   }
 }
 
@@ -3687,13 +3746,27 @@ export const FirestoreSyncService = {
 
   async autoConnectIfPossible(): Promise<{ success: boolean; email?: string | null }> {
     if (this.isCloudConnected()) {
+      if (
+        deferredRemoteChangeDuringAuth ||
+        this.hasUnappliedRemoteChanges() ||
+        this.hasPendingLocalChanges()
+      ) {
+        deferredRemoteChangeDuringAuth = false;
+        externalOnRemoteWorkspaceChange?.();
+      }
       return { success: true, email: auth.currentUser?.email };
     }
     // Luôn chờ Firebase Auth khôi phục IndexedDB persistence (trên điện thoại thường mất 150-800ms)
     const ok = await this.ensureReadyForAuth(6000);
     const fbUser = auth.currentUser;
     if (ok && fbUser && fbUser.emailVerified) {
-      if (this.hasUnappliedRemoteChanges() || this.hasPendingLocalChanges()) {
+      if (
+        deferredRemoteChangeDuringAuth ||
+        this.hasUnappliedRemoteChanges() ||
+        this.hasPendingLocalChanges() ||
+        !readCloudSyncCheckpoint(fbUser.uid)
+      ) {
+        deferredRemoteChangeDuringAuth = false;
         externalOnRemoteWorkspaceChange?.();
       }
       return { success: true, email: fbUser.email };
@@ -4129,13 +4202,29 @@ export const FirestoreSyncService = {
           lastSyncedOsdDigest
         });
 
+        const remoteInCount = remoteV2 ? extractCountFromDigestPart(remoteV2.in) : 0;
+        const remoteOutCount = remoteV2 ? extractCountFromDigestPart(remoteV2.out) : 0;
+        const remoteMatsCount = Number(wsData.materialsCount) || 0;
+
         const missingLocalAccounts =
           nextAccountChunkCount > 0 &&
           (localUsers.length === 0 || (localUsers.length <= 1 && (!remoteV2 || remoteV2.u !== localU)));
         const missingLocalWhs = nextWarehouseChunkCount > 0 && localWhs.length === 0;
-        const missingLocalInbound = nextInboundIndexChunkCount > 0 && localInbounds.length === 0;
-        const missingLocalOutbound = nextOutboundIndexChunkCount > 0 && localOutbounds.length === 0;
-        const missingLocalMaterials = nextMaterialsChunkCount > 0 && localMats.length === 0;
+        const missingLocalInbound =
+          (nextInboundIndexChunkCount > 0 && localInbounds.length === 0) ||
+          (!dirtyFlags.inbound &&
+            !dirtyFlags.tombstones &&
+            remoteInCount > localInbounds.length);
+        const missingLocalOutbound =
+          (nextOutboundIndexChunkCount > 0 && localOutbounds.length === 0) ||
+          (!dirtyFlags.outbound &&
+            !dirtyFlags.tombstones &&
+            remoteOutCount > localOutbounds.length);
+        const missingLocalMaterials =
+          (nextMaterialsChunkCount > 0 && localMats.length === 0) ||
+          (!dirtyFlags.materials &&
+            !dirtyFlags.tombstones &&
+            remoteMatsCount > localMats.length);
 
         const effectivePullUsers = hasV2Checkpoint
           ? (remoteV2!.u !== cpRemoteV2!.u && plan.pullUsers) || missingLocalAccounts || adminMissingPii
@@ -4152,10 +4241,10 @@ export const FirestoreSyncService = {
           : plan.pullOsd;
         const effectivePullInbound = hasV2Checkpoint
           ? (remoteV2!.in !== cpRemoteV2!.in && plan.pullInbound) || missingLocalInbound
-          : plan.pullInbound;
+          : plan.pullInbound || missingLocalInbound;
         const effectivePullOutbound = hasV2Checkpoint
           ? (remoteV2!.out !== cpRemoteV2!.out && plan.pullOutbound) || missingLocalOutbound
-          : plan.pullOutbound;
+          : plan.pullOutbound || missingLocalOutbound;
         const remoteMatsChanged =
           !checkpoint ||
           nextMaterialsDigest !== cpRemoteMaterialsDigest ||
@@ -4163,7 +4252,7 @@ export const FirestoreSyncService = {
         const effectivePullMaterials =
           remoteMatsChanged &&
           nextMaterialsChunkCount > 0 &&
-          (localMats.length === 0 || preMatDigest !== nextMaterialsDigest);
+          (localMats.length === 0 || missingLocalMaterials || preMatDigest !== nextMaterialsDigest);
 
         const anyWorkNeeded =
           effectivePullUsers ||
@@ -4250,18 +4339,20 @@ export const FirestoreSyncService = {
         notifyWorkDetected();
 
         // 1. Đồng bộ Meta chọn lọc từng miền (Users / Warehouses / Tombstones / OSD)
+        let pulledOsdForAttachments: OsdReceipt[] = [];
         if (
           effectivePullUsers ||
           effectivePullWarehouses ||
           effectivePullTombstones ||
           effectivePullOsd
         ) {
-          await pullMetaFromCloud(wsData, fbUser, {
+          pulledOsdForAttachments = await pullMetaFromCloud(wsData, fbUser, {
             pullUsers: effectivePullUsers,
             pullWarehouses: effectivePullWarehouses,
             pullTombstones: effectivePullTombstones,
             pullOsd: effectivePullOsd,
-            osdRemoteCount: plan.osdRemoteCount
+            osdRemoteCount: plan.osdRemoteCount,
+            deferAttachmentPreload: true
           });
           lastAppliedCloudMetaRev = remoteMetaRev;
           pulledChanges = true;
@@ -4375,7 +4466,7 @@ export const FirestoreSyncService = {
             cloudOutboundIndexCache.domainDigest === remoteV2.out
         );
 
-        const [inIndexRes, outIndexRes] = await Promise.all([
+        const fetchInboundIdx = () =>
           shouldSyncInbound
             ? inCacheHit
               ? Promise.resolve({
@@ -4388,7 +4479,8 @@ export const FirestoreSyncService = {
                   remoteV2?.in || '',
                   fbUser.uid
                 )
-            : Promise.resolve(null),
+            : Promise.resolve(null);
+        const fetchOutboundIdx = () =>
           shouldSyncOutbound
             ? outCacheHit
               ? Promise.resolve({
@@ -4401,8 +4493,16 @@ export const FirestoreSyncService = {
                   remoteV2?.out || '',
                   fbUser.uid
                 )
-            : Promise.resolve(null)
-        ]);
+            : Promise.resolve(null);
+
+        let inIndexRes: Awaited<ReturnType<typeof fetchInboundIdx>>;
+        let outIndexRes: Awaited<ReturnType<typeof fetchOutboundIdx>>;
+        if (isLikelyMobileDevice()) {
+          inIndexRes = await fetchInboundIdx();
+          outIndexRes = await fetchOutboundIdx();
+        } else {
+          [inIndexRes, outIndexRes] = await Promise.all([fetchInboundIdx(), fetchOutboundIdx()]);
+        }
 
         if (inIndexRes) {
           const cloudInMap = inIndexRes.entries;
@@ -4450,14 +4550,16 @@ export const FirestoreSyncService = {
           }
 
           if (inEntriesToPull.length > 0) {
-            for (let i = 0; i < inEntriesToPull.length; i += 12) {
-              const slice = inEntriesToPull.slice(i, i + 12);
-              const pulled = await Promise.all(slice.map((e) => pullSingleInboundFromCloud(e)));
-              const valid = pulled.filter((x): x is InboundReceipt => Boolean(x));
-              if (valid.length > 0) {
-                StorageService.applyRemoteInboundReceipts(valid);
-                pulledChanges = true;
-              }
+            const cfg = getCloudFetchConfig();
+            const pulled = await runWithConcurrencyLimit(
+              inEntriesToPull,
+              cfg.concurrency,
+              (e) => pullSingleInboundFromCloud(e)
+            );
+            const valid = pulled.filter((x): x is InboundReceipt => Boolean(x));
+            if (valid.length > 0) {
+              StorageService.applyRemoteInboundReceipts(valid);
+              pulledChanges = true;
             }
           }
 
@@ -4581,14 +4683,16 @@ export const FirestoreSyncService = {
           }
 
           if (outEntriesToPull.length > 0) {
-            for (let i = 0; i < outEntriesToPull.length; i += 12) {
-              const slice = outEntriesToPull.slice(i, i + 12);
-              const pulled = await Promise.all(slice.map((e) => pullSingleOutboundFromCloud(e)));
-              const valid = pulled.filter((x): x is OutboundReceipt => Boolean(x));
-              if (valid.length > 0) {
-                StorageService.applyRemoteOutboundReceipts(valid);
-                pulledChanges = true;
-              }
+            const cfg = getCloudFetchConfig();
+            const pulled = await runWithConcurrencyLimit(
+              outEntriesToPull,
+              cfg.concurrency,
+              (e) => pullSingleOutboundFromCloud(e)
+            );
+            const valid = pulled.filter((x): x is OutboundReceipt => Boolean(x));
+            if (valid.length > 0) {
+              StorageService.applyRemoteOutboundReceipts(valid);
+              pulledChanges = true;
             }
           }
 
@@ -4811,11 +4915,15 @@ export const FirestoreSyncService = {
         persistKnownExistingPaths(fbUser.uid);
 
         await StorageService.flush();
+        deferredRemoteChangeDuringAuth = false;
         emitCloudState({
           status: 'connected',
           lastSyncedAt: Date.now(),
           errorMessage: null
         });
+        if (pulledOsdForAttachments.length > 0) {
+          void preloadOsdAttachments(pulledOsdForAttachments);
+        }
         return { ok: true, pulledChanges, pushedChanges };
       } catch (err) {
         if (err instanceof ManifestConflictError) {
@@ -4841,7 +4949,16 @@ export const FirestoreSyncService = {
           };
         }
         const errMsg = err instanceof Error ? err.message : String(err);
-        settleConnectingStateIfNeeded(errMsg);
+        if (currentState.status === 'connecting') {
+          settleConnectingStateIfNeeded(errMsg);
+        } else {
+          emitCloudState({
+            status: 'error',
+            quotaExceeded: false,
+            errorMessage:
+              errMsg || 'Đồng bộ Cloud Firestore bị gián đoạn. Vui lòng thử đồng bộ lại.'
+          });
+        }
         return {
           ok: false,
           pulledChanges,

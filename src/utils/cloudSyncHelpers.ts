@@ -946,7 +946,126 @@ export function shouldQueueReconcileDuringAuthTransition(options?: {
   trigger?: 'mutation' | 'remote' | 'startup' | 'manual';
   forceManifestRefresh?: boolean;
 }): boolean {
-  return options?.trigger === 'mutation' || Boolean(options?.forceManifestRefresh);
+  return (
+    options?.trigger === 'mutation' ||
+    options?.trigger === 'startup' ||
+    options?.trigger === 'manual' ||
+    Boolean(options?.forceManifestRefresh)
+  );
+}
+
+export function shouldUpdateLastSyncTimestamp(params: {
+  isCloudSession: boolean;
+  cloudSuccess: boolean;
+  localSuccess: boolean;
+  cloudQuotaExceeded: boolean;
+}): boolean {
+  if (params.cloudQuotaExceeded) return false;
+  if (params.isCloudSession) return params.cloudSuccess;
+  return params.cloudSuccess || params.localSuccess;
+}
+
+export interface AdaptiveCloudFetchConfig {
+  concurrency: number;
+  itemChunkConcurrency: number;
+  readTimeoutMs: number;
+  maxReadRetries: number;
+  retryBaseDelayMs: number;
+}
+
+export function getAdaptiveCloudFetchConfig(isMobile: boolean): AdaptiveCloudFetchConfig {
+  return isMobile
+    ? {
+        concurrency: 3,
+        itemChunkConcurrency: 3,
+        readTimeoutMs: 25_000,
+        maxReadRetries: 2,
+        retryBaseDelayMs: 450
+      }
+    : {
+        concurrency: 8,
+        itemChunkConcurrency: 6,
+        readTimeoutMs: 18_000,
+        maxReadRetries: 1,
+        retryBaseDelayMs: 300
+      };
+}
+
+export function isRetryableCloudReadError(err: unknown): boolean {
+  const code = String((err as any)?.code || '').toLowerCase();
+  const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  if (
+    code === 'permission-denied' ||
+    code === 'resource-exhausted' ||
+    code === 'unauthenticated' ||
+    code === 'invalid-argument' ||
+    code === 'failed-precondition' ||
+    code === 'not-found' ||
+    code.includes('permission-denied') ||
+    code.includes('resource-exhausted') ||
+    msg.includes('missing or insufficient permissions') ||
+    msg.includes('permission_denied') ||
+    msg.includes('quota limit exceeded') ||
+    msg.includes('quota exceeded')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export async function retryAsyncWithBackoff<T>(
+  fn: () => Promise<T>,
+  options?: {
+    maxRetries?: number;
+    baseDelayMs?: number;
+    shouldRetry?: (err: unknown, attempt: number) => boolean;
+    sleepFn?: (ms: number) => Promise<void>;
+  }
+): Promise<T> {
+  const maxRetries = Math.max(0, Math.floor(Number(options?.maxRetries ?? 1)));
+  const baseDelayMs = Math.max(0, Math.floor(Number(options?.baseDelayMs ?? 300)));
+  const shouldRetry = options?.shouldRetry ?? ((err: unknown) => isRetryableCloudReadError(err));
+  const sleepFn =
+    options?.sleepFn ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= maxRetries || !shouldRetry(err, attempt)) {
+        throw err;
+      }
+      const delayMs = baseDelayMs * Math.pow(2, attempt);
+      attempt += 1;
+      if (delayMs > 0) {
+        await sleepFn(delayMs);
+      }
+    }
+  }
+}
+
+export async function runWithConcurrencyLimit<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const limit = Math.max(1, Math.min(items.length, Math.floor(Number(concurrency) || 1)));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (true) {
+      const idx = nextIndex;
+      if (idx >= items.length) return;
+      nextIndex = idx + 1;
+      results[idx] = await worker(items[idx], idx);
+    }
+  };
+
+  await Promise.all(Array.from({ length: limit }, () => runWorker()));
+  return results;
 }
 
 export interface PreSyncCheckInput {

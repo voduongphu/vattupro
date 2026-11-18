@@ -35,6 +35,7 @@ import {
 import {
   shouldQueueReconcileDuringAuthTransition,
   shouldRunLocalBridgeAfterCloud,
+  shouldUpdateLastSyncTimestamp,
   evaluatePreSyncCheck
 } from '../utils/cloudSyncHelpers';
 
@@ -161,8 +162,43 @@ let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let sessionHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let pushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let startupRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let startupRetryAttempt = 0;
 let authChannel: BroadcastChannel | null = null;
 let lastKnownOsdRev = 0;
+
+function clearStartupRetryTimer(): void {
+  if (startupRetryTimer) {
+    clearTimeout(startupRetryTimer);
+    startupRetryTimer = null;
+  }
+}
+
+function finishAuthTransition(): void {
+  authTransitionCount = Math.max(0, authTransitionCount - 1);
+  if (authTransitionCount > 0) return;
+
+  const hasSession = Boolean(getStoredUnifiedSession() || FirestoreSyncService.hasAuthenticatedCloudUser());
+  if (!hasSession) {
+    pendingReconcile = false;
+    pendingForceManifestRefresh = false;
+    return;
+  }
+
+  if (pendingReconcile || pendingForceManifestRefresh) {
+    const drainForce = pendingForceManifestRefresh;
+    pendingReconcile = false;
+    pendingForceManifestRefresh = false;
+    if (typeof navigator === 'undefined' || navigator.onLine) {
+      setTimeout(() => {
+        void reconcileInternal({
+          trigger: 'startup',
+          forceManifestRefresh: drainForce
+        });
+      }, 60);
+    }
+  }
+}
 
 function readStoredLastSyncTimestamp(): number {
   if (typeof window === 'undefined') return 0;
@@ -1527,6 +1563,7 @@ async function reconcileInternal(options?: {
     };
   }
 
+  clearStartupRetryTimer();
   pendingReconcile = false;
   pendingRemoteReconcile = false;
   pendingForceManifestRefresh = false;
@@ -1569,6 +1606,7 @@ async function reconcileInternal(options?: {
         pushedChanges = Boolean(cloudRes.pushedChanges);
         cloudQuotaExceeded = Boolean(cloudRes.quotaExceeded || FirestoreSyncService.isQuotaExhausted());
         if (cloudRes.ok) {
+          startupRetryAttempt = 0;
           updateNetworkStatus(true);
           metaDirty = false;
           materialsDirty = false;
@@ -1620,7 +1658,14 @@ async function reconcileInternal(options?: {
         }
       }
 
-      if ((cloudSuccess || localSuccess) && !cloudQuotaExceeded) {
+      if (
+        shouldUpdateLastSyncTimestamp({
+          isCloudSession: isCloudActive,
+          cloudSuccess,
+          localSuccess,
+          cloudQuotaExceeded
+        })
+      ) {
         const latestRemoteTs = FirestoreSyncService.getLatestRemoteUpdatedAtMs();
         const nextSyncedAt =
           lastLocalMutationTimestamp <= passStartedAt
@@ -1665,6 +1710,31 @@ async function reconcileInternal(options?: {
         pendingReconcile = false;
         pendingRemoteReconcile = false;
         pendingForceManifestRefresh = false;
+
+        const isCloudSessionRecoveryNeeded =
+          isCloudActive &&
+          !cloudSuccess &&
+          !cloudQuotaExceeded &&
+          (options?.trigger === 'startup' || options?.trigger === 'manual' || options?.trigger === 'remote') &&
+          (typeof navigator === 'undefined' || navigator.onLine) &&
+          Boolean(getStoredUnifiedSession() || FirestoreSyncService.hasAuthenticatedCloudUser());
+
+        if (isCloudSessionRecoveryNeeded && startupRetryAttempt < 2) {
+          const retryDelays = [2500, 6000];
+          const delayMs = retryDelays[startupRetryAttempt] ?? 6000;
+          startupRetryAttempt += 1;
+          clearStartupRetryTimer();
+          startupRetryTimer = setTimeout(() => {
+            startupRetryTimer = null;
+            void reconcileInternal({
+              trigger: 'startup',
+              skipLocalServer: options?.skipLocalServer,
+              forceManifestRefresh: true
+            });
+          }, delayMs);
+        } else if (cloudSuccess) {
+          startupRetryAttempt = 0;
+        }
       }
     }
 
@@ -2085,6 +2155,19 @@ export const SyncService = {
               void verifySessionHeartbeat(true);
             }
           }
+          if (
+            FirestoreSyncService.hasAuthenticatedCloudUser() &&
+            !FirestoreSyncService.isQuotaExhausted()
+          ) {
+            const cloudSnap = FirestoreSyncService.getState();
+            if (
+              cloudSnap.status === 'error' ||
+              FirestoreSyncService.hasUnappliedRemoteChanges() ||
+              !FirestoreSyncService.isRealtimeWorkspaceAttached()
+            ) {
+              void reconcileInternal({ trigger: 'startup', skipLocalServer: true });
+            }
+          }
           return;
         }
         connectWebSocket();
@@ -2104,9 +2187,10 @@ export const SyncService = {
         updateNetworkStatus(true);
         wakeCheck();
         // Chỉ đồng bộ khi vừa có mạng trở lại sau thời gian ngoại tuyến
-        void reconcileInternal();
+        void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
       });
       window.addEventListener('offline', () => {
+        clearStartupRetryTimer();
         updateNetworkStatus(false);
       });
       window.addEventListener('storage', (ev) => {
@@ -2789,7 +2873,11 @@ export const SyncService = {
 
           // Nhường trình duyệt render giao diện chính ngay lập tức rồi mới kiểm tra đồng bộ Cloud dưới nền
           setTimeout(() => {
-            void reconcileInternal({ trigger: 'startup', skipLocalServer: true });
+            void reconcileInternal({
+              trigger: 'startup',
+              skipLocalServer: true,
+              forceManifestRefresh: true
+            });
           }, 120);
 
           return {
@@ -2884,10 +2972,13 @@ export const SyncService = {
         // Mở giao diện chính ngay tức thì, đồng bộ phiên lên Cloud và dữ liệu kho hoàn toàn dưới nền
         setTimeout(() => {
           if (authRes.fbUser) {
-            void FirestoreSyncService.syncActiveSessionToCloudIfConnected(issuedServerSession).catch(() => {});
-            void FirestoreSyncService.autoConnectIfPossible().catch(() => {});
+            void FirestoreSyncService.syncActiveSessionToCloudIfConnected(issuedServerSession)
+              .catch(() => {})
+              .finally(() => {
+                void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
+              });
           } else {
-            void reconcileInternal({ trigger: 'startup' });
+            void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
           }
         }, 120);
 
@@ -2964,6 +3055,10 @@ export const SyncService = {
           session: staticSession
         });
 
+        setTimeout(() => {
+          void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
+        }, 120);
+
         return {
           success: true,
           user: matched,
@@ -2972,7 +3067,7 @@ export const SyncService = {
         };
       }
     } finally {
-      authTransitionCount = Math.max(0, authTransitionCount - 1);
+      finishAuthTransition();
     }
   },
 
@@ -3038,7 +3133,11 @@ export const SyncService = {
         });
 
         setTimeout(() => {
-          void reconcileInternal({ trigger: 'startup', skipLocalServer: true });
+          void reconcileInternal({
+            trigger: 'startup',
+            skipLocalServer: true,
+            forceManifestRefresh: true
+          });
         }, 120);
 
         return {
@@ -3087,8 +3186,11 @@ export const SyncService = {
             StorageService.applyRemoteMeta({ users: [res.user] });
           }
           setTimeout(() => {
-            void FirestoreSyncService.syncActiveSessionToCloudIfConnected(res.session!).catch(() => {});
-            void FirestoreSyncService.autoConnectIfPossible().catch(() => {});
+            void FirestoreSyncService.syncActiveSessionToCloudIfConnected(res.session!)
+              .catch(() => {})
+              .finally(() => {
+                void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
+              });
           }, 120);
           return {
             success: true,
@@ -3139,6 +3241,9 @@ export const SyncService = {
         pendingInvalidation = null;
         clearPersistedKickNotice();
         saveStoredUnifiedSession({ user: matched, session: staticSession });
+        setTimeout(() => {
+          void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
+        }, 120);
         return {
           success: true,
           user: matched,
@@ -3146,7 +3251,7 @@ export const SyncService = {
         };
       }
     } finally {
-      authTransitionCount = Math.max(0, authTransitionCount - 1);
+      finishAuthTransition();
     }
   },
 
@@ -3240,7 +3345,7 @@ export const SyncService = {
         message: 'Không thể kết nối để đăng xuất thiết bị kia. Bạn có thể nhấn trực tiếp "Đăng xuất thiết bị kia & Tiếp tục".'
       };
     } finally {
-      authTransitionCount = Math.max(0, authTransitionCount - 1);
+      finishAuthTransition();
     }
   },
 
@@ -3375,7 +3480,11 @@ export const SyncService = {
             }
 
             queueMicrotask(() => {
-              void reconcileInternal({ trigger: 'startup', skipLocalServer: true });
+              void reconcileInternal({
+                trigger: 'startup',
+                skipLocalServer: true,
+                forceManifestRefresh: true
+              });
             });
 
             return {
@@ -3587,7 +3696,7 @@ export const SyncService = {
         replacedSession: prevStatic
       };
     } finally {
-      authTransitionCount = Math.max(0, authTransitionCount - 1);
+      finishAuthTransition();
     }
   },
 
@@ -3712,7 +3821,7 @@ export const SyncService = {
         message: 'Đã đăng xuất phiên trên thiết bị kia thành công! Bạn có thể đăng nhập ngay.'
       };
     } finally {
-      authTransitionCount = Math.max(0, authTransitionCount - 1);
+      finishAuthTransition();
     }
   },
 
@@ -3833,7 +3942,7 @@ export const SyncService = {
         message: 'Không thể kết nối máy chủ để gửi yêu cầu đăng xuất thiết bị kia.'
       };
     } finally {
-      authTransitionCount = Math.max(0, authTransitionCount - 1);
+      finishAuthTransition();
     }
   },
 
@@ -3849,6 +3958,11 @@ export const SyncService = {
     writeStoredLastSyncTimestamp(0);
     lastLocalMutationTimestamp = 0;
     hasCompletedInitialLocalSync = false;
+    clearStartupRetryTimer();
+    startupRetryAttempt = 0;
+    pendingReconcile = false;
+    pendingRemoteReconcile = false;
+    pendingForceManifestRefresh = false;
     lastKnownServerRev = 0;
 
     let releaseTask: Promise<void> | null = null;
@@ -3891,7 +4005,7 @@ export const SyncService = {
           await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
         }
       } finally {
-        authTransitionCount = Math.max(0, authTransitionCount - 1);
+        finishAuthTransition();
         if (releaseTask && inFlightLogoutPromise === releaseTask) {
           inFlightLogoutPromise = null;
         }
@@ -3927,7 +4041,7 @@ export const SyncService = {
           'Đã thoát hoàn toàn phiên Google cũ và dọn sạch dữ liệu đăng nhập trên trình duyệt. Bạn có thể đăng nhập bằng Google ngay!'
       };
     } finally {
-      authTransitionCount = Math.max(0, authTransitionCount - 1);
+      finishAuthTransition();
     }
   },
 

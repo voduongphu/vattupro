@@ -23,6 +23,11 @@ import {
   withAsyncTimeout,
   shouldRunLocalBridgeAfterCloud,
   shouldQueueReconcileDuringAuthTransition,
+  shouldUpdateLastSyncTimestamp,
+  getAdaptiveCloudFetchConfig,
+  isRetryableCloudReadError,
+  retryAsyncWithBackoff,
+  runWithConcurrencyLimit,
   evaluatePreSyncCheck,
   resolveConvergedCheckpointDigests,
   type ManifestSnapshotLike
@@ -695,14 +700,136 @@ describe('cloudSyncHelpers', () => {
     );
   });
 
-  it('shouldQueueReconcileDuringAuthTransition queues only local mutations or forced refreshes', () => {
+  it('shouldQueueReconcileDuringAuthTransition queues startup, manual, mutation, and forced refreshes', () => {
     assert.equal(shouldQueueReconcileDuringAuthTransition({ trigger: 'remote' }), false);
-    assert.equal(shouldQueueReconcileDuringAuthTransition({ trigger: 'startup' }), false);
+    assert.equal(shouldQueueReconcileDuringAuthTransition(undefined), false);
+    assert.equal(shouldQueueReconcileDuringAuthTransition({ trigger: 'startup' }), true);
+    assert.equal(shouldQueueReconcileDuringAuthTransition({ trigger: 'manual' }), true);
     assert.equal(shouldQueueReconcileDuringAuthTransition({ trigger: 'mutation' }), true);
     assert.equal(
       shouldQueueReconcileDuringAuthTransition({ trigger: 'remote', forceManifestRefresh: true }),
       true
     );
+  });
+
+  it('shouldUpdateLastSyncTimestamp never lets local bridge mask a failed Cloud pull', () => {
+    assert.equal(
+      shouldUpdateLastSyncTimestamp({
+        isCloudSession: true,
+        cloudSuccess: false,
+        localSuccess: true,
+        cloudQuotaExceeded: false
+      }),
+      false
+    );
+    assert.equal(
+      shouldUpdateLastSyncTimestamp({
+        isCloudSession: true,
+        cloudSuccess: true,
+        localSuccess: false,
+        cloudQuotaExceeded: false
+      }),
+      true
+    );
+    assert.equal(
+      shouldUpdateLastSyncTimestamp({
+        isCloudSession: true,
+        cloudSuccess: true,
+        localSuccess: true,
+        cloudQuotaExceeded: true
+      }),
+      false
+    );
+    assert.equal(
+      shouldUpdateLastSyncTimestamp({
+        isCloudSession: false,
+        cloudSuccess: false,
+        localSuccess: true,
+        cloudQuotaExceeded: false
+      }),
+      true
+    );
+  });
+
+  it('getAdaptiveCloudFetchConfig bounds mobile concurrency and increases timeout/retries vs desktop', () => {
+    const mobileCfg = getAdaptiveCloudFetchConfig(true);
+    const desktopCfg = getAdaptiveCloudFetchConfig(false);
+
+    assert.ok(mobileCfg.concurrency <= 4);
+    assert.ok(mobileCfg.itemChunkConcurrency <= 4);
+    assert.ok(mobileCfg.readTimeoutMs > desktopCfg.readTimeoutMs);
+    assert.ok(mobileCfg.maxReadRetries >= 2);
+    assert.ok(desktopCfg.concurrency > mobileCfg.concurrency);
+  });
+
+  it('isRetryableCloudReadError retries timeouts/transient errors but aborts on quota or permission errors', () => {
+    assert.equal(isRetryableCloudReadError(new Error('timeout reading manifest')), true);
+    assert.equal(isRetryableCloudReadError({ code: 'unavailable', message: 'Service unavailable' }), true);
+    assert.equal(isRetryableCloudReadError({ code: 'permission-denied', message: 'Denied' }), false);
+    assert.equal(isRetryableCloudReadError({ code: 'resource-exhausted', message: 'Quota exceeded' }), false);
+    assert.equal(isRetryableCloudReadError(new Error('Quota limit exceeded for project')), false);
+  });
+
+  it('retryAsyncWithBackoff retries transient errors with exponential backoff and stops on fatal errors', async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    const value = await retryAsyncWithBackoff(
+      async () => {
+        attempts += 1;
+        if (attempts < 3) {
+          throw new Error('timeout');
+        }
+        return 'ok';
+      },
+      {
+        maxRetries: 2,
+        baseDelayMs: 100,
+        sleepFn: async (ms) => {
+          delays.push(ms);
+        }
+      }
+    );
+    assert.equal(value, 'ok');
+    assert.equal(attempts, 3);
+    assert.deepEqual(delays, [100, 200]);
+
+    let fatalAttempts = 0;
+    await assert.rejects(
+      retryAsyncWithBackoff(
+        async () => {
+          fatalAttempts += 1;
+          const err = new Error('Quota limit exceeded');
+          (err as any).code = 'resource-exhausted';
+          throw err;
+        },
+        {
+          maxRetries: 2,
+          baseDelayMs: 100,
+          sleepFn: async () => {}
+        }
+      ),
+      /Quota limit exceeded/
+    );
+    assert.equal(fatalAttempts, 1);
+  });
+
+  it('runWithConcurrencyLimit preserves order and never exceeds the configured worker cap', async () => {
+    const items = [10, 20, 30, 40, 50, 60, 70];
+    let active = 0;
+    let maxActive = 0;
+
+    const results = await runWithConcurrencyLimit(items, 3, async (item, idx) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, (items.length - idx) * 2));
+      active -= 1;
+      return item * 2;
+    });
+
+    assert.equal(maxActive <= 3, true);
+    assert.equal(maxActive >= 2, true);
+    assert.deepEqual(results, [20, 40, 60, 80, 100, 120, 140]);
+    assert.deepEqual(await runWithConcurrencyLimit([], 3, async () => 1), []);
   });
 
   it('evaluatePreSyncCheck gates sync cycle and spinner using lastSyncTimestamp', () => {
