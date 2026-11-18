@@ -86,6 +86,7 @@ import {
   hasRemoteManifestChanged,
   computeLoginMetaPullFlags,
   resolveManifestTransactionUpdate,
+  withAsyncTimeout,
   type CloudPendingOutbox,
   type TouchedManifestDomains,
   type ManifestSnapshotLike,
@@ -175,6 +176,7 @@ let workspaceReadyUid: string | null = null;
 let verifiedWorkspaceUid: string | null = null;
 let cachedWsManifest: { data: WorkspaceManifestDoc; atMs: number } | null = null;
 let interactiveAuthInFlight = false;
+let activeInteractiveAuthAttemptId = 0;
 let adminPiiLoadedForMetaRev = -1;
 let lastAppliedCloudServerRev = -1;
 let lastAppliedCloudMetaRev = -1;
@@ -493,9 +495,16 @@ function isSessionStillValidLocally(token?: string | null): boolean {
   return true;
 }
 
-async function ensureValidFirebaseAuthToken(fbUser: FirebaseUser): Promise<boolean> {
+async function ensureValidFirebaseAuthToken(
+  fbUser: FirebaseUser,
+  timeoutMs = 8000
+): Promise<boolean> {
   try {
-    await fbUser.getIdToken(false);
+    await withAsyncTimeout(
+      fbUser.getIdToken(false),
+      timeoutMs,
+      'Hết thời gian xác thực phiên Google.'
+    );
     return true;
   } catch (err: any) {
     const code = String(err?.code || '');
@@ -560,6 +569,34 @@ function emitCloudState(patch: Partial<CloudSyncSnapshotState>): void {
     } catch {
       // ignore listener errors
     }
+  });
+}
+
+function settleConnectingStateIfNeeded(fallbackErrorMessage?: string): void {
+  if (currentState.status !== 'connecting') return;
+  if (isFirestoreQuotaExhausted()) {
+    emitCloudState({
+      status: 'error',
+      quotaExceeded: true,
+      errorMessage: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+    });
+    return;
+  }
+  if (auth.currentUser && auth.currentUser.emailVerified) {
+    emitCloudState({
+      status: 'error',
+      quotaExceeded: false,
+      errorMessage:
+        fallbackErrorMessage ||
+        currentState.errorMessage ||
+        'Kết nối Cloud Firestore đang tạm gián đoạn. Vui lòng thử lại sau giây lát.'
+    });
+    return;
+  }
+  emitCloudState({
+    status: 'disconnected',
+    quotaExceeded: false,
+    errorMessage: fallbackErrorMessage || null
   });
 }
 
@@ -689,9 +726,13 @@ function isNotFoundError(err: unknown): boolean {
   return code === 'not-found' || code === 'firestore/not-found' || msg.includes('No document to update');
 }
 
-async function safeGetDoc(ref: DocumentReference, pathLabel: string) {
+async function safeGetDoc(ref: DocumentReference, pathLabel: string, timeoutMs = 15000) {
   try {
-    const snap = await getDoc(ref);
+    const snap = await withAsyncTimeout(
+      getDoc(ref),
+      timeoutMs,
+      'Kết nối Cloud Firestore phản hồi quá chậm. Vui lòng kiểm tra mạng và thử lại.'
+    );
     clearFirestoreQuotaExhaustedFlag();
     if (snap.exists()) {
       knownExistingPaths.add(ref.path);
@@ -807,7 +848,8 @@ async function commitManifestWithTransaction(params: {
   const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
 
   try {
-    const committed = await runTransaction(db, async (tx) => {
+    const committed = await withAsyncTimeout(
+      runTransaction(db, async (tx) => {
       const wsSnap = await tx.get(wsRef);
       if (!wsSnap.exists()) {
         const initMutable: ManifestSnapshotLike = {
@@ -929,7 +971,10 @@ async function commitManifestWithTransaction(params: {
         allowSelfJoin: latestRaw.allowSelfJoin !== false,
         ...nextMutable
       } as WorkspaceManifestDoc;
-    });
+    }),
+      20000,
+      'Giao dịch đồng bộ Cloud Firestore phản hồi quá chậm. Vui lòng thử lại.'
+    );
 
     clearFirestoreQuotaExhaustedFlag();
     knownExistingPaths.add(wsRef.path);
@@ -1560,6 +1605,8 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
         quotaExceeded: true,
         errorMessage: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
       });
+    } else {
+      settleConnectingStateIfNeeded('Kết nối Cloud Firestore đang tạm gián đoạn. Vui lòng thử lại sau giây lát.');
     }
     return false;
   }
@@ -1828,13 +1875,21 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
   })();
 
   try {
-    return await workspaceReadyPromise;
+    const ready = await workspaceReadyPromise;
+    if (!ready) {
+      workspaceReadyPromise = null;
+      workspaceReadyUid = null;
+      settleConnectingStateIfNeeded();
+    }
+    return ready;
   } catch (err) {
     workspaceReadyPromise = null;
     workspaceReadyUid = null;
     verifiedWorkspaceUid = null;
     if (isQuotaExceededError(err)) {
       notifyFirestoreQuotaExceeded(300_000);
+    } else {
+      settleConnectingStateIfNeeded(err instanceof Error ? err.message : undefined);
     }
     throw err;
   }
@@ -1899,6 +1954,7 @@ function attachWorkspaceRealtimeListener(): void {
       latestObservedRemoteMetaDigest = remoteMetaDigest;
       latestObservedRemoteMaterialsDigest = remoteMatDigest;
       if (
+        !interactiveAuthInFlight &&
         hasRemoteManifestChanged({
           remoteServerRev: rev,
           remoteMetaDigest,
@@ -3211,13 +3267,18 @@ export const FirestoreSyncService = {
             quotaExceeded: true,
             errorMessage: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
           });
+        } else {
+          settleConnectingStateIfNeeded('Kết nối Cloud Firestore đang tạm gián đoạn. Vui lòng thử lại sau giây lát.');
         }
         return;
       }
 
       try {
         const ok = await ensureWorkspaceReady(fbUser);
-        if (!ok) return;
+        if (!ok) {
+          settleConnectingStateIfNeeded();
+          return;
+        }
         attachWorkspaceRealtimeListener();
         emitCloudState({
           status: 'connected',
@@ -3270,6 +3331,7 @@ export const FirestoreSyncService = {
 
   async ensureReadyForAuth(timeoutMs = 2500): Promise<boolean> {
     if (!currentState.authReady) {
+      let timer: ReturnType<typeof setTimeout> | null = null;
       await Promise.race([
         new Promise<void>((resolve) => {
           if (currentState.authReady) {
@@ -3278,24 +3340,34 @@ export const FirestoreSyncService = {
           }
           authReadyWaiters.add(resolve);
         }),
-        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
-      ]);
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        })
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
     }
     const fbUser = auth.currentUser;
     if (!fbUser || !fbUser.emailVerified) {
+      settleConnectingStateIfNeeded();
       return false;
     }
     if (currentState.status !== 'connected') {
       try {
         const tokenOk = await ensureValidFirebaseAuthToken(fbUser);
-        if (!tokenOk) return false;
+        if (!tokenOk) {
+          settleConnectingStateIfNeeded();
+          return false;
+        }
         const ok = await ensureWorkspaceReady(fbUser);
         if (ok) {
           attachWorkspaceRealtimeListener();
           emitCloudState({ status: 'connected', errorMessage: null });
           return true;
         }
-      } catch {
+        settleConnectingStateIfNeeded();
+      } catch (err) {
+        settleConnectingStateIfNeeded(err instanceof Error ? err.message : undefined);
         return false;
       }
     }
@@ -3387,6 +3459,18 @@ export const FirestoreSyncService = {
     return cloudOsdDirty;
   },
 
+  hasUnappliedRemoteChanges(): boolean {
+    if (latestObservedRemoteServerRev < 0) return false;
+    return hasRemoteManifestChanged({
+      remoteServerRev: latestObservedRemoteServerRev,
+      remoteMetaDigest: latestObservedRemoteMetaDigest,
+      remoteMaterialsDigest: latestObservedRemoteMaterialsDigest,
+      lastAppliedServerRev: lastAppliedCloudServerRev,
+      lastAppliedMetaDigest: lastAppliedCloudMetaDigest,
+      lastAppliedMaterialsDigest: lastAppliedCloudMaterialsDigest
+    });
+  },
+
   isWatchingSession(userKey?: string | null): boolean {
     if (!sessionUnsub) return false;
     if (!userKey) return true;
@@ -3434,6 +3518,10 @@ export const FirestoreSyncService = {
       }
 
       if (!fbUser || !fbUser.email) {
+        emitCloudState({
+          status: 'disconnected',
+          errorMessage: 'Tài khoản Google không cung cấp địa chỉ email hợp lệ.'
+        });
         return {
           success: false,
           cloudReady: false,
@@ -3448,6 +3536,9 @@ export const FirestoreSyncService = {
         cloudUid: fbUser.uid,
         errorMessage: null
       });
+      if (isFirestoreCircuitOpen()) {
+        settleConnectingStateIfNeeded();
+      }
 
       return {
         success: true,
@@ -3519,22 +3610,31 @@ export const FirestoreSyncService = {
       };
     }
     try {
+      let wsTimer: ReturnType<typeof setTimeout> | null = null;
       const wsOk = await Promise.race<boolean>([
         ensureWorkspaceReady(authRes.fbUser),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000))
-      ]);
+        new Promise<boolean>((resolve) => {
+          wsTimer = setTimeout(() => resolve(false), 5000);
+        })
+      ]).finally(() => {
+        if (wsTimer) clearTimeout(wsTimer);
+      });
       if (!wsOk) {
+        workspaceReadyPromise = null;
+        workspaceReadyUid = null;
         const quotaMsg = isFirestoreQuotaExhausted() || currentState.quotaExceeded
           ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE
           : null;
+        const failMsg =
+          quotaMsg ||
+          (currentState.status === 'error' ? currentState.errorMessage : null) ||
+          'Chưa thể kết nối không gian làm việc Google Cloud Firestore. Vui lòng kiểm tra mạng và thử lại.';
+        settleConnectingStateIfNeeded(failMsg);
         return {
           success: false,
           email: authRes.email,
           displayName: authRes.displayName,
-          message:
-            quotaMsg ||
-            currentState.errorMessage ||
-            'Chưa thể kết nối không gian làm việc Google Cloud Firestore. Vui lòng kiểm tra mạng và thử lại.'
+          message: failMsg
         };
       }
       attachWorkspaceRealtimeListener();
@@ -3886,7 +3986,9 @@ export const FirestoreSyncService = {
           lastSyncedOsdDigest
         });
 
-        const missingLocalAccounts = nextAccountChunkCount > 0 && localUsers.length <= 1;
+        const missingLocalAccounts =
+          nextAccountChunkCount > 0 &&
+          (localUsers.length === 0 || (localUsers.length <= 1 && (!remoteV2 || remoteV2.u !== localU)));
         const missingLocalWhs = nextWarehouseChunkCount > 0 && localWhs.length === 0;
         const missingLocalInbound = nextInboundIndexChunkCount > 0 && localInbounds.length === 0;
         const missingLocalOutbound = nextOutboundIndexChunkCount > 0 && localOutbounds.length === 0;
@@ -4935,11 +5037,13 @@ export const FirestoreSyncService = {
     message: string;
   }> {
     if (isFirestoreCircuitOpen() || !fbUser || !fbUser.email || !fbUser.emailVerified) {
+      settleConnectingStateIfNeeded();
       return { handled: false, success: false, message: '' };
     }
 
     let timedOut = false;
     const effectiveTimeoutMs = Math.max(timeoutMs, 12000);
+    const attemptId = ++activeInteractiveAuthAttemptId;
 
     const executeFastCloudLogin = async (): Promise<{
       handled: boolean;
@@ -4955,14 +5059,8 @@ export const FirestoreSyncService = {
       interactiveAuthInFlight = true;
       try {
         const ok = await ensureWorkspaceReady(fbUser);
-        if (!ok || !fbUser.email) {
-          return { handled: false, success: false, message: '' };
-        }
-
-        attachWorkspaceRealtimeListener();
-        emitCloudState({ status: 'connected', errorMessage: null });
-
-        if (timedOut) {
+        if (!ok || !fbUser.email || timedOut || activeInteractiveAuthAttemptId !== attemptId) {
+          settleConnectingStateIfNeeded();
           return { handled: false, success: false, message: '' };
         }
 
@@ -5153,6 +5251,11 @@ export const FirestoreSyncService = {
           knownExistingPaths.add(sessRef.path);
         }
 
+        if (timedOut || activeInteractiveAuthAttemptId !== attemptId) {
+          settleConnectingStateIfNeeded();
+          return { handled: false, success: false, message: '' };
+        }
+
         const shouldSyncUserMetaToCloud = resolved.isNew || resolved.mutated || forceLogoutOtherDevice;
         const updatedFromStore =
           StorageService.updateUser(
@@ -5191,25 +5294,41 @@ export const FirestoreSyncService = {
         };
       } catch (err) {
         console.warn('Cloud Google identity login deferred to server fallback:', err);
+        settleConnectingStateIfNeeded();
         return { handled: false, success: false, message: '' };
       } finally {
-        interactiveAuthInFlight = false;
+        if (activeInteractiveAuthAttemptId === attemptId) {
+          interactiveAuthInFlight = false;
+        }
       }
     };
 
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     return Promise.race([
       executeFastCloudLogin(),
       new Promise<{
         handled: boolean;
         success: boolean;
         message: string;
-      }>((resolve) =>
-        setTimeout(() => {
+      }>((resolve) => {
+        timeoutTimer = setTimeout(() => {
           timedOut = true;
+          if (activeInteractiveAuthAttemptId === attemptId) {
+            interactiveAuthInFlight = false;
+          }
+          settleConnectingStateIfNeeded('Kết nối Cloud Firestore phản hồi chậm trên mạng di động.');
           resolve({ handled: false, success: false, message: '' });
-        }, effectiveTimeoutMs)
-      )
-    ]);
+        }, effectiveTimeoutMs);
+      })
+    ]).finally(() => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      if (activeInteractiveAuthAttemptId === attemptId) {
+        interactiveAuthInFlight = false;
+      }
+    });
   },
 
   async requestLogoutOtherDeviceByGoogleWithCloud(

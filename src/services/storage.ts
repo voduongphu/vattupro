@@ -187,6 +187,19 @@ function openIDB(): Promise<IDBDatabase | null> {
   }
 
   idbPromise = new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.warn('IndexedDB open timed out, falling back to local memory/localStorage.');
+      resolve(null);
+    }, 5000);
+    const finish = (db: IDBDatabase | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(db);
+    };
     try {
       const req = indexedDB.open(IDB_NAME, IDB_VERSION);
       req.onupgradeneeded = () => {
@@ -195,14 +208,18 @@ function openIDB(): Promise<IDBDatabase | null> {
           db.createObjectStore(IDB_STORE);
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => finish(req.result);
+      req.onblocked = () => {
+        console.warn('IndexedDB open blocked on mobile browser, continuing without blocking UI.');
+        finish(null);
+      };
       req.onerror = () => {
         console.warn('IndexedDB unavailable, using in-memory/localStorage fallback:', req.error);
-        resolve(null);
+        finish(null);
       };
     } catch (e) {
       console.warn('IndexedDB open exception:', e);
-      resolve(null);
+      finish(null);
     }
   });
   return idbPromise;
@@ -283,6 +300,19 @@ async function executeIdbBatchFlush(): Promise<void> {
       if (entries.length === 0) return;
 
       await new Promise<void>((resolve) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          console.warn('IDB batch transaction timed out, continuing.');
+          resolve();
+        }, 5000);
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        };
         try {
           // MỞ 1 TRANSACTION DUY NHẤT CHO TOÀN BỘ CÁC BẢNG/KEY CẦN GHI
           const tx = db.transaction(IDB_STORE, 'readwrite');
@@ -290,18 +320,18 @@ async function executeIdbBatchFlush(): Promise<void> {
           for (let i = 0; i < entries.length; i++) {
             store.put(entries[i][1], entries[i][0]);
           }
-          tx.oncomplete = () => resolve();
+          tx.oncomplete = finish;
           tx.onerror = (err) => {
             console.warn('IDB batch transaction error:', err);
-            resolve();
+            finish();
           };
           tx.onabort = (err) => {
             console.warn('IDB batch transaction aborted:', err);
-            resolve();
+            finish();
           };
         } catch (e) {
           console.warn('IDB batch transaction exception:', e);
-          resolve();
+          finish();
         }
       });
     } finally {
@@ -1202,12 +1232,22 @@ export const StorageService = {
   },
 
   async flush(): Promise<void> {
-    // Xả toàn bộ hàng đợi ghi IndexedDB gộp (drain coalescing queue)
-    while (idbBatchQueue.size > 0 || isIdbBatchFlushing) {
+    // Xả toàn bộ hàng đợi ghi IndexedDB gộp (drain coalescing queue) với giới hạn vòng lặp & timeout cho di động
+    let drainAttempts = 0;
+    while ((idbBatchQueue.size > 0 || isIdbBatchFlushing) && drainAttempts < 5) {
+      drainAttempts++;
       await executeIdbBatchFlush();
     }
     if (pendingWrites.size > 0) {
-      await Promise.all(Array.from(pendingWrites));
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      await Promise.race([
+        Promise.all(Array.from(pendingWrites)),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 5000);
+        })
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
     }
   },
 

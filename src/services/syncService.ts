@@ -32,6 +32,10 @@ import {
   type VersionVector,
   type VectorComparison
 } from '../utils/versionVector';
+import {
+  shouldQueueReconcileDuringAuthTransition,
+  shouldRunLocalBridgeAfterCloud
+} from '../utils/cloudSyncHelpers';
 
 export {
   compareVersionVectors,
@@ -126,6 +130,7 @@ const PULL_MATERIAL_PAGE_SIZE = 3500;
 let isStarted = false;
 let isReconciling = false;
 let pendingReconcile = false;
+let pendingRemoteReconcile = false;
 let pendingForceManifestRefresh = false;
 let activeReconcilePromise: Promise<{
   cloudSuccess: boolean;
@@ -602,11 +607,43 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     }
   }
 
-  const res = await fetch(url, {
-    cache: 'no-store',
-    ...init,
-    headers
-  });
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let abortedByTimeout = false;
+  let externalSignalListener: (() => void) | null = null;
+  if (controller && init?.signal) {
+    if (init.signal.aborted) {
+      controller.abort();
+    } else {
+      externalSignalListener = () => controller.abort();
+      init.signal.addEventListener('abort', externalSignalListener, { once: true });
+    }
+  }
+  const timeoutTimer =
+    controller &&
+    setTimeout(() => {
+      abortedByTimeout = true;
+      controller.abort();
+    }, 12000);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      cache: 'no-store',
+      ...init,
+      signal: controller ? controller.signal : init?.signal,
+      headers
+    });
+  } catch (err) {
+    if (abortedByTimeout) {
+      throw new Error(`Kết nối máy chủ quá thời gian chờ (${url}).`);
+    }
+    throw err;
+  } finally {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    if (init?.signal && externalSignalListener) {
+      init.signal.removeEventListener('abort', externalSignalListener);
+    }
+  }
 
   const invalidatedReason = res.headers.get('X-Auth-Invalidated');
   const checkedToken = res.headers.get('X-Auth-Token-Checked') || sentSessionToken;
@@ -1306,6 +1343,7 @@ async function reconcileInternal(options?: {
   forceManifestRefresh?: boolean;
   skipLocalServer?: boolean;
   trigger?: 'mutation' | 'remote' | 'startup' | 'manual';
+  followUpDepth?: number;
 }): Promise<{
   cloudSuccess: boolean;
   localSuccess: boolean;
@@ -1330,8 +1368,10 @@ async function reconcileInternal(options?: {
 
   // Không bao giờ chạy đồng bộ dữ liệu nặng tranh chấp băng thông khi người dùng đang thực hiện đăng nhập
   if (authTransitionCount > 0) {
-    pendingReconcile = true;
-    if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    if (shouldQueueReconcileDuringAuthTransition(options)) {
+      pendingReconcile = true;
+      if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    }
     return {
       cloudSuccess: false,
       localSuccess: false,
@@ -1340,16 +1380,17 @@ async function reconcileInternal(options?: {
   }
 
   if (isReconciling && activeReconcilePromise) {
-    const hasPendingTrigger =
+    const isStrongTrigger =
       Boolean(options?.forceManifestRefresh) ||
       options?.trigger === 'mutation' ||
-      options?.trigger === 'remote' ||
       metaDirty ||
       materialsDirty ||
       localReceiptsDirty;
-    if (hasPendingTrigger) {
+    if (isStrongTrigger) {
       pendingReconcile = true;
       if (options?.forceManifestRefresh) pendingForceManifestRefresh = true;
+    } else if (options?.trigger === 'remote') {
+      pendingRemoteReconcile = true;
     }
     return await activeReconcilePromise;
   }
@@ -1363,6 +1404,9 @@ async function reconcileInternal(options?: {
     };
   }
 
+  pendingReconcile = false;
+  pendingRemoteReconcile = false;
+  pendingForceManifestRefresh = false;
   isReconciling = true;
   notifySyncState(true);
 
@@ -1395,11 +1439,22 @@ async function reconcileInternal(options?: {
           metaDirty = false;
           materialsDirty = false;
           localReceiptsDirty = false;
+          if (!pulledChanges && !pushedChanges) {
+            hasCompletedInitialLocalSync = true;
+          }
         } else if (cloudRes.errorMessage) {
           syncError = cloudRes.errorMessage;
         }
-        // Chỉ bắc cầu sang máy chủ cục bộ /api/sync nếu không yêu cầu bỏ qua máy chủ cục bộ
-        if (!options?.skipLocalServer && (pulledChanges || pushedChanges || !hasCompletedInitialLocalSync)) {
+        // Chỉ bắc cầu sang máy chủ cục bộ /api/sync nếu thực sự có delta dữ liệu hoặc Cloud chưa thành công ở lần đầu
+        if (
+          shouldRunLocalBridgeAfterCloud({
+            skipLocalServer: options?.skipLocalServer,
+            cloudSuccess: cloudRes.ok,
+            pulledChanges,
+            pushedChanges,
+            hasCompletedInitialLocalSync
+          })
+        ) {
           try {
             await reconcileLocalServerOnly();
             localSuccess = true;
@@ -1434,18 +1489,31 @@ async function reconcileInternal(options?: {
       activeReconcilePromise = null;
       notifySyncState(false);
 
-      if (pendingReconcile) {
+      const shouldRunFollowUp =
+        (pendingReconcile || (pendingRemoteReconcile && FirestoreSyncService.hasUnappliedRemoteChanges())) &&
+        (options?.followUpDepth || 0) < 2;
+
+      if (shouldRunFollowUp) {
         const followUpForce = pendingForceManifestRefresh;
         if (authTransitionCount === 0) {
           pendingReconcile = false;
+          pendingRemoteReconcile = false;
           pendingForceManifestRefresh = false;
           void reconcileInternal({
             forceManifestRefresh: followUpForce,
-            skipLocalServer: options?.skipLocalServer
+            skipLocalServer: options?.skipLocalServer,
+            followUpDepth: (options?.followUpDepth || 0) + 1
           });
         } else {
-          schedulePush(180);
+          pendingRemoteReconcile = false;
+          if (pendingReconcile) {
+            schedulePush(180);
+          }
         }
+      } else {
+        pendingReconcile = false;
+        pendingRemoteReconcile = false;
+        pendingForceManifestRefresh = false;
       }
     }
 
@@ -2542,9 +2610,9 @@ export const SyncService = {
             // ignore
           }
 
-          // Nhường trình duyệt render giao diện chính ngay lập tức rồi mới đồng bộ dữ liệu kho dưới nền
+          // Nhường trình duyệt render giao diện chính ngay lập tức rồi mới kiểm tra đồng bộ Cloud dưới nền
           setTimeout(() => {
-            void reconcileInternal();
+            void reconcileInternal({ trigger: 'startup', skipLocalServer: true });
           }, 120);
 
           return {
@@ -2954,7 +3022,7 @@ export const SyncService = {
             }
 
             queueMicrotask(() => {
-              void reconcileInternal();
+              void reconcileInternal({ trigger: 'startup', skipLocalServer: true });
             });
 
             return {
@@ -3526,6 +3594,11 @@ export const SyncService = {
 
   subscribeSyncState(listener: (syncing: boolean) => void): () => void {
     syncStateListeners.add(listener);
+    try {
+      listener(isReconciling);
+    } catch {
+      // ignore
+    }
     return () => {
       syncStateListeners.delete(listener);
     };

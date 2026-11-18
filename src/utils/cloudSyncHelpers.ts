@@ -382,7 +382,10 @@ export function computeDomainSyncPlan(input: DomainSyncPlanInput): DomainSyncPla
   const remoteV2 = parseMetaDigestV2(input.remoteMetaDigest);
   const { remoteCounts, localDigests, localCounts, dirty } = input;
 
-  const missingAccounts = remoteCounts.accountChunkCount > 0 && localCounts.users <= 1;
+  const missingAccounts =
+    remoteCounts.accountChunkCount > 0 &&
+    (localCounts.users === 0 ||
+      (localCounts.users <= 1 && (!remoteV2 || remoteV2.u !== localDigests.u)));
   const missingWarehouses = remoteCounts.warehouseChunkCount > 0 && localCounts.warehouses === 0;
   const missingInbound = remoteCounts.inboundIndexChunkCount > 0 && localCounts.inbound === 0;
   const missingOutbound = remoteCounts.outboundIndexChunkCount > 0 && localCounts.outbound === 0;
@@ -735,8 +738,11 @@ export function computeLoginMetaPullFlags(params: {
 
   const localU = computeUsersDomainDigest(params.localUsers);
   const localT = computeTombstonesDomainDigest(params.localTombstones);
+  const missingLocalUsers =
+    accCount > 0 &&
+    (params.localUsers.length === 0 || (params.localUsers.length <= 1 && remoteV2.u !== localU));
   return {
-    pullUsers: remoteV2.u !== localU || missingLocalAccounts || adminMissingPii,
+    pullUsers: remoteV2.u !== localU || missingLocalUsers || adminMissingPii,
     pullTombstones: remoteV2.t !== localT
   };
 }
@@ -891,3 +897,54 @@ export function resolveManifestTransactionUpdate(params: {
   };
 }
 
+export function withAsyncTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+export function shouldRunLocalBridgeAfterCloud(params: {
+  skipLocalServer?: boolean;
+  cloudSuccess: boolean;
+  pulledChanges: boolean;
+  pushedChanges: boolean;
+  hasCompletedInitialLocalSync: boolean;
+}): boolean {
+  if (params.skipLocalServer) return false;
+  if (params.pulledChanges || params.pushedChanges) return true;
+  if (params.cloudSuccess) return false;
+  return !params.hasCompletedInitialLocalSync;
+}
+
+export function shouldQueueReconcileDuringAuthTransition(options?: {
+  trigger?: 'mutation' | 'remote' | 'startup' | 'manual';
+  forceManifestRefresh?: boolean;
+}): boolean {
+  return options?.trigger === 'mutation' || Boolean(options?.forceManifestRefresh);
+}

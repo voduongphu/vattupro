@@ -20,6 +20,9 @@ import {
   hasRemoteManifestChanged,
   computeLoginMetaPullFlags,
   resolveManifestTransactionUpdate,
+  withAsyncTimeout,
+  shouldRunLocalBridgeAfterCloud,
+  shouldQueueReconcileDuringAuthTransition,
   type ManifestSnapshotLike
 } from './cloudSyncHelpers.ts';
 import type { User, InboundReceipt } from '../types/inventory.ts';
@@ -555,5 +558,148 @@ describe('cloudSyncHelpers', () => {
       conflict: true,
       reason: 'materials_changed_remotely'
     });
+  });
+
+  it('does not treat a single-user workspace with matching digest as missing local accounts', () => {
+    const emptyTombs = {
+      inbound: {},
+      outbound: {},
+      materials: {},
+      warehouses: {},
+      users: {},
+      osd: {}
+    };
+    const soloAdmin = makeUser({
+      id: 'user-admin',
+      username: 'admin',
+      role: 'admin',
+      email: 'admin@example.com'
+    });
+    const localU = computeUsersDomainDigest([soloAdmin]);
+    const remoteDigest = encodeMetaDigestV2({
+      u: localU,
+      w: computeWarehousesDomainDigest([]),
+      t: computeTombstonesDomainDigest(emptyTombs),
+      o: computeOsdDomainDigest([]),
+      in: computeInboundDomainDigest([]),
+      out: computeOutboundDomainDigest([])
+    });
+
+    const plan = computeDomainSyncPlan({
+      remoteMetaDigest: remoteDigest,
+      remoteMaterialsDigest: '0:0:0:0',
+      remoteCounts: {
+        accountChunkCount: 1,
+        warehouseChunkCount: 0,
+        tombstoneChunkCount: 0,
+        inboundIndexChunkCount: 0,
+        outboundIndexChunkCount: 0,
+        materialsChunkCount: 0
+      },
+      localDigests: {
+        u: localU,
+        w: computeWarehousesDomainDigest([]),
+        t: computeTombstonesDomainDigest(emptyTombs),
+        o: computeOsdDomainDigest([]),
+        in: computeInboundDomainDigest([]),
+        out: computeOutboundDomainDigest([]),
+        materials: '0:0:0:0'
+      },
+      localCounts: {
+        users: 1,
+        warehouses: 0,
+        inbound: 0,
+        outbound: 0,
+        materials: 0
+      },
+      dirty: {
+        users: false,
+        warehouses: false,
+        tombstones: false,
+        osd: false,
+        inbound: false,
+        outbound: false,
+        materials: false
+      },
+      adminMissingPii: false,
+      checkpointMatchesServer: true,
+      lastSyncedOsdDigest: `${computeOsdDomainDigest([])}|${computeTombstonesDomainDigest(emptyTombs)}`
+    });
+    assert.equal(plan.pullUsers, false);
+    assert.equal(plan.anyWorkNeeded, false);
+
+    const loginFlags = computeLoginMetaPullFlags({
+      remoteMetaDigest: remoteDigest,
+      accountChunkCount: 1,
+      tombstoneChunkCount: 0,
+      localUsers: [soloAdmin],
+      localTombstones: emptyTombs,
+      isAdmin: true
+    });
+    assert.equal(loginFlags.pullUsers, false);
+  });
+
+  it('withAsyncTimeout resolves before deadline and rejects stalled promises', async () => {
+    const fast = await withAsyncTimeout(Promise.resolve('ok'), 200, 'timed out');
+    assert.equal(fast, 'ok');
+
+    const never = new Promise<string>(() => {});
+    await assert.rejects(
+      () => withAsyncTimeout(never, 20, 'stalled_mobile_socket'),
+      /stalled_mobile_socket/
+    );
+  });
+
+  it('shouldRunLocalBridgeAfterCloud skips local /api/sync when Cloud succeeds with 0 delta', () => {
+    assert.equal(
+      shouldRunLocalBridgeAfterCloud({
+        skipLocalServer: false,
+        cloudSuccess: true,
+        pulledChanges: false,
+        pushedChanges: false,
+        hasCompletedInitialLocalSync: false
+      }),
+      false
+    );
+    assert.equal(
+      shouldRunLocalBridgeAfterCloud({
+        skipLocalServer: false,
+        cloudSuccess: true,
+        pulledChanges: true,
+        pushedChanges: false,
+        hasCompletedInitialLocalSync: true
+      }),
+      true
+    );
+    assert.equal(
+      shouldRunLocalBridgeAfterCloud({
+        skipLocalServer: true,
+        cloudSuccess: true,
+        pulledChanges: true,
+        pushedChanges: true,
+        hasCompletedInitialLocalSync: false
+      }),
+      false
+    );
+    assert.equal(
+      shouldRunLocalBridgeAfterCloud({
+        skipLocalServer: false,
+        cloudSuccess: false,
+        pulledChanges: false,
+        pushedChanges: false,
+        hasCompletedInitialLocalSync: false
+      }),
+      true
+    );
+  });
+
+  it('shouldQueueReconcileDuringAuthTransition queues only local mutations or forced refreshes', () => {
+    assert.equal(shouldQueueReconcileDuringAuthTransition({ trigger: 'remote' }), false);
+    assert.equal(shouldQueueReconcileDuringAuthTransition({ trigger: 'startup' }), false);
+    assert.equal(shouldQueueReconcileDuringAuthTransition({ trigger: 'mutation' }), true);
+    assert.equal(
+      shouldQueueReconcileDuringAuthTransition({ trigger: 'remote', forceManifestRefresh: true }),
+      true
+    );
   });
 });
