@@ -1,6 +1,6 @@
 import { StorageService } from './storage';
 import { FirestoreSyncService, type CloudSyncSnapshotState } from './firestoreSync';
-import { FIRESTORE_QUOTA_EXCEEDED_MESSAGE } from './firebase';
+import { getLastFirestoreQuotaMessage } from './firebase';
 import type {
   User,
   Warehouse,
@@ -1640,7 +1640,7 @@ async function reconcileInternal(options?: {
       } else {
         if (FirestoreSyncService.isQuotaExhausted()) {
           cloudQuotaExceeded = true;
-          syncError = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
+          syncError = getLastFirestoreQuotaMessage();
         }
         // 2. Fallback đồng bộ máy chủ cục bộ /api/sync khi chưa kết nối Google Cloud
         try {
@@ -2391,14 +2391,15 @@ export const SyncService = {
         (cloudQuotaExceeded || Boolean(latestCloudState.quotaExceeded) || FirestoreSyncService.isQuotaExhausted());
 
       if (hitQuota) {
+        const quotaMsg = getLastFirestoreQuotaMessage();
         return {
           success: false,
           quotaExceeded: true,
           cloudSynced: false,
           localSynced: serverOk,
           osdCount: finalOsdCount,
-          error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
-          message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+          error: quotaMsg,
+          message: quotaMsg
         };
       }
 
@@ -2466,21 +2467,23 @@ export const SyncService = {
       });
       if (!connRes.success) {
         const hitQuota = FirestoreSyncService.isQuotaExhausted();
+        const quotaMsg = getLastFirestoreQuotaMessage();
         return {
           success: false,
           quotaExceeded: hitQuota,
           cloudSynced: false,
-          message: hitQuota ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE : connRes.message,
-          error: hitQuota ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE : connRes.message
+          message: hitQuota ? quotaMsg : connRes.message,
+          error: hitQuota ? quotaMsg : connRes.message
         };
       }
       if (FirestoreSyncService.isQuotaExhausted()) {
+        const quotaMsg = getLastFirestoreQuotaMessage();
         return {
           success: false,
           quotaExceeded: true,
           cloudSynced: false,
-          message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
-          error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE
+          message: quotaMsg,
+          error: quotaMsg
         };
       }
       await StorageService.flush();
@@ -2501,13 +2504,14 @@ export const SyncService = {
     if (!reconRes.cloudSuccess) {
       const cloudState = FirestoreSyncService.getState();
       if (reconRes.cloudQuotaExceeded || cloudState.quotaExceeded || FirestoreSyncService.isQuotaExhausted()) {
+        const quotaMsg = getLastFirestoreQuotaMessage();
         return {
           success: false,
           quotaExceeded: true,
           cloudSynced: false,
           localSynced: reconRes.localSuccess,
-          error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
-          message: FIRESTORE_QUOTA_EXCEEDED_MESSAGE,
+          error: quotaMsg,
+          message: quotaMsg,
           osdCount
         };
       }
@@ -2564,7 +2568,7 @@ export const SyncService = {
         if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
           const ok = await FirestoreSyncService.pushOsdRealtimeToCloud();
           if (!ok && FirestoreSyncService.isQuotaExhausted()) {
-            return { success: false, error: FIRESTORE_QUOTA_EXCEEDED_MESSAGE };
+            return { success: false, error: getLastFirestoreQuotaMessage() };
           }
           return {
             success: ok,

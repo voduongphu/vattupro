@@ -23,6 +23,12 @@ import {
   type Firestore
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import {
+  DEFAULT_FIRESTORE_QUOTA_MESSAGE,
+  isFirestoreQuotaExceededError,
+  isTransientResourceExhaustedError,
+  formatFirestoreQuotaMessage
+} from '../utils/cloudSyncHelpers';
 
 const app = initializeApp(firebaseConfig);
 
@@ -270,37 +276,27 @@ export interface FirestoreErrorInfo {
   };
 }
 
-export const FIRESTORE_QUOTA_EXCEEDED_MESSAGE =
-  'Hết hạn mức Cloud Firestore trong ngày (Spark Plan). Hệ thống đang tạm sử dụng lưu trữ cục bộ & máy chủ nội bộ; hạn mức sẽ tự đặt lại vào ngày hôm sau.';
+export const FIRESTORE_QUOTA_EXCEEDED_MESSAGE = DEFAULT_FIRESTORE_QUOTA_MESSAGE;
 
 let quotaExceededListener: ((msg: string) => void) | null = null;
 let firestoreCircuitOpenUntilMs = 0;
 let firestoreQuotaExhausted = false;
+let lastFirestoreQuotaMessage = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
+
+export { isTransientResourceExhaustedError, formatFirestoreQuotaMessage };
 
 export function isQuotaExceededError(error: unknown): boolean {
-  const code = String((error as any)?.code || '').toLowerCase();
-  const rawMessage = error instanceof Error ? error.message : String(error || '');
-  const lowerMsg = rawMessage.toLowerCase();
-  if (
-    lowerMsg.includes('request payload size exceeds the limit') ||
-    lowerMsg.includes('payload size exceeds') ||
-    lowerMsg.includes('exceeds the maximum allowed size') ||
-    lowerMsg.includes('entity too large')
-  ) {
-    return false;
-  }
-  return (
-    code === 'resource-exhausted' ||
-    code.includes('resource-exhausted') ||
-    rawMessage.includes('Quota limit exceeded') ||
-    rawMessage.includes('Quota exceeded') ||
-    rawMessage.includes('resource-exhausted')
-  );
+  return isFirestoreQuotaExceededError(error);
+}
+
+export function getLastFirestoreQuotaMessage(): string {
+  return lastFirestoreQuotaMessage || FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
 }
 
 export function isFirestoreCircuitOpen(): boolean {
   if (Date.now() >= firestoreCircuitOpenUntilMs) {
     firestoreQuotaExhausted = false;
+    lastFirestoreQuotaMessage = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
     return false;
   }
   return true;
@@ -314,21 +310,30 @@ export function markFirestoreTemporarilyUnavailable(durationMs = 120_000): void 
   firestoreCircuitOpenUntilMs = Math.max(firestoreCircuitOpenUntilMs, Date.now() + durationMs);
 }
 
-export function notifyFirestoreQuotaExceeded(durationMs = 300_000): string {
+export function notifyFirestoreQuotaExceeded(durationMs = 300_000, error?: unknown): string {
+  const hadSpecificDetail =
+    firestoreQuotaExhausted && lastFirestoreQuotaMessage !== FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
+  if (error !== undefined && isQuotaExceededError(error)) {
+    lastFirestoreQuotaMessage = formatFirestoreQuotaMessage(error);
+  } else if (!hadSpecificDetail) {
+    lastFirestoreQuotaMessage = formatFirestoreQuotaMessage(error);
+  }
   firestoreQuotaExhausted = true;
   markFirestoreTemporarilyUnavailable(durationMs);
-  quotaExceededListener?.(FIRESTORE_QUOTA_EXCEEDED_MESSAGE);
-  return FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
+  quotaExceededListener?.(lastFirestoreQuotaMessage);
+  return lastFirestoreQuotaMessage;
 }
 
 export function clearFirestoreQuotaExhaustedFlag(): void {
   firestoreQuotaExhausted = false;
   firestoreCircuitOpenUntilMs = 0;
+  lastFirestoreQuotaMessage = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
 }
 
 export function resetFirestoreCircuitForRetry(): void {
   firestoreQuotaExhausted = false;
   firestoreCircuitOpenUntilMs = 0;
+  lastFirestoreQuotaMessage = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
 }
 
 export function onFirestoreQuotaError(cb: (msg: string) => void): () => void {
@@ -348,7 +353,7 @@ export function handleFirestoreError(
   const rawMessage = error instanceof Error ? error.message : String(error);
 
   if (isQuotaExceededError(error)) {
-    notifyFirestoreQuotaExceeded(300_000);
+    notifyFirestoreQuotaExceeded(300_000, error);
   }
 
   const errInfo: FirestoreErrorInfo = {

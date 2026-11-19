@@ -1055,6 +1055,9 @@ export function getAdaptiveBatchWriteConfig(params: {
 }
 
 export function isRetryableCloudReadError(err: unknown): boolean {
+  if (isTransientResourceExhaustedError(err)) {
+    return true;
+  }
   const code = String((err as any)?.code || '').toLowerCase();
   const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
   if (
@@ -1306,6 +1309,93 @@ export function isPayloadSizeExceededError(err: unknown): boolean {
     msg.includes('request entity too large') ||
     msg.includes('batch write size exceeds')
   );
+}
+
+export const DEFAULT_FIRESTORE_QUOTA_MESSAGE =
+  'Cloud Firestore báo vượt hạn mức đọc/ghi (hoặc cơ sở dữ liệu vẫn đang ở chế độ Free tier). Hệ thống đang tạm sử dụng lưu trữ cục bộ; nếu bạn đã nâng cấp gói Blaze, hãy kiểm tra mục nâng cấp riêng cho database Firestore trên Firebase Console rồi thử đồng bộ lại.';
+
+export function extractRawFirestoreErrorMessage(err: unknown): string {
+  if (!err) return '';
+  let raw = err instanceof Error ? err.message : String(err);
+  raw = raw.trim();
+  if (!raw) return '';
+  // Nếu là JSON FirestoreErrorInfo do handleFirestoreError bọc lại, bóc trường "error" gốc ra
+  if (raw.startsWith('{') && raw.includes('"error"')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) {
+        raw = parsed.error.trim();
+      }
+    } catch {
+      // giữ nguyên chuỗi raw
+    }
+  }
+  return raw.replace(/\s+/g, ' ').trim();
+}
+
+export function isTransientResourceExhaustedError(err: unknown): boolean {
+  if (!err) return false;
+  const raw = extractRawFirestoreErrorMessage(err);
+  const lower = raw.toLowerCase();
+  // Nếu Google nêu rõ hết hạn mức ngày / free tier thì là quota cứng, không phải quá tải tốc độ tạm thời
+  if (
+    lower.includes('quota exceeded') ||
+    lower.includes('quota limit exceeded') ||
+    lower.includes('free daily') ||
+    lower.includes('free tier') ||
+    lower.includes('daily limit') ||
+    lower.includes('billing')
+  ) {
+    return false;
+  }
+  return (
+    lower.includes('write stream exhausted') ||
+    lower.includes('maximum write rate') ||
+    lower.includes('sustained write rate') ||
+    lower.includes('too much contention') ||
+    lower.includes('too many requests') ||
+    lower.includes('too many outstanding') ||
+    lower.includes('rate limit') ||
+    lower.includes('backoff') ||
+    lower.includes('bandwidth') ||
+    lower.includes('throttl')
+  );
+}
+
+export function isFirestoreQuotaExceededError(err: unknown): boolean {
+  if (!err) return false;
+  if (isPayloadSizeExceededError(err) || isTransientResourceExhaustedError(err)) {
+    return false;
+  }
+  const code = String((err as any)?.code || '').toLowerCase();
+  const rawMessage = extractRawFirestoreErrorMessage(err);
+  const lowerMsg = rawMessage.toLowerCase();
+  return (
+    code === 'resource-exhausted' ||
+    code.includes('resource-exhausted') ||
+    lowerMsg.includes('quota limit exceeded') ||
+    lowerMsg.includes('quota exceeded') ||
+    lowerMsg.includes('free daily') ||
+    lowerMsg.includes('resource-exhausted')
+  );
+}
+
+export function formatFirestoreQuotaMessage(err?: unknown): string {
+  const raw = extractRawFirestoreErrorMessage(err);
+  if (!raw || raw === DEFAULT_FIRESTORE_QUOTA_MESSAGE) {
+    return DEFAULT_FIRESTORE_QUOTA_MESSAGE;
+  }
+  const lower = raw.toLowerCase();
+  const clipped = raw.length > 220 ? `${raw.slice(0, 217)}...` : raw;
+  if (
+    lower.includes('free tier') ||
+    lower.includes('free daily') ||
+    lower.includes('free-tier') ||
+    lower.includes('free_tier')
+  ) {
+    return `Cơ sở dữ liệu Cloud Firestore vẫn đang chạy ở chế độ miễn phí (Free tier database) nên bị giới hạn lượt đọc/ghi trong ngày ngay cả khi dự án đã bật gói Blaze. Hãy nâng cấp riêng database Firestore trong Firebase Console (và chờ 5–15 phút để Google áp dụng). (Chi tiết từ Google: ${clipped})`;
+  }
+  return `Cloud Firestore báo vượt hạn mức (resource-exhausted). Nếu bạn vừa nâng cấp lên gói Blaze, hãy kiểm tra lại đã nâng cấp đúng dự án & đúng cơ sở dữ liệu Firestore (thoát chế độ Free tier) và chờ 5–15 phút rồi bấm đồng bộ lại. (Chi tiết từ Google: ${clipped})`;
 }
 
 export interface PreSyncCheckInput {

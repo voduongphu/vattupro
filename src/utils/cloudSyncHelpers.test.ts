@@ -38,6 +38,9 @@ import {
   partitionStagedWritesIntoBatches,
   chunkItemsByCountAndBytes,
   isPayloadSizeExceededError,
+  isTransientResourceExhaustedError,
+  isFirestoreQuotaExceededError,
+  formatFirestoreQuotaMessage,
   evaluatePreSyncCheck,
   resolveConvergedCheckpointDigests,
   type ManifestSnapshotLike
@@ -1177,5 +1180,56 @@ describe('cloudSyncHelpers', () => {
     });
     assert.equal(mobileCfg.batchConcurrency, 1);
   });
+
+  it('distinguishes transient Blaze resource-exhausted errors from daily/free-tier quota exhaustion and preserves Google error detail', () => {
+    const writeStreamErr = Object.assign(
+      new Error('Write stream exhausted maximum allowed queued writes.'),
+      { code: 'resource-exhausted' }
+    );
+    assert.equal(isTransientResourceExhaustedError(writeStreamErr), true);
+    assert.equal(isFirestoreQuotaExceededError(writeStreamErr), false);
+    assert.equal(isRetryableCloudReadError(writeStreamErr), true);
+
+    const contentionErr = Object.assign(
+      new Error('Too much contention on these documents. Please try again.'),
+      { code: 'resource-exhausted' }
+    );
+    assert.equal(isTransientResourceExhaustedError(contentionErr), true);
+    assert.equal(isFirestoreQuotaExceededError(contentionErr), false);
+    assert.equal(isRetryableCloudReadError(contentionErr), true);
+
+    const payloadErr = Object.assign(
+      new Error('Request payload size exceeds the limit: 18874368 bytes.'),
+      { code: 'resource-exhausted' }
+    );
+    assert.equal(isFirestoreQuotaExceededError(payloadErr), false);
+
+    const freeTierDbErr = Object.assign(
+      new Error(
+        "Quota exceeded for quota metric 'Free daily read/write units per project (free tier database)'."
+      ),
+      { code: 'resource-exhausted' }
+    );
+    assert.equal(isTransientResourceExhaustedError(freeTierDbErr), false);
+    assert.equal(isFirestoreQuotaExceededError(freeTierDbErr), true);
+    assert.equal(isRetryableCloudReadError(freeTierDbErr), false);
+
+    const freeTierMsg = formatFirestoreQuotaMessage(freeTierDbErr);
+    assert.ok(freeTierMsg.includes('Free tier database'));
+    assert.ok(freeTierMsg.includes('Chi tiết từ Google:'));
+    assert.ok(freeTierMsg.includes('Free daily read/write units'));
+
+    const wrappedJsonErr = new Error(
+      JSON.stringify({
+        error: 'Quota limit exceeded for project divine-particle-2zbz0',
+        operationType: 'write',
+        path: 'workspaces/vtp_main'
+      })
+    );
+    assert.equal(isFirestoreQuotaExceededError(wrappedJsonErr), true);
+    const wrappedMsg = formatFirestoreQuotaMessage(wrappedJsonErr);
+    assert.ok(wrappedMsg.includes('Quota limit exceeded for project divine-particle-2zbz0'));
+  });
 });
+
 
