@@ -7,6 +7,7 @@ import {
   computeOsdDomainDigest,
   computeInboundDomainDigest,
   computeOutboundDomainDigest,
+  computeReceiptDomainDigestFromIndexEntries,
   encodeMetaDigestV2,
   parseMetaDigestV2,
   buildStableReceiptIndexChunks,
@@ -21,10 +22,12 @@ import {
   computeLoginMetaPullFlags,
   resolveManifestTransactionUpdate,
   withAsyncTimeout,
+  isLocalTimeoutError,
   shouldRunLocalBridgeAfterCloud,
   shouldQueueReconcileDuringAuthTransition,
   shouldUpdateLastSyncTimestamp,
   getAdaptiveCloudFetchConfig,
+  getAdaptiveBatchWriteConfig,
   isRetryableCloudReadError,
   retryAsyncWithBackoff,
   runWithConcurrencyLimit,
@@ -39,7 +42,12 @@ import {
   resolveConvergedCheckpointDigests,
   type ManifestSnapshotLike
 } from './cloudSyncHelpers.ts';
-import type { User, InboundReceipt } from '../types/inventory.ts';
+import {
+  computeInboundReceiptDigest,
+  computeOutboundReceiptDigest,
+  normKey
+} from './additiveMerge.ts';
+import type { User, InboundReceipt, OutboundReceipt } from '../types/inventory.ts';
 
 function makeUser(overrides: Partial<User> = {}): User {
   return {
@@ -1082,6 +1090,92 @@ describe('cloudSyncHelpers', () => {
     assert.equal(mutatedConverged.localMetaDigest, committedMeta);
     assert.equal(mutatedConverged.remoteSyncedMetaDigest, committedMeta);
     assert.equal(mutatedConverged.remoteSyncedMaterialsDigest, '60:mat_committed');
+  });
+
+  it('computeReceiptDomainDigestFromIndexEntries matches full receipt domain digests regardless of order', () => {
+    const inList = [makeInbound(1, 'a'), makeInbound(2, 'b'), makeInbound(3, 'c')];
+    const inEntriesReversed = [...inList].reverse().map((r) => ({
+      code: normKey(r.receiptCode || r.id),
+      digest: computeInboundReceiptDigest(r)
+    }));
+    assert.equal(
+      computeReceiptDomainDigestFromIndexEntries('inbound', inEntriesReversed),
+      computeInboundDomainDigest(inList)
+    );
+
+    const outList: OutboundReceipt[] = [1, 2].map((idx) => ({
+      id: `out-${idx}`,
+      issueCode: `PX-2026-000${idx}`,
+      issueDate: '2026-03-02',
+      warehouseId: 'wh-1',
+      warehouseName: 'Kho Long Phú',
+      recipientDepartment: 'BQL',
+      recipientName: 'Nguyen Van A',
+      issuerName: 'Thu kho',
+      items: [],
+      totalQuantity: 5 * idx,
+      totalWeightKg: 10 * idx,
+      totalAmount: 500 * idx,
+      createdAt: '2026-03-02T00:00:00Z',
+      createdBy: 'admin',
+      updatedAt: 2000 + idx
+    }));
+    const outEntriesReversed = [...outList].reverse().map((r) => ({
+      code: normKey(r.issueCode || r.id),
+      digest: computeOutboundReceiptDigest(r)
+    }));
+    assert.equal(
+      computeReceiptDomainDigestFromIndexEntries('outbound', outEntriesReversed),
+      computeOutboundDomainDigest(outList)
+    );
+  });
+
+  it('isLocalTimeoutError detects withAsyncTimeout errors and getAdaptiveBatchWriteConfig prevents WriteStream congestion', async () => {
+    let caught: unknown = null;
+    try {
+      await withAsyncTimeout(new Promise(() => {}), 10, 'Custom slow error');
+    } catch (err) {
+      caught = err;
+    }
+    assert.equal(isLocalTimeoutError(caught), true);
+    assert.equal(isLocalTimeoutError(new Error('Ghi dữ liệu lên Cloud Firestore phản hồi quá chậm.')), true);
+    assert.equal(isLocalTimeoutError({ code: 'unavailable', message: 'Network unavailable' }), false);
+
+    const staffCfg = getAdaptiveBatchWriteConfig({
+      isMobile: false,
+      isAdmin: false,
+      allKnownExisting: false,
+      avgPayloadBytes: 5000
+    });
+    assert.equal(staffCfg.maxOpsPerBatch, 3);
+    assert.ok(staffCfg.maxBytesPerBatch <= 400_000);
+    assert.ok(staffCfg.commitTimeoutMs >= 60_000);
+
+    const adminHeavyCfg = getAdaptiveBatchWriteConfig({
+      isMobile: false,
+      isAdmin: true,
+      allKnownExisting: false,
+      avgPayloadBytes: 260_000
+    });
+    assert.equal(adminHeavyCfg.maxOpsPerBatch, 6);
+    assert.equal(adminHeavyCfg.batchConcurrency, 1);
+
+    const adminLightUpdateCfg = getAdaptiveBatchWriteConfig({
+      isMobile: false,
+      isAdmin: true,
+      allKnownExisting: true,
+      avgPayloadBytes: 4000
+    });
+    assert.equal(adminLightUpdateCfg.maxOpsPerBatch, 16);
+    assert.equal(adminLightUpdateCfg.batchConcurrency, 2);
+
+    const mobileCfg = getAdaptiveBatchWriteConfig({
+      isMobile: true,
+      isAdmin: true,
+      allKnownExisting: true,
+      avgPayloadBytes: 4000
+    });
+    assert.equal(mobileCfg.batchConcurrency, 1);
   });
 });
 

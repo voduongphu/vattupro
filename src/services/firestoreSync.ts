@@ -77,6 +77,7 @@ import {
   computeOsdDomainDigest,
   computeInboundDomainDigest,
   computeOutboundDomainDigest,
+  computeReceiptDomainDigestFromIndexEntries,
   encodeMetaDigestV2,
   parseMetaDigestV2,
   computeItemsChunkDigest,
@@ -94,8 +95,10 @@ import {
   resolveManifestTransactionUpdate,
   resolveConvergedCheckpointDigests,
   withAsyncTimeout,
+  isLocalTimeoutError,
   extractCountFromDigestPart,
   getAdaptiveCloudFetchConfig,
+  getAdaptiveBatchWriteConfig,
   isRetryableCloudReadError,
   retryAsyncWithBackoff,
   runWithConcurrencyLimit,
@@ -164,16 +167,14 @@ const WORKSPACE_ID = 'vtp_main';
 const WORKSPACE_NAME = 'Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư';
 const BOOTSTRAPPED_ADMIN_EMAIL = 'voduongphu@gmail.com';
 const CLOUD_CHUNK_SIZE = 200;
-// Firestore giới hạn cứng tối đa 20 lệnh get()/exists() trong Security Rules cho MỖI writeBatch.
-// Mỗi thao tác tạo mới tài liệu (nhất là inboundItems/outboundItems của nhân viên) có thể dùng tới 6 lệnh get()/exists(),
-// nên giới hạn 3 tài liệu/batch (3 x 6 = 18 <= 20) đảm bảo KHÔNG BAO GIỜ bị từ chối quyền do vượt trần quy tắc bảo mật.
-const BATCH_OP_LIMIT = 3;
-const BATCH_PAYLOAD_BYTE_LIMIT = 2_500_000; // Giới hạn an toàn ~2.5 MiB/batch để không bao giờ vượt trần 10 MiB / 18 MiB của Firestore
-const DOC_PAYLOAD_BYTE_LIMIT = 500_000; // Giới hạn an toàn ~500 KB/tài liệu để luôn dưới trần 1 MiB của Firestore
+// Giới hạn an toàn ~350 KB/tài liệu để vừa nằm rất xa trần 1 MiB của Firestore vừa tải lên nhanh trên đường truyền thông thường
+const DOC_PAYLOAD_BYTE_LIMIT = 350_000;
+// Chia đợt ghi phiếu lớn thành từng sóng 20 phiếu để chốt chỉ mục & checkpoint liên tục, đảm bảo tiếp tục được ngay nếu mạng chập chờn
+const RECEIPT_PUSH_WAVE_SIZE = 20;
 const ACTIVE_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 giờ bảo vệ toàn vẹn phiên
 
 const KNOWN_CLOUD_PATHS_KEY = `vtp_known_cloud_paths_v1_${WORKSPACE_ID}`;
-const MAX_PERSISTED_KNOWN_PATHS = 3000;
+const MAX_PERSISTED_KNOWN_PATHS = 8000;
 const knownExistingPaths = new Set<string>();
 let knownExistingPathsUid: string | null = null;
 const stateListeners = new Set<(state: CloudSyncSnapshotState) => void>();
@@ -1026,7 +1027,7 @@ async function commitManifestWithTransaction(params: {
         ...nextMutable
       } as WorkspaceManifestDoc;
     }),
-      20000,
+      45000,
       'Giao dịch đồng bộ Cloud Firestore phản hồi quá chậm. Vui lòng thử lại.'
     );
 
@@ -1064,7 +1065,8 @@ interface StagedDocWrite {
 async function commitBatchChunk(
   chunk: StagedDocWrite[],
   uid: string,
-  reprobeAttempts = 0
+  reprobeAttempts = 0,
+  commitTimeoutMs = 60_000
 ): Promise<void> {
   const cfg = getCloudFetchConfig();
   const buildAndCommit = async () => {
@@ -1095,13 +1097,16 @@ async function commitBatchChunk(
       () =>
         withAsyncTimeout(
           buildAndCommit(),
-          Math.max(cfg.readTimeoutMs, 25_000),
+          commitTimeoutMs,
           'Ghi dữ liệu lên Cloud Firestore phản hồi quá chậm. Vui lòng thử lại.'
         ),
       {
         maxRetries: 2,
-        baseDelayMs: cfg.retryBaseDelayMs,
+        baseDelayMs: Math.max(cfg.retryBaseDelayMs, 600),
+        // TUYỆT ĐỐI không gửi chồng batch trùng khi hết giờ cục bộ (vì Firestore SDK vẫn đang giữ gói cũ trên cùng WriteStream);
+        // chỉ tự động thử lại khi Firestore thực sự trả về lỗi mạng/máy chủ tạm thời (unavailable/aborted).
         shouldRetry: (err) =>
+          !isLocalTimeoutError(err) &&
           !isQuotaExceededError(err) &&
           !isPermissionError(err) &&
           !isNotFoundError(err) &&
@@ -1117,8 +1122,8 @@ async function commitBatchChunk(
     if (isPayloadSizeExceededError(err) && chunk.length > 1) {
       // Tự động chia đôi gói batch khi vượt trần kích thước payload của Firestore
       const mid = Math.ceil(chunk.length / 2);
-      await commitBatchChunk(chunk.slice(0, mid), uid, reprobeAttempts);
-      await commitBatchChunk(chunk.slice(mid), uid, reprobeAttempts);
+      await commitBatchChunk(chunk.slice(0, mid), uid, reprobeAttempts, commitTimeoutMs);
+      await commitBatchChunk(chunk.slice(mid), uid, reprobeAttempts, commitTimeoutMs);
       return;
     }
 
@@ -1128,7 +1133,7 @@ async function commitBatchChunk(
         knownExistingPaths.delete(chunk[i].ref.path);
       }
       await runWithConcurrencyLimit(chunk, cfg.concurrency, (w) => safeGetDoc(w.ref, w.pathLabel));
-      await commitBatchChunk(chunk, uid, reprobeAttempts + 1);
+      await commitBatchChunk(chunk, uid, reprobeAttempts + 1, commitTimeoutMs);
       return;
     }
 
@@ -1142,7 +1147,7 @@ async function commitBatchChunk(
         );
         const discoveredExisting = setCandidates.some((w) => knownExistingPaths.has(w.ref.path));
         if (discoveredExisting) {
-          await commitBatchChunk(chunk, uid, reprobeAttempts + 1);
+          await commitBatchChunk(chunk, uid, reprobeAttempts + 1, commitTimeoutMs);
           return;
         }
       }
@@ -1151,8 +1156,8 @@ async function commitBatchChunk(
     if (isPermissionError(err) && chunk.length > 1) {
       // Nếu batch nhiều tài liệu vẫn bị từ chối quyền (ví dụ chạm trần truy vấn rules), tự động tách đôi xuống từng tài liệu lẻ để cô lập/hoàn tất
       const mid = Math.ceil(chunk.length / 2);
-      await commitBatchChunk(chunk.slice(0, mid), uid, 0);
-      await commitBatchChunk(chunk.slice(mid), uid, 0);
+      await commitBatchChunk(chunk.slice(0, mid), uid, 0, commitTimeoutMs);
+      await commitBatchChunk(chunk.slice(mid), uid, 0, commitTimeoutMs);
       return;
     }
 
@@ -1185,18 +1190,48 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
     );
   }
 
-  // Chia batch theo cả trần 20 lệnh get()/exists() của Firestore Rules (tối đa 3 doc/batch) lẫn dung lượng byte thực tế
+  const estimatedBytesByPath = new Map<string, number>();
+  let totalEstimatedBytes = 0;
+  let allKnownExisting = true;
+  for (let i = 0; i < uniqueWrites.length; i++) {
+    const w = uniqueWrites[i];
+    const bytes = estimateStagedWritePayloadBytes(w.ref.path, w.immutableCreateFields, w.mutableFields);
+    estimatedBytesByPath.set(w.ref.path, bytes);
+    totalEstimatedBytes += bytes;
+    if (!knownExistingPaths.has(w.ref.path)) {
+      allKnownExisting = false;
+    }
+  }
+
+  const avgPayloadBytes = uniqueWrites.length > 0 ? totalEstimatedBytes / uniqueWrites.length : 0;
+  const writeCfg = getAdaptiveBatchWriteConfig({
+    isMobile: isLikelyMobileDevice(),
+    isAdmin: isCloudAdmin(auth.currentUser),
+    allKnownExisting,
+    avgPayloadBytes
+  });
+
+  // Chia batch theo cả trần get()/exists() của Firestore Rules lẫn dung lượng byte nhỏ gọn (~400 KB) để gửi mượt qua WriteStream
   const batches = partitionStagedWritesIntoBatches(
     uniqueWrites,
-    (w) => estimateStagedWritePayloadBytes(w.ref.path, w.immutableCreateFields, w.mutableFields),
+    (w) => estimatedBytesByPath.get(w.ref.path) || 2048,
     {
-      maxOpsPerBatch: BATCH_OP_LIMIT,
-      maxBytesPerBatch: BATCH_PAYLOAD_BYTE_LIMIT
+      maxOpsPerBatch: writeCfg.maxOpsPerBatch,
+      maxBytesPerBatch: writeCfg.maxBytesPerBatch
     }
   );
 
-  const batchConcurrency = isLikelyMobileDevice() ? 3 : 6;
-  await runWithConcurrencyLimit(batches, batchConcurrency, (chunk) => commitBatchChunk(chunk, uid));
+  let committedAnyBatch = false;
+  try {
+    await runWithConcurrencyLimit(batches, writeCfg.batchConcurrency, async (chunk) => {
+      await commitBatchChunk(chunk, uid, 0, writeCfg.commitTimeoutMs);
+      committedAnyBatch = true;
+    });
+  } finally {
+    if (committedAnyBatch) {
+      persistKnownExistingPaths(uid);
+    }
+  }
 }
 
 // ============================================================================
@@ -3286,8 +3321,12 @@ async function writeReceiptIndexChunks(
   const staged: StagedDocWrite[] = [];
   for (const i of dirtyIndices) {
     const cid = `idx_${i}`;
+    const ref = doc(db, 'workspaces', WORKSPACE_ID, subcol, cid);
+    if (!forceAll && i < existingCloudChunkCount) {
+      knownExistingPaths.add(ref.path);
+    }
     staged.push({
-      ref: doc(db, 'workspaces', WORKSPACE_ID, subcol, cid),
+      ref,
       pathLabel: `workspaces/${WORKSPACE_ID}/${subcol}/${cid}`,
       immutableCreateFields: {
         workspaceId: WORKSPACE_ID,
@@ -3296,7 +3335,8 @@ async function writeReceiptIndexChunks(
       },
       mutableFields: {
         items: chunks[i]
-      }
+      },
+      isKnownNew: !forceAll && i >= existingCloudChunkCount && !knownExistingPaths.has(ref.path)
     });
   }
 
@@ -3366,8 +3406,12 @@ async function pushMaterialsToCloud(
   const staged: StagedDocWrite[] = [];
   for (const i of dirtyIndices) {
     const cid = `chunk_${i}`;
+    const ref = doc(db, 'workspaces', WORKSPACE_ID, 'materialChunks', cid);
+    if (!forceAll && i < existingCloudChunkCount) {
+      knownExistingPaths.add(ref.path);
+    }
     staged.push({
-      ref: doc(db, 'workspaces', WORKSPACE_ID, 'materialChunks', cid),
+      ref,
       pathLabel: `workspaces/${WORKSPACE_ID}/materialChunks/${cid}`,
       immutableCreateFields: {
         workspaceId: WORKSPACE_ID,
@@ -3375,7 +3419,8 @@ async function pushMaterialsToCloud(
       },
       mutableFields: {
         items: chunks[i]
-      }
+      },
+      isKnownNew: !forceAll && i >= existingCloudChunkCount && !knownExistingPaths.has(ref.path)
     });
   }
 
@@ -4101,6 +4146,9 @@ export const FirestoreSyncService = {
     const initialForceRefresh = Boolean(options?.forceManifestRefresh);
 
     const notifyWorkDetected = () => {
+      if (currentState.status === 'error' && !currentState.quotaExceeded) {
+        emitCloudState({ status: 'connecting', errorMessage: null });
+      }
       activeWorkDetectedCallbacks.forEach((cb) => {
         try {
           cb();
@@ -4165,7 +4213,7 @@ export const FirestoreSyncService = {
           cachedWsManifest = { data: wsData, atMs: Date.now() };
         }
 
-        const remoteServerRev = Number(wsData.serverRevision) || 0;
+        let remoteServerRev = Number(wsData.serverRevision) || 0;
         const expectedBaseline = {
           serverRevision: remoteServerRev,
           metaDigest: String(wsData.metaDigest || 'v2:0.0.0|0.0.0|0.0.0|0.0.0|0.0.0|0.0.0'),
@@ -4693,14 +4741,67 @@ export const FirestoreSyncService = {
           }
 
           if (inboundsToPush.length > 0) {
-            const updatedEntries = await pushBulkInboundsToCloud(
-              inboundsToPush.map((x) => x.rcp),
-              cloudInMap
-            );
-            for (let j = 0; j < inboundsToPush.length; j++) {
-              cloudInMap.set(inboundsToPush[j].code, updatedEntries[j]);
+            for (let waveStart = 0; waveStart < inboundsToPush.length; waveStart += RECEIPT_PUSH_WAVE_SIZE) {
+              const wave = inboundsToPush.slice(waveStart, waveStart + RECEIPT_PUSH_WAVE_SIZE);
+              const updatedEntries = await pushBulkInboundsToCloud(
+                wave.map((x) => x.rcp),
+                cloudInMap
+              );
+              for (let j = 0; j < wave.length; j++) {
+                cloudInMap.set(wave[j].code, updatedEntries[j]);
+              }
+              inboundIndexChanged = true;
+
+              // Nếu còn đợt phiếu tiếp theo, chốt ngay chỉ mục & điểm kiểm tra lên Cloud để bảo toàn tiến độ khi mạng chập chờn
+              const hasMoreWaves = waveStart + RECEIPT_PUSH_WAVE_SIZE < inboundsToPush.length;
+              if (hasMoreWaves) {
+                const waveIdxRes = await writeReceiptIndexChunks(
+                  'inbound',
+                  cloudInMap,
+                  inChunkIndexByCode,
+                  nextInboundIndexChunkCount
+                );
+                nextInboundIndexChunkCount = waveIdxRes.chunkCount;
+                inChunkIndexByCode = waveIdxRes.nextChunkIndexByCode;
+                const baseV2 = parseMetaDigestV2(expectedBaseline.metaDigest);
+                if (baseV2) {
+                  const partialInDigest = computeReceiptDomainDigestFromIndexEntries(
+                    'inbound',
+                    cloudInMap.values()
+                  );
+                  const waveMetaDigest = encodeMetaDigestV2({
+                    ...baseV2,
+                    in: partialInDigest
+                  });
+                  const waveManifest = await commitManifestWithTransaction({
+                    fbUser,
+                    expectedBaseline,
+                    localUpdate: {
+                      touched: { inbound: true },
+                      metaDigest: waveMetaDigest,
+                      inboundIndexChunkCount: nextInboundIndexChunkCount,
+                      bumpMetaRevision: false
+                    }
+                  });
+                  remoteServerRev = waveManifest.serverRevision;
+                  expectedBaseline.serverRevision = waveManifest.serverRevision;
+                  expectedBaseline.metaDigest = waveManifest.metaDigest;
+                  expectedBaseline.materialsDigest = waveManifest.materialsDigest;
+                  nextMetaDigest = waveManifest.metaDigest;
+                  activePassServerRev = waveManifest.serverRevision;
+                  activePassMetaDigest = waveManifest.metaDigest;
+                  pushedChanges = true;
+                  cloudInboundIndexCache = {
+                    uid: fbUser.uid,
+                    domainDigest: partialInDigest,
+                    chunkCount: nextInboundIndexChunkCount,
+                    entries: new Map(cloudInMap),
+                    chunkIndexByCode: new Map(inChunkIndexByCode)
+                  };
+                }
+                persistKnownExistingPaths(fbUser.uid);
+              }
             }
-            inboundIndexChanged = true;
           }
 
           if (inboundIndexChanged) {
@@ -4826,14 +4927,66 @@ export const FirestoreSyncService = {
           }
 
           if (outboundsToPush.length > 0) {
-            const updatedEntries = await pushBulkOutboundsToCloud(
-              outboundsToPush.map((x) => x.rcp),
-              cloudOutMap
-            );
-            for (let j = 0; j < outboundsToPush.length; j++) {
-              cloudOutMap.set(outboundsToPush[j].code, updatedEntries[j]);
+            for (let waveStart = 0; waveStart < outboundsToPush.length; waveStart += RECEIPT_PUSH_WAVE_SIZE) {
+              const wave = outboundsToPush.slice(waveStart, waveStart + RECEIPT_PUSH_WAVE_SIZE);
+              const updatedEntries = await pushBulkOutboundsToCloud(
+                wave.map((x) => x.rcp),
+                cloudOutMap
+              );
+              for (let j = 0; j < wave.length; j++) {
+                cloudOutMap.set(wave[j].code, updatedEntries[j]);
+              }
+              outboundIndexChanged = true;
+
+              const hasMoreWaves = waveStart + RECEIPT_PUSH_WAVE_SIZE < outboundsToPush.length;
+              if (hasMoreWaves) {
+                const waveIdxRes = await writeReceiptIndexChunks(
+                  'outbound',
+                  cloudOutMap,
+                  outChunkIndexByCode,
+                  nextOutboundIndexChunkCount
+                );
+                nextOutboundIndexChunkCount = waveIdxRes.chunkCount;
+                outChunkIndexByCode = waveIdxRes.nextChunkIndexByCode;
+                const baseV2 = parseMetaDigestV2(expectedBaseline.metaDigest);
+                if (baseV2) {
+                  const partialOutDigest = computeReceiptDomainDigestFromIndexEntries(
+                    'outbound',
+                    cloudOutMap.values()
+                  );
+                  const waveMetaDigest = encodeMetaDigestV2({
+                    ...baseV2,
+                    out: partialOutDigest
+                  });
+                  const waveManifest = await commitManifestWithTransaction({
+                    fbUser,
+                    expectedBaseline,
+                    localUpdate: {
+                      touched: { outbound: true },
+                      metaDigest: waveMetaDigest,
+                      outboundIndexChunkCount: nextOutboundIndexChunkCount,
+                      bumpMetaRevision: false
+                    }
+                  });
+                  remoteServerRev = waveManifest.serverRevision;
+                  expectedBaseline.serverRevision = waveManifest.serverRevision;
+                  expectedBaseline.metaDigest = waveManifest.metaDigest;
+                  expectedBaseline.materialsDigest = waveManifest.materialsDigest;
+                  nextMetaDigest = waveManifest.metaDigest;
+                  activePassServerRev = waveManifest.serverRevision;
+                  activePassMetaDigest = waveManifest.metaDigest;
+                  pushedChanges = true;
+                  cloudOutboundIndexCache = {
+                    uid: fbUser.uid,
+                    domainDigest: partialOutDigest,
+                    chunkCount: nextOutboundIndexChunkCount,
+                    entries: new Map(cloudOutMap),
+                    chunkIndexByCode: new Map(outChunkIndexByCode)
+                  };
+                }
+                persistKnownExistingPaths(fbUser.uid);
+              }
             }
-            outboundIndexChanged = true;
           }
 
           if (outboundIndexChanged) {

@@ -138,6 +138,27 @@ export function computeOutboundDomainDigest(list: OutboundReceipt[]): string {
   return compactHashPair(sum1, sum2, xor1, list.length);
 }
 
+export function computeReceiptDomainDigestFromIndexEntries(
+  kind: 'inbound' | 'outbound',
+  entries: Iterable<{ code: string; digest: string }>
+): string {
+  let sum1 = 0;
+  let sum2 = 0;
+  let xor1 = 0;
+  let count = 0;
+  const prefix = kind === 'inbound' ? 'IN' : 'OUT';
+  for (const entry of entries) {
+    const code = normKey(entry.code);
+    if (!code) continue;
+    const [h1, h2] = fnvPair(`${prefix}|${code}|${entry.digest || '0:0:0'}`);
+    sum1 = (sum1 + h1) >>> 0;
+    sum2 = (sum2 + h2) >>> 0;
+    xor1 = (xor1 ^ (kind === 'inbound' ? h1 : h2)) >>> 0;
+    count += 1;
+  }
+  return compactHashPair(sum1, sum2, xor1, count);
+}
+
 export interface DomainDigestParts {
   u: string;
   w: string;
@@ -910,7 +931,9 @@ export function withAsyncTimeout<T>(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error(timeoutMessage));
+      const err = new Error(timeoutMessage);
+      err.name = 'LocalTimeoutError';
+      reject(err);
     }, timeoutMs);
     promise.then(
       (value) => {
@@ -927,6 +950,12 @@ export function withAsyncTimeout<T>(
       }
     );
   });
+}
+
+export function isLocalTimeoutError(err: unknown): boolean {
+  if (err instanceof Error && err.name === 'LocalTimeoutError') return true;
+  const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  return msg.includes('phản hồi quá chậm') || msg.includes('quá thời gian chờ');
 }
 
 export function shouldRunLocalBridgeAfterCloud(params: {
@@ -989,6 +1018,40 @@ export function getAdaptiveCloudFetchConfig(isMobile: boolean): AdaptiveCloudFet
         maxReadRetries: 1,
         retryBaseDelayMs: 300
       };
+}
+
+export interface AdaptiveBatchWriteConfig {
+  maxOpsPerBatch: number;
+  maxBytesPerBatch: number;
+  batchConcurrency: number;
+  commitTimeoutMs: number;
+}
+
+export function getAdaptiveBatchWriteConfig(params: {
+  isMobile: boolean;
+  isAdmin: boolean;
+  allKnownExisting: boolean;
+  avgPayloadBytes: number;
+}): AdaptiveBatchWriteConfig {
+  // Firestore Web SDK dùng 1 luồng ghi tuần tự duy nhất (WriteStream).
+  // Gửi batch nhỏ gọn (<= 400 KB) và giới hạn độ đồng thời (1 trên mobile/dữ liệu nặng, 2 trên máy tính cho header nhẹ)
+  // giúp tránh nghẽn cổ chai hàng đợi WriteStream gây lỗi timeout hàng loạt.
+  const maxBytesPerBatch = 400_000;
+  // Firestore Rules giới hạn cứng 20 lệnh get()/exists() trên MỖI writeBatch:
+  // - Admin update: 0 lệnh get/exists -> an toàn tới 16 doc/batch
+  // - Admin create (hoặc trộn): tối đa 3 lệnh/doc (2 workspace + 1 phiếu cha) -> 6 x 3 = 18 <= 20
+  // - Nhân sự (non-admin): tối đa 6 lệnh/doc -> 3 x 6 = 18 <= 20
+  const maxOpsPerBatch = params.isAdmin ? (params.allKnownExisting ? 16 : 6) : 3;
+  const isHeavyPayload = Number(params.avgPayloadBytes) > 120_000;
+  const batchConcurrency = params.isMobile || isHeavyPayload ? 1 : 2;
+  const commitTimeoutMs = 60_000;
+
+  return {
+    maxOpsPerBatch,
+    maxBytesPerBatch,
+    batchConcurrency,
+    commitTimeoutMs
+  };
 }
 
 export function isRetryableCloudReadError(err: unknown): boolean {
