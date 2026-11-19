@@ -31,6 +31,7 @@ import {
   estimateUtf8ByteLength,
   estimateFirestoreValueBytes,
   estimateStagedWritePayloadBytes,
+  deduplicateStagedWritesByPath,
   partitionStagedWritesIntoBatches,
   chunkItemsByCountAndBytes,
   isPayloadSizeExceededError,
@@ -874,6 +875,29 @@ describe('cloudSyncHelpers', () => {
     assert.deepEqual(
       opBatches.map((b) => b.length),
       [2, 2, 1]
+    );
+
+    // Also enforces default 3-op cap (keeps batch within Firestore's 20 get/exists Security Rules limit)
+    const defaultBatches = partitionStagedWritesIntoBatches(tinyDocs, (d) => d.bytes);
+    assert.deepEqual(
+      defaultBatches.map((b) => b.length),
+      [3, 2]
+    );
+
+    // Deduplicates repeated document paths while preserving the latest write payload
+    const dupes = [
+      { path: 'a', v: 1 },
+      { path: 'b', v: 2 },
+      { path: 'a', v: 3 },
+      { path: 'c', v: 4 }
+    ];
+    assert.deepEqual(
+      deduplicateStagedWritesByPath(dupes, (x) => x.path),
+      [
+        { path: 'a', v: 3 },
+        { path: 'b', v: 2 },
+        { path: 'c', v: 4 }
+      ]
     );
   });
 

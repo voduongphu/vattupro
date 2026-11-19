@@ -1132,6 +1132,29 @@ export function estimateStagedWritePayloadBytes(
   return Math.ceil(raw * 1.25);
 }
 
+export function deduplicateStagedWritesByPath<T>(
+  writes: readonly T[],
+  getPath: (item: T) => string
+): T[] {
+  if (!Array.isArray(writes) || writes.length <= 1) {
+    return Array.isArray(writes) ? [...writes] : [];
+  }
+  const indexByPath = new Map<string, number>();
+  const deduped: T[] = [];
+  for (let i = 0; i < writes.length; i++) {
+    const item = writes[i];
+    const path = getPath(item);
+    const existingIdx = indexByPath.get(path);
+    if (existingIdx !== undefined) {
+      deduped[existingIdx] = item;
+    } else {
+      indexByPath.set(path, deduped.length);
+      deduped.push(item);
+    }
+  }
+  return deduped;
+}
+
 export function partitionStagedWritesIntoBatches<T>(
   writes: readonly T[],
   estimateBytes: (item: T) => number,
@@ -1141,7 +1164,7 @@ export function partitionStagedWritesIntoBatches<T>(
   }
 ): T[][] {
   if (!Array.isArray(writes) || writes.length === 0) return [];
-  const maxOps = Math.max(1, Math.floor(Number(limits?.maxOpsPerBatch ?? 200)));
+  const maxOps = Math.max(1, Math.floor(Number(limits?.maxOpsPerBatch ?? 3)));
   const maxBytes = Math.max(16_384, Math.floor(Number(limits?.maxBytesPerBatch ?? 2_500_000)));
 
   const batches: T[][] = [];

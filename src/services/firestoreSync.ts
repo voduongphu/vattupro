@@ -100,6 +100,7 @@ import {
   retryAsyncWithBackoff,
   runWithConcurrencyLimit,
   estimateStagedWritePayloadBytes,
+  deduplicateStagedWritesByPath,
   partitionStagedWritesIntoBatches,
   chunkItemsByCountAndBytes,
   isPayloadSizeExceededError,
@@ -163,7 +164,10 @@ const WORKSPACE_ID = 'vtp_main';
 const WORKSPACE_NAME = 'Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư';
 const BOOTSTRAPPED_ADMIN_EMAIL = 'voduongphu@gmail.com';
 const CLOUD_CHUNK_SIZE = 200;
-const BATCH_OP_LIMIT = 200;
+// Firestore giới hạn cứng tối đa 20 lệnh get()/exists() trong Security Rules cho MỖI writeBatch.
+// Mỗi thao tác tạo mới tài liệu (nhất là inboundItems/outboundItems của nhân viên) có thể dùng tới 6 lệnh get()/exists(),
+// nên giới hạn 3 tài liệu/batch (3 x 6 = 18 <= 20) đảm bảo KHÔNG BAO GIỜ bị từ chối quyền do vượt trần quy tắc bảo mật.
+const BATCH_OP_LIMIT = 3;
 const BATCH_PAYLOAD_BYTE_LIMIT = 2_500_000; // Giới hạn an toàn ~2.5 MiB/batch để không bao giờ vượt trần 10 MiB / 18 MiB của Firestore
 const DOC_PAYLOAD_BYTE_LIMIT = 500_000; // Giới hạn an toàn ~500 KB/tài liệu để luôn dưới trần 1 MiB của Firestore
 const ACTIVE_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 giờ bảo vệ toàn vẹn phiên
@@ -1062,6 +1066,7 @@ async function commitBatchChunk(
   uid: string,
   reprobeAttempts = 0
 ): Promise<void> {
+  const cfg = getCloudFetchConfig();
   const buildAndCommit = async () => {
     const batch = writeBatch(db);
     for (let i = 0; i < chunk.length; i++) {
@@ -1086,7 +1091,24 @@ async function commitBatchChunk(
   };
 
   try {
-    await buildAndCommit();
+    await retryAsyncWithBackoff(
+      () =>
+        withAsyncTimeout(
+          buildAndCommit(),
+          Math.max(cfg.readTimeoutMs, 25_000),
+          'Ghi dữ liệu lên Cloud Firestore phản hồi quá chậm. Vui lòng thử lại.'
+        ),
+      {
+        maxRetries: 2,
+        baseDelayMs: cfg.retryBaseDelayMs,
+        shouldRetry: (err) =>
+          !isQuotaExceededError(err) &&
+          !isPermissionError(err) &&
+          !isNotFoundError(err) &&
+          !isPayloadSizeExceededError(err) &&
+          isRetryableCloudReadError(err)
+      }
+    );
     clearFirestoreQuotaExhaustedFlag();
     for (let i = 0; i < chunk.length; i++) {
       knownExistingPaths.add(chunk[i].ref.path);
@@ -1105,9 +1127,7 @@ async function commitBatchChunk(
       for (let i = 0; i < chunk.length; i++) {
         knownExistingPaths.delete(chunk[i].ref.path);
       }
-      await runWithConcurrencyLimit(chunk, getCloudFetchConfig().concurrency, (w) =>
-        safeGetDoc(w.ref, w.pathLabel)
-      );
+      await runWithConcurrencyLimit(chunk, cfg.concurrency, (w) => safeGetDoc(w.ref, w.pathLabel));
       await commitBatchChunk(chunk, uid, reprobeAttempts + 1);
       return;
     }
@@ -1117,7 +1137,7 @@ async function commitBatchChunk(
       // batch.set sẽ bị Firestore Rules từ chối vì ghi đè trường bất biến createdAt -> dò lại tồn tại và chuyển sang batch.update.
       const setCandidates = chunk.filter((w) => !knownExistingPaths.has(w.ref.path));
       if (setCandidates.length > 0) {
-        await runWithConcurrencyLimit(setCandidates, getCloudFetchConfig().concurrency, (w) =>
+        await runWithConcurrencyLimit(setCandidates, cfg.concurrency, (w) =>
           safeGetDoc(w.ref, w.pathLabel)
         );
         const discoveredExisting = setCandidates.some((w) => knownExistingPaths.has(w.ref.path));
@@ -1126,6 +1146,14 @@ async function commitBatchChunk(
           return;
         }
       }
+    }
+
+    if (isPermissionError(err) && chunk.length > 1) {
+      // Nếu batch nhiều tài liệu vẫn bị từ chối quyền (ví dụ chạm trần truy vấn rules), tự động tách đôi xuống từng tài liệu lẻ để cô lập/hoàn tất
+      const mid = Math.ceil(chunk.length / 2);
+      await commitBatchChunk(chunk.slice(0, mid), uid, 0);
+      await commitBatchChunk(chunk.slice(mid), uid, 0);
+      return;
     }
 
     if (isQuotaExceededError(err)) {
@@ -1143,18 +1171,23 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error('Chưa kết nối tài khoản đám mây.');
 
+  // Loại bỏ các đường dẫn trùng nhau (nếu dữ liệu cục bộ có mã phiếu trùng) để tránh xung đột ghi đè trong cùng hoặc giữa các batch song song
+  const uniqueWrites = deduplicateStagedWritesByPath(writes, (w) => w.ref.path);
+
   // Chỉ kiểm tra sự tồn tại cho các doc chưa có trong cache và không được gợi ý là mới;
   // nếu một doc gợi ý mới thực chất đã tồn tại trên Cloud (orphan), commitBatchChunk sẽ tự dò lại và chuyển sang update.
-  const unknownWrites = writes.filter((w) => !w.isKnownNew && !knownExistingPaths.has(w.ref.path));
+  const unknownWrites = uniqueWrites.filter(
+    (w) => !w.isKnownNew && !knownExistingPaths.has(w.ref.path)
+  );
   if (unknownWrites.length > 0) {
     await runWithConcurrencyLimit(unknownWrites, getCloudFetchConfig().concurrency, (w) =>
       safeGetDoc(w.ref, w.pathLabel)
     );
   }
 
-  // Chia batch theo cả số lượng thao tác lẫn dung lượng byte thực tế để không bao giờ vượt giới hạn payload 10 MiB / 18 MiB của Firestore
+  // Chia batch theo cả trần 20 lệnh get()/exists() của Firestore Rules (tối đa 3 doc/batch) lẫn dung lượng byte thực tế
   const batches = partitionStagedWritesIntoBatches(
-    writes,
+    uniqueWrites,
     (w) => estimateStagedWritePayloadBytes(w.ref.path, w.immutableCreateFields, w.mutableFields),
     {
       maxOpsPerBatch: BATCH_OP_LIMIT,
@@ -1162,7 +1195,7 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
     }
   );
 
-  const batchConcurrency = isLikelyMobileDevice() ? 2 : 3;
+  const batchConcurrency = isLikelyMobileDevice() ? 3 : 6;
   await runWithConcurrencyLimit(batches, batchConcurrency, (chunk) => commitBatchChunk(chunk, uid));
 }
 
