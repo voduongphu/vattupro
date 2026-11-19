@@ -1057,12 +1057,16 @@ interface StagedDocWrite {
   isKnownNew?: boolean;
 }
 
-async function commitBatchChunk(chunk: StagedDocWrite[], uid: string): Promise<void> {
+async function commitBatchChunk(
+  chunk: StagedDocWrite[],
+  uid: string,
+  reprobeAttempts = 0
+): Promise<void> {
   const buildAndCommit = async () => {
     const batch = writeBatch(db);
     for (let i = 0; i < chunk.length; i++) {
       const w = chunk[i];
-      if (!w.isKnownNew && knownExistingPaths.has(w.ref.path)) {
+      if (knownExistingPaths.has(w.ref.path)) {
         batch.update(w.ref, {
           ...w.mutableFields,
           updatedByUid: uid,
@@ -1091,11 +1095,12 @@ async function commitBatchChunk(chunk: StagedDocWrite[], uid: string): Promise<v
     if (isPayloadSizeExceededError(err) && chunk.length > 1) {
       // Tự động chia đôi gói batch khi vượt trần kích thước payload của Firestore
       const mid = Math.ceil(chunk.length / 2);
-      await commitBatchChunk(chunk.slice(0, mid), uid);
-      await commitBatchChunk(chunk.slice(mid), uid);
+      await commitBatchChunk(chunk.slice(0, mid), uid, reprobeAttempts);
+      await commitBatchChunk(chunk.slice(mid), uid, reprobeAttempts);
       return;
     }
-    if (isNotFoundError(err)) {
+
+    if (isNotFoundError(err) && reprobeAttempts < 2) {
       // Tự phục hồi nếu có tài liệu bị xóa bên ngoài làm cache đường dẫn cũ bị lệch
       for (let i = 0; i < chunk.length; i++) {
         knownExistingPaths.delete(chunk[i].ref.path);
@@ -1103,33 +1108,26 @@ async function commitBatchChunk(chunk: StagedDocWrite[], uid: string): Promise<v
       await runWithConcurrencyLimit(chunk, getCloudFetchConfig().concurrency, (w) =>
         safeGetDoc(w.ref, w.pathLabel)
       );
-      try {
-        await buildAndCommit();
-        clearFirestoreQuotaExhaustedFlag();
-        for (let i = 0; i < chunk.length; i++) {
-          knownExistingPaths.add(chunk[i].ref.path);
-        }
-        return;
-      } catch (retryErr) {
-        if (isPayloadSizeExceededError(retryErr) && chunk.length > 1) {
-          const mid = Math.ceil(chunk.length / 2);
-          await commitBatchChunk(chunk.slice(0, mid), uid);
-          await commitBatchChunk(chunk.slice(mid), uid);
+      await commitBatchChunk(chunk, uid, reprobeAttempts + 1);
+      return;
+    }
+
+    if (isPermissionError(err) && reprobeAttempts < 2) {
+      // Tự phục hồi nếu tài liệu đã tồn tại trên Cloud từ lần đồng bộ bị gián đoạn trước đó (chưa kịp ghi vào index):
+      // batch.set sẽ bị Firestore Rules từ chối vì ghi đè trường bất biến createdAt -> dò lại tồn tại và chuyển sang batch.update.
+      const setCandidates = chunk.filter((w) => !knownExistingPaths.has(w.ref.path));
+      if (setCandidates.length > 0) {
+        await runWithConcurrencyLimit(setCandidates, getCloudFetchConfig().concurrency, (w) =>
+          safeGetDoc(w.ref, w.pathLabel)
+        );
+        const discoveredExisting = setCandidates.some((w) => knownExistingPaths.has(w.ref.path));
+        if (discoveredExisting) {
+          await commitBatchChunk(chunk, uid, reprobeAttempts + 1);
           return;
         }
-        if (isQuotaExceededError(retryErr)) {
-          notifyFirestoreQuotaExceeded(300_000);
-        }
-        if (isPermissionError(retryErr)) {
-          handleFirestoreError(
-            retryErr,
-            OperationType.WRITE,
-            chunk[0]?.pathLabel || `workspaces/${WORKSPACE_ID}`
-          );
-        }
-        throw retryErr;
       }
     }
+
     if (isQuotaExceededError(err)) {
       notifyFirestoreQuotaExceeded(300_000);
     }
@@ -1145,13 +1143,8 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error('Chưa kết nối tài khoản đám mây.');
 
-  for (let i = 0; i < writes.length; i++) {
-    if (writes[i].isKnownNew) {
-      knownExistingPaths.delete(writes[i].ref.path);
-    }
-  }
-
-  // Chỉ kiểm tra sự tồn tại cho các doc chưa rõ trạng thái và không được đánh dấu là mới
+  // Chỉ kiểm tra sự tồn tại cho các doc chưa có trong cache và không được gợi ý là mới;
+  // nếu một doc gợi ý mới thực chất đã tồn tại trên Cloud (orphan), commitBatchChunk sẽ tự dò lại và chuyển sang update.
   const unknownWrites = writes.filter((w) => !w.isKnownNew && !knownExistingPaths.has(w.ref.path));
   if (unknownWrites.length > 0) {
     await runWithConcurrencyLimit(unknownWrites, getCloudFetchConfig().concurrency, (w) =>
@@ -2921,7 +2914,7 @@ function prepareInboundStagedWrites(rcp: InboundReceipt, isKnownNew = false): {
 
   const headerFields = {
     id: cleanStr(rcp.id, 160, docId),
-    receiptCode: cleanStr(rcp.receiptCode || rcp.id, 160, code),
+    receiptCode: cleanStr(rcp.receiptCode || rcp.id, 160, code || docId),
     receiptDate: cleanStr(rcp.receiptDate, 40, ''),
     warehouseId: cleanStr(rcp.warehouseId, 160, ''),
     warehouseName: cleanStr(rcp.warehouseName, 300, ''),
@@ -3001,7 +2994,12 @@ function prepareInboundStagedWrites(rcp: InboundReceipt, isKnownNew = false): {
 
 async function pushSingleInboundToCloud(rcp: InboundReceipt): Promise<CloudReceiptIndexEntry> {
   const prep = prepareInboundStagedWrites(rcp);
-  await commitStagedWrites(prep.staged);
+  if (prep.staged.length > 0) {
+    await commitStagedWrites(prep.staged.slice(0, 1));
+    if (prep.staged.length > 1) {
+      await commitStagedWrites(prep.staged.slice(1));
+    }
+  }
   return prep.entry;
 }
 
@@ -3010,7 +3008,8 @@ async function pushBulkInboundsToCloud(
   existingIndexMap?: Map<string, CloudReceiptIndexEntry>
 ): Promise<CloudReceiptIndexEntry[]> {
   if (receipts.length === 0) return [];
-  const allStaged: StagedDocWrite[] = [];
+  const headerStaged: StagedDocWrite[] = [];
+  const itemStaged: StagedDocWrite[] = [];
   const entries: CloudReceiptIndexEntry[] = [];
 
   for (let i = 0; i < receipts.length; i++) {
@@ -3018,10 +3017,19 @@ async function pushBulkInboundsToCloud(
     const isBrandNew = existingIndexMap ? !existingIndexMap.has(code) : false;
     const prep = prepareInboundStagedWrites(receipts[i], isBrandNew);
     entries.push(prep.entry);
-    allStaged.push(...prep.staged);
+    if (prep.staged.length > 0) {
+      headerStaged.push(prep.staged[0]);
+      for (let k = 1; k < prep.staged.length; k++) {
+        itemStaged.push(prep.staged[k]);
+      }
+    }
   }
 
-  await commitStagedWrites(allStaged);
+  // Luôn ghi toàn bộ header phiếu trước khi ghi các chunk chi tiết vật tư để đảm bảo quy tắc tồn tại phiếu cha trong Firestore Rules
+  await commitStagedWrites(headerStaged);
+  if (itemStaged.length > 0) {
+    await commitStagedWrites(itemStaged);
+  }
   return entries;
 }
 
@@ -3104,7 +3112,7 @@ function prepareOutboundStagedWrites(rcp: OutboundReceipt, isKnownNew = false): 
 
   const headerFields = {
     id: cleanStr(rcp.id, 160, docId),
-    issueCode: cleanStr(rcp.issueCode || rcp.id, 160, code),
+    issueCode: cleanStr(rcp.issueCode || rcp.id, 160, code || docId),
     issueDate: cleanStr(rcp.issueDate, 40, ''),
     warehouseId: cleanStr(rcp.warehouseId, 160, ''),
     warehouseName: cleanStr(rcp.warehouseName, 300, ''),
@@ -3178,7 +3186,12 @@ function prepareOutboundStagedWrites(rcp: OutboundReceipt, isKnownNew = false): 
 
 async function pushSingleOutboundToCloud(rcp: OutboundReceipt): Promise<CloudReceiptIndexEntry> {
   const prep = prepareOutboundStagedWrites(rcp);
-  await commitStagedWrites(prep.staged);
+  if (prep.staged.length > 0) {
+    await commitStagedWrites(prep.staged.slice(0, 1));
+    if (prep.staged.length > 1) {
+      await commitStagedWrites(prep.staged.slice(1));
+    }
+  }
   return prep.entry;
 }
 
@@ -3187,7 +3200,8 @@ async function pushBulkOutboundsToCloud(
   existingIndexMap?: Map<string, CloudReceiptIndexEntry>
 ): Promise<CloudReceiptIndexEntry[]> {
   if (receipts.length === 0) return [];
-  const allStaged: StagedDocWrite[] = [];
+  const headerStaged: StagedDocWrite[] = [];
+  const itemStaged: StagedDocWrite[] = [];
   const entries: CloudReceiptIndexEntry[] = [];
 
   for (let i = 0; i < receipts.length; i++) {
@@ -3195,10 +3209,19 @@ async function pushBulkOutboundsToCloud(
     const isBrandNew = existingIndexMap ? !existingIndexMap.has(code) : false;
     const prep = prepareOutboundStagedWrites(receipts[i], isBrandNew);
     entries.push(prep.entry);
-    allStaged.push(...prep.staged);
+    if (prep.staged.length > 0) {
+      headerStaged.push(prep.staged[0]);
+      for (let k = 1; k < prep.staged.length; k++) {
+        itemStaged.push(prep.staged[k]);
+      }
+    }
   }
 
-  await commitStagedWrites(allStaged);
+  // Luôn ghi toàn bộ header phiếu xuất trước khi ghi các chunk chi tiết vật tư để đảm bảo quy tắc tồn tại phiếu cha trong Firestore Rules
+  await commitStagedWrites(headerStaged);
+  if (itemStaged.length > 0) {
+    await commitStagedWrites(itemStaged);
+  }
   return entries;
 }
 
