@@ -280,6 +280,15 @@ let firestoreQuotaExhausted = false;
 export function isQuotaExceededError(error: unknown): boolean {
   const code = String((error as any)?.code || '').toLowerCase();
   const rawMessage = error instanceof Error ? error.message : String(error || '');
+  const lowerMsg = rawMessage.toLowerCase();
+  if (
+    lowerMsg.includes('request payload size exceeds the limit') ||
+    lowerMsg.includes('payload size exceeds') ||
+    lowerMsg.includes('exceeds the maximum allowed size') ||
+    lowerMsg.includes('entity too large')
+  ) {
+    return false;
+  }
   return (
     code === 'resource-exhausted' ||
     code.includes('resource-exhausted') ||

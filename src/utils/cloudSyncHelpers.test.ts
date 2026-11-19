@@ -28,6 +28,12 @@ import {
   isRetryableCloudReadError,
   retryAsyncWithBackoff,
   runWithConcurrencyLimit,
+  estimateUtf8ByteLength,
+  estimateFirestoreValueBytes,
+  estimateStagedWritePayloadBytes,
+  partitionStagedWritesIntoBatches,
+  chunkItemsByCountAndBytes,
+  isPayloadSizeExceededError,
   evaluatePreSyncCheck,
   resolveConvergedCheckpointDigests,
   type ManifestSnapshotLike
@@ -830,6 +836,70 @@ describe('cloudSyncHelpers', () => {
     assert.equal(maxActive >= 2, true);
     assert.deepEqual(results, [20, 40, 60, 80, 100, 120, 140]);
     assert.deepEqual(await runWithConcurrencyLimit([], 3, async () => 1), []);
+  });
+
+  it('estimates UTF-8 Vietnamese payload bytes accurately and partitions writeBatches under byte budget', () => {
+    assert.equal(estimateUtf8ByteLength('abc'), 3);
+    assert.equal(estimateUtf8ByteLength('Vật tư'), Buffer.byteLength('Vật tư', 'utf8'));
+
+    const bigDocBytes = estimateStagedWritePayloadBytes(
+      'workspaces/vtp_main/inboundItems/in_1_c0',
+      { workspaceId: 'vtp_main', receiptDocId: 'in_1', chunkIndex: 0 },
+      { items: Array.from({ length: 10 }, (_, i) => ({ code: `VT-${i}`, note: 'Ghi chú tiếng Việt dài'.repeat(10) })) }
+    );
+    assert.ok(bigDocBytes > 2500);
+
+    // 10 staged docs of 700 KB each (~7 MB total) with 2.5 MB batch limit must split into 4 batches (max 3 docs/batch)
+    const docs = Array.from({ length: 10 }, (_, idx) => ({ id: idx, bytes: 700_000 }));
+    const batches = partitionStagedWritesIntoBatches(docs, (d) => d.bytes, {
+      maxOpsPerBatch: 200,
+      maxBytesPerBatch: 2_500_000
+    });
+    assert.equal(batches.length, 4);
+    assert.deepEqual(
+      batches.map((b) => b.length),
+      [3, 3, 3, 1]
+    );
+    assert.deepEqual(
+      batches.flat().map((d) => d.id),
+      docs.map((d) => d.id)
+    );
+
+    // Also enforces maxOpsPerBatch even when documents are tiny
+    const tinyDocs = Array.from({ length: 5 }, (_, idx) => ({ id: idx, bytes: 300 }));
+    const opBatches = partitionStagedWritesIntoBatches(tinyDocs, (d) => d.bytes, {
+      maxOpsPerBatch: 2,
+      maxBytesPerBatch: 2_500_000
+    });
+    assert.deepEqual(
+      opBatches.map((b) => b.length),
+      [2, 2, 1]
+    );
+  });
+
+  it('chunkItemsByCountAndBytes respects both item count and per-document byte cap and detects payload errors', () => {
+    const heavyItems = Array.from({ length: 12 }, (_, idx) => ({
+      id: `item-${idx}`,
+      description: 'Mô tả kỹ thuật chi tiết vật tư thiết bị dự án '.repeat(60)
+    }));
+    const singleSize = estimateFirestoreValueBytes(heavyItems[0]);
+    assert.ok(singleSize > 3000);
+
+    const chunks = chunkItemsByCountAndBytes(heavyItems, 200, 12_000);
+    assert.ok(chunks.length >= 3);
+    assert.equal(chunks.flat().length, 12);
+
+    assert.equal(
+      isPayloadSizeExceededError(
+        new Error('Request payload size exceeds the limit: 18874368 bytes.')
+      ),
+      true
+    );
+    assert.equal(
+      isPayloadSizeExceededError(new Error('Document exceeds the maximum allowed size')),
+      true
+    );
+    assert.equal(isPayloadSizeExceededError(new Error('Quota limit exceeded')), false);
   });
 
   it('evaluatePreSyncCheck gates sync cycle and spinner using lastSyncTimestamp', () => {

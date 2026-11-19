@@ -1068,6 +1068,160 @@ export async function runWithConcurrencyLimit<T, R>(
   return results;
 }
 
+export function estimateUtf8ByteLength(str: string): number {
+  if (!str) return 0;
+  let bytes = 0;
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+      const next = str.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+export function estimateFirestoreValueBytes(value: unknown): number {
+  if (value === null || value === undefined) return 4;
+  const t = typeof value;
+  if (t === 'boolean') return 4;
+  if (t === 'number') return 12;
+  if (t === 'string') return estimateUtf8ByteLength(value as string) + 8;
+  if (Array.isArray(value)) {
+    let total = 16;
+    for (let i = 0; i < value.length; i++) {
+      total += estimateFirestoreValueBytes(value[i]) + 8;
+    }
+    return total;
+  }
+  if (t === 'object') {
+    let total = 24;
+    const obj = value as Record<string, unknown>;
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        total += estimateUtf8ByteLength(key) + 16 + estimateFirestoreValueBytes(obj[key]);
+      }
+    }
+    return total;
+  }
+  return 16;
+}
+
+export function estimateStagedWritePayloadBytes(
+  docPath: string,
+  immutableFields: Record<string, unknown>,
+  mutableFields: Record<string, unknown>
+): number {
+  const raw =
+    512 +
+    estimateUtf8ByteLength(docPath || '') * 2 +
+    estimateFirestoreValueBytes(immutableFields) +
+    estimateFirestoreValueBytes(mutableFields);
+  // Hệ số bù đóng gói JSON/Protobuf WebChannel để luôn nằm an toàn dưới giới hạn 10 MiB / 18 MiB của Firestore
+  return Math.ceil(raw * 1.25);
+}
+
+export function partitionStagedWritesIntoBatches<T>(
+  writes: readonly T[],
+  estimateBytes: (item: T) => number,
+  limits?: {
+    maxOpsPerBatch?: number;
+    maxBytesPerBatch?: number;
+  }
+): T[][] {
+  if (!Array.isArray(writes) || writes.length === 0) return [];
+  const maxOps = Math.max(1, Math.floor(Number(limits?.maxOpsPerBatch ?? 200)));
+  const maxBytes = Math.max(16_384, Math.floor(Number(limits?.maxBytesPerBatch ?? 2_500_000)));
+
+  const batches: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 0;
+
+  for (let i = 0; i < writes.length; i++) {
+    const item = writes[i];
+    const itemBytes = Math.max(256, Math.ceil(Number(estimateBytes(item)) || 256));
+
+    if (
+      current.length > 0 &&
+      (current.length >= maxOps || currentBytes + itemBytes > maxBytes)
+    ) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+
+    current.push(item);
+    currentBytes += itemBytes;
+  }
+
+  if (current.length > 0) {
+    batches.push(current);
+  }
+
+  return batches;
+}
+
+export function chunkItemsByCountAndBytes<T>(
+  items: readonly T[],
+  maxItemsPerChunk = 200,
+  maxBytesPerChunk = 500_000
+): T[][] {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const maxCount = Math.max(1, Math.floor(Number(maxItemsPerChunk) || 1));
+  const maxBytes = Math.max(8_192, Math.floor(Number(maxBytesPerChunk) || 500_000));
+
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 512;
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const itemBytes = estimateFirestoreValueBytes(item) + 16;
+
+    if (
+      current.length > 0 &&
+      (current.length >= maxCount || currentBytes + itemBytes > maxBytes)
+    ) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 512;
+    }
+
+    current.push(item);
+    currentBytes += itemBytes;
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+export function isPayloadSizeExceededError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  return (
+    msg.includes('request payload size exceeds the limit') ||
+    msg.includes('payload size exceeds') ||
+    msg.includes('exceeds the maximum allowed size') ||
+    msg.includes('maximum size of') ||
+    msg.includes('entity too large') ||
+    msg.includes('request entity too large') ||
+    msg.includes('batch write size exceeds')
+  );
+}
+
 export interface PreSyncCheckInput {
   lastSyncTimestamp: number;
   lastLocalMutationTimestamp: number;

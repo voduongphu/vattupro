@@ -99,6 +99,10 @@ import {
   isRetryableCloudReadError,
   retryAsyncWithBackoff,
   runWithConcurrencyLimit,
+  estimateStagedWritePayloadBytes,
+  partitionStagedWritesIntoBatches,
+  chunkItemsByCountAndBytes,
+  isPayloadSizeExceededError,
   type CloudPendingOutbox,
   type TouchedManifestDomains,
   type ManifestSnapshotLike,
@@ -159,7 +163,9 @@ const WORKSPACE_ID = 'vtp_main';
 const WORKSPACE_NAME = 'Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư';
 const BOOTSTRAPPED_ADMIN_EMAIL = 'voduongphu@gmail.com';
 const CLOUD_CHUNK_SIZE = 200;
-const BATCH_OP_LIMIT = 380;
+const BATCH_OP_LIMIT = 200;
+const BATCH_PAYLOAD_BYTE_LIMIT = 2_500_000; // Giới hạn an toàn ~2.5 MiB/batch để không bao giờ vượt trần 10 MiB / 18 MiB của Firestore
+const DOC_PAYLOAD_BYTE_LIMIT = 500_000; // Giới hạn an toàn ~500 KB/tài liệu để luôn dưới trần 1 MiB của Firestore
 const ACTIVE_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 giờ bảo vệ toàn vẹn phiên
 
 const KNOWN_CLOUD_PATHS_KEY = `vtp_known_cloud_paths_v1_${WORKSPACE_ID}`;
@@ -1082,6 +1088,13 @@ async function commitBatchChunk(chunk: StagedDocWrite[], uid: string): Promise<v
       knownExistingPaths.add(chunk[i].ref.path);
     }
   } catch (err) {
+    if (isPayloadSizeExceededError(err) && chunk.length > 1) {
+      // Tự động chia đôi gói batch khi vượt trần kích thước payload của Firestore
+      const mid = Math.ceil(chunk.length / 2);
+      await commitBatchChunk(chunk.slice(0, mid), uid);
+      await commitBatchChunk(chunk.slice(mid), uid);
+      return;
+    }
     if (isNotFoundError(err)) {
       // Tự phục hồi nếu có tài liệu bị xóa bên ngoài làm cache đường dẫn cũ bị lệch
       for (let i = 0; i < chunk.length; i++) {
@@ -1098,6 +1111,12 @@ async function commitBatchChunk(chunk: StagedDocWrite[], uid: string): Promise<v
         }
         return;
       } catch (retryErr) {
+        if (isPayloadSizeExceededError(retryErr) && chunk.length > 1) {
+          const mid = Math.ceil(chunk.length / 2);
+          await commitBatchChunk(chunk.slice(0, mid), uid);
+          await commitBatchChunk(chunk.slice(mid), uid);
+          return;
+        }
         if (isQuotaExceededError(retryErr)) {
           notifyFirestoreQuotaExceeded(300_000);
         }
@@ -1140,13 +1159,18 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
     );
   }
 
-  const batchTasks: Array<Promise<void>> = [];
-  for (let start = 0; start < writes.length; start += BATCH_OP_LIMIT) {
-    const chunk = writes.slice(start, start + BATCH_OP_LIMIT);
-    batchTasks.push(commitBatchChunk(chunk, uid));
-  }
+  // Chia batch theo cả số lượng thao tác lẫn dung lượng byte thực tế để không bao giờ vượt giới hạn payload 10 MiB / 18 MiB của Firestore
+  const batches = partitionStagedWritesIntoBatches(
+    writes,
+    (w) => estimateStagedWritePayloadBytes(w.ref.path, w.immutableCreateFields, w.mutableFields),
+    {
+      maxOpsPerBatch: BATCH_OP_LIMIT,
+      maxBytesPerBatch: BATCH_PAYLOAD_BYTE_LIMIT
+    }
+  );
 
-  await Promise.all(batchTasks);
+  const batchConcurrency = isLikelyMobileDevice() ? 2 : 3;
+  await runWithConcurrencyLimit(batches, batchConcurrency, (chunk) => commitBatchChunk(chunk, uid));
 }
 
 // ============================================================================
@@ -2887,7 +2911,11 @@ function prepareInboundStagedWrites(rcp: InboundReceipt, isKnownNew = false): {
   const code = normKey(rcp.receiptCode || rcp.id);
   const docId = makeSafeDocId('in', code);
   const items = Array.isArray(rcp.items) ? rcp.items : [];
-  const itemChunks = chunkArray(items.map(serializeInboundItem), CLOUD_CHUNK_SIZE);
+  const itemChunks = chunkItemsByCountAndBytes(
+    items.map(serializeInboundItem),
+    CLOUD_CHUNK_SIZE,
+    DOC_PAYLOAD_BYTE_LIMIT
+  );
   const sums = sumInboundItems(items);
   const digest = cleanStr(computeInboundReceiptDigest(rcp), 128, '0:0:0');
 
@@ -3066,7 +3094,11 @@ function prepareOutboundStagedWrites(rcp: OutboundReceipt, isKnownNew = false): 
   const code = normKey(rcp.issueCode || rcp.id);
   const docId = makeSafeDocId('out', code);
   const items = Array.isArray(rcp.items) ? rcp.items : [];
-  const itemChunks = chunkArray(items.map(serializeOutboundItem), CLOUD_CHUNK_SIZE);
+  const itemChunks = chunkItemsByCountAndBytes(
+    items.map(serializeOutboundItem),
+    CLOUD_CHUNK_SIZE,
+    DOC_PAYLOAD_BYTE_LIMIT
+  );
   const sums = sumOutboundItems(items);
   const digest = cleanStr(computeOutboundReceiptDigest(rcp), 128, '0:0:0');
 
@@ -3263,7 +3295,11 @@ async function pushMaterialsToCloud(
   materialsDigest: string;
 }> {
   const mats = StorageService.getMaterials();
-  const chunks = chunkArray(mats.map(serializeMaterial), CLOUD_CHUNK_SIZE);
+  const chunks = chunkItemsByCountAndBytes(
+    mats.map(serializeMaterial),
+    CLOUD_CHUNK_SIZE,
+    DOC_PAYLOAD_BYTE_LIMIT
+  );
   const { dirtyIndices, nextDigests } = diffChunkDigests(
     chunks,
     forceAll ? {} : ramChunkDigests,
