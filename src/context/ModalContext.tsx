@@ -279,8 +279,8 @@ export const ModalCloseButton: React.FC<ModalCloseButtonProps> = ({
   const resolvedAria = ariaLabel ? t(ariaLabel) : t('closeModalAria');
   const baseClass =
     variant === 'dark'
-      ? 'inline-flex items-center justify-center w-9 h-9 rounded-xl border-2 border-rose-400 bg-rose-500/25 text-rose-100 hover:bg-rose-600 hover:text-white hover:border-rose-500 shadow-xs transition-colors shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
-      : 'inline-flex items-center justify-center w-9 h-9 rounded-xl border-2 border-rose-500 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white hover:border-rose-600 shadow-xs transition-colors shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed';
+      ? 'inline-flex items-center justify-center w-9 h-9 rounded-xl border border-rose-400/40 bg-rose-500/15 text-rose-200 hover:bg-rose-500/30 hover:text-white hover:border-rose-300/70 transition-colors shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+      : 'inline-flex items-center justify-center w-9 h-9 rounded-xl border border-rose-200 bg-rose-50/70 text-rose-600 hover:bg-rose-100 hover:text-rose-700 hover:border-rose-300 transition-colors shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed';
 
   return (
     <button
@@ -291,7 +291,7 @@ export const ModalCloseButton: React.FC<ModalCloseButtonProps> = ({
       aria-label={resolvedAria}
       className={`${baseClass} ${className}`.trim()}
     >
-      <X className="w-4 h-4 stroke-[2.5]" />
+      <X className="w-4 h-4 stroke-[2]" />
     </button>
   );
 };
