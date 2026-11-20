@@ -10,12 +10,12 @@ import {
 import {
   Printer,
   FileSpreadsheet,
-  X,
   ChevronLeft,
   ChevronRight,
   SlidersHorizontal,
   Check
 } from 'lucide-react';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 
 interface ReceiptPrintModalProps {
   isOpen: boolean;
@@ -318,7 +318,11 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
   };
 
   const modalContent = (
-    <div className="vtp-print-portal fixed inset-0 z-50 flex items-center justify-center bg-slate-900/65 backdrop-blur-sm p-2 sm:p-4 overflow-y-auto">
+    <div className="vtp-print-portal fixed inset-0 z-50 flex items-center justify-center bg-slate-900/65 backdrop-blur-sm p-2 sm:p-4 overflow-y-auto overscroll-contain">
+      <ModalGuard
+        title={`Xem Trước & In ${isReceive ? 'Phiếu Nhập Kho' : 'Phiếu Xuất Kho'} ${code}`}
+        onClose={onClose}
+      />
       <div className="vtp-print-shell bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[94dvh] flex flex-col overflow-hidden">
         {/* Thanh công cụ Modal (Ẩn hoàn toàn khi in A4) */}
         <div className="border-b border-slate-200 bg-slate-50 print:hidden">
@@ -390,13 +394,7 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                 <span>In Phiếu (A4)</span>
               </button>
 
-              <button
-                type="button"
-                onClick={onClose}
-                className="p-2 hover:bg-slate-200 rounded-xl text-slate-500 transition min-h-[40px]"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <ModalCloseButton onClick={onClose} className="w-10 h-10" />
             </div>
           </div>
 
@@ -511,7 +509,7 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
         </div>
 
         {/* Vùng trang giấy A4 theo đúng 2 mẫu PDF QN-OPR-PR11-FM05.01 & QN-OPR-PR11-FM06 */}
-        <div className="vtp-print-paper p-4 sm:p-8 overflow-y-auto flex-1 bg-slate-100/60 print:bg-white">
+        <div className="vtp-print-paper p-4 sm:p-8 overflow-y-auto overscroll-contain flex-1 bg-slate-100/60 print:bg-white">
           <div className="bg-white mx-auto max-w-[210mm] min-h-[275mm] p-5 sm:p-8 print:p-0 print:min-h-0 shadow-sm print:shadow-none border border-slate-200 print:border-none text-black font-['Times_New_Roman',Times,serif] flex flex-col justify-between">
             <div>
               {/* 1. Mã biểu mẫu góc trên bên phải */}

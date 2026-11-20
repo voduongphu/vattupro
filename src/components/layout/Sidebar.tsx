@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 import {
   LayoutDashboard,
   ArrowDownLeft,
@@ -11,7 +12,6 @@ import {
   Users,
   ShieldAlert,
   CheckCircle2,
-  X,
   Boxes,
   LogOut,
   FileWarning
@@ -178,13 +178,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Mobile Slide-Over Navigation Drawer */}
       {isMobileOpen && (
-        <div className="lg:hidden fixed inset-0 z-50 flex">
+        <div className="lg:hidden fixed inset-0 z-50 flex overscroll-contain">
+          {onCloseMobile && (
+            <ModalGuard title="Danh mục điều hướng" onClose={onCloseMobile} />
+          )}
           <div
             className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs"
             onClick={onCloseMobile}
           />
 
-          <aside className="relative z-10 w-72 max-w-[86vw] h-full bg-white shadow-2xl border-r border-slate-200 flex flex-col justify-between overflow-y-auto p-4">
+          <aside className="relative z-10 w-72 max-w-[86vw] h-full bg-white shadow-2xl border-r border-slate-200 flex flex-col justify-between overflow-y-auto overscroll-contain p-4">
             <div>
               {/* Drawer Header */}
               <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
@@ -202,14 +205,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={onCloseMobile}
-                  aria-label="Đóng danh mục"
-                  className="min-w-[44px] min-h-[44px] -mr-2 rounded-xl flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition shrink-0"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                {onCloseMobile && (
+                  <ModalCloseButton
+                    onClick={onCloseMobile}
+                    ariaLabel="Đóng danh mục"
+                  />
+                )}
               </div>
 
               {renderNavList(true)}

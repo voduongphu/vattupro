@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider, useLanguage } from './context/LanguageContext';
+import { ModalProvider } from './context/ModalContext';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { DashboardOverview } from './components/dashboard/DashboardOverview';
@@ -163,9 +164,11 @@ const MainLayout: React.FC = () => {
 export default function App() {
   return (
     <LanguageProvider>
-      <AuthProvider>
-        <MainLayout />
-      </AuthProvider>
+      <ModalProvider>
+        <AuthProvider>
+          <MainLayout />
+        </AuthProvider>
+      </ModalProvider>
     </LanguageProvider>
   );
 }

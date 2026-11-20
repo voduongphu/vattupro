@@ -7,6 +7,7 @@ import { ExcelImportModal } from '../common/ExcelImportModal';
 import { ReceiptPrintModal } from '../common/ReceiptPrintModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { PaginationBar } from '../common/PaginationBar';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 import {
   downloadInboundTemplate,
   exportInboundReceiptToExcel,
@@ -2271,7 +2272,18 @@ export const InboundManager: React.FC = () => {
 
       {/* Modal Lập / Chỉnh Sửa Phiếu Nhập Kho (Chuẩn QN-OPR-PR11-FM05.01) */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 lg:p-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 lg:p-5 overscroll-contain">
+          <ModalGuard
+            title={
+              editingReceipt
+                ? `Chỉnh Sửa Phiếu Nhập Kho: ${editingReceipt.receiptCode}`
+                : 'Lập Phiếu Nhập Kho Mới'
+            }
+            onClose={() => {
+              setIsCreateModalOpen(false);
+              setEditingReceipt(null);
+            }}
+          />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-[96vw] 2xl:max-w-[1760px] max-h-[94dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -2301,18 +2313,15 @@ export const InboundManager: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <button
+              <ModalCloseButton
                 onClick={() => {
                   setIsCreateModalOpen(false);
                   setEditingReceipt(null);
                 }}
-                className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              />
             </div>
 
-            <form onSubmit={handleSaveCreate} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
+            <form onSubmit={handleSaveCreate} className="p-4 sm:p-6 space-y-4 overflow-y-auto overscroll-contain flex-1">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -2993,7 +3002,15 @@ export const InboundManager: React.FC = () => {
 
       {/* Modal Chọn Vật Tư Từ Danh Mục Có Sẵn (Hỗ trợ cả chọn cho 1 dòng & chọn checkbox nhiều mục) */}
       {isCatalogModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 overscroll-contain">
+          <ModalGuard
+            title="Chọn Vật Tư Từ Danh Mục Có Sẵn"
+            priority={60}
+            onClose={() => {
+              setIsCatalogModalOpen(false);
+              setCatalogTargetRowIdx(null);
+            }}
+          />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[90dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="flex items-center justify-between gap-3 p-4 sm:p-5 border-b border-slate-100 bg-slate-50">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -3013,16 +3030,12 @@ export const InboundManager: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
+              <ModalCloseButton
                 onClick={() => {
                   setIsCatalogModalOpen(false);
                   setCatalogTargetRowIdx(null);
                 }}
-                className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              />
             </div>
 
             <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-2.5 bg-white">
@@ -3058,7 +3071,7 @@ export const InboundManager: React.FC = () => {
               </select>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-3 sm:p-4">
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs min-w-[760px]">
@@ -3280,7 +3293,11 @@ export const InboundManager: React.FC = () => {
 
       {/* Modal Xem Chi Tiết Phiếu Nhập (Phân trang mượt cho phiếu >100.000 dòng) */}
       {viewingReceipt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 overscroll-contain">
+          <ModalGuard
+            title={`Chi Tiết Phiếu Nhập Kho: ${viewingReceipt.receiptCode}`}
+            onClose={() => setViewingReceipt(null)}
+          />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="flex flex-wrap items-center justify-between gap-2.5 p-4 sm:p-5 border-b border-slate-100 bg-slate-50">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -3348,16 +3365,11 @@ export const InboundManager: React.FC = () => {
                     <span>Xóa Phiếu</span>
                   </button>
                 )}
-                <button
-                  onClick={() => setViewingReceipt(null)}
-                  className="p-2 hover:bg-slate-200 rounded-lg text-slate-500"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <ModalCloseButton onClick={() => setViewingReceipt(null)} />
               </div>
             </div>
 
-            <div className="p-4 sm:p-6 overflow-y-auto space-y-4 flex-1">
+            <div className="p-4 sm:p-6 overflow-y-auto overscroll-contain space-y-4 flex-1">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs bg-slate-50 p-3.5 sm:p-4 rounded-xl border border-slate-200">
                 <div>
                   <span className="text-slate-400 block">Bộ phận:</span>

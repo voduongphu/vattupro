@@ -1,6 +1,7 @@
 import React from 'react';
-import { Trash2, AlertTriangle, X } from 'lucide-react';
+import { Trash2, AlertTriangle } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 
 interface ConfirmDeleteModalProps {
   isOpen: boolean;
@@ -30,26 +31,22 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = ({
     : itemType;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overscroll-contain animate-in fade-in duration-150">
+      <ModalGuard title={locTitle} onClose={onClose} priority={70} />
       <div className="bg-white rounded-2xl shadow-2xl border border-slate-200/80 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-150">
         
         {/* Header */}
-        <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-rose-50/60">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shadow-inner">
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-rose-50/60 gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shadow-inner shrink-0">
               <Trash2 className="w-5 h-5" />
             </div>
-            <div>
-              <h3 className="font-bold text-slate-900 text-base">{locTitle}</h3>
+            <div className="min-w-0">
+              <h3 className="font-bold text-slate-900 text-base truncate">{locTitle}</h3>
               <p className="text-xs text-rose-700 font-medium">{language === 'en' ? 'This action cannot be undone' : 'Hành động này không thể hoàn tác'}</p>
             </div>
           </div>
-          <button 
-            onClick={onClose} 
-            className="p-1.5 hover:bg-slate-200/70 rounded-lg text-slate-400 hover:text-slate-600 transition"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <ModalCloseButton onClick={onClose} />
         </div>
 
         {/* Content */}

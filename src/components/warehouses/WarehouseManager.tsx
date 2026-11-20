@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 
 export const WarehouseManager: React.FC = () => {
   const { currentUser, isAdmin } = useAuth();
@@ -366,21 +367,23 @@ export const WarehouseManager: React.FC = () => {
 
       {/* Modal Thêm Kho Bãi */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 overscroll-contain">
+          <ModalGuard
+            title="Thêm Kho Bãi Mới"
+            onClose={() => setIsAddModalOpen(false)}
+          />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
-            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50">
+            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="p-2 bg-amber-100 text-amber-700 rounded-xl shrink-0">
                   <WarehouseIcon className="w-5 h-5" />
                 </div>
                 <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">Thêm Kho Bãi Mới</h3>
               </div>
-              <button onClick={() => setIsAddModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0">
-                <X className="w-4 h-4" />
-              </button>
+              <ModalCloseButton onClick={() => setIsAddModalOpen(false)} />
             </div>
 
-            <form onSubmit={handleSaveAdd} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
+            <form onSubmit={handleSaveAdd} className="p-4 sm:p-6 space-y-4 overflow-y-auto overscroll-contain flex-1">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -543,21 +546,23 @@ export const WarehouseManager: React.FC = () => {
 
       {/* Modal Sửa Kho Bãi */}
       {editingWh && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 overscroll-contain">
+          <ModalGuard
+            title={`Sửa Kho Bãi: ${editingWh.code}`}
+            onClose={() => setEditingWh(null)}
+          />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl max-h-[92dvh] flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50">
+            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="p-2 bg-blue-100 text-blue-700 rounded-xl shrink-0">
                   <Edit3 className="w-5 h-5" />
                 </div>
                 <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">Sửa Kho Bãi: {editingWh.code}</h3>
               </div>
-              <button onClick={() => setEditingWh(null)} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0">
-                <X className="w-4 h-4" />
-              </button>
+              <ModalCloseButton onClick={() => setEditingWh(null)} />
             </div>
 
-            <form onSubmit={handleSaveEdit} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
+            <form onSubmit={handleSaveEdit} className="p-4 sm:p-6 space-y-4 overflow-y-auto overscroll-contain flex-1">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Tên kho bãi (*)</label>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage, LanguageSwitcher } from '../../context/LanguageContext';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 import type { ActiveUserSession } from '../../types/inventory';
 import {
   Boxes,
@@ -453,8 +454,9 @@ export const LoginScreen: React.FC = () => {
         <div
           role="alertdialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm overflow-y-auto"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm overflow-y-auto overscroll-contain"
         >
+          <ModalGuard title="Cảnh Báo Bảo Mật Phiên Thiết Bị" onClose={acknowledgeKickModal} />
           <div className="my-auto w-full max-w-md bg-slate-900 border border-amber-500/50 rounded-2xl sm:rounded-3xl shadow-2xl shadow-black/80 overflow-hidden">
             <div className="bg-gradient-to-r from-amber-600/25 via-rose-600/20 to-slate-900 px-5 py-4 sm:px-6 sm:py-5 border-b border-amber-500/30 flex items-start gap-3.5">
               <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-300 shrink-0">
@@ -468,6 +470,7 @@ export const LoginScreen: React.FC = () => {
                   {sessionKickAlert.title}
                 </h3>
               </div>
+              <ModalCloseButton onClick={acknowledgeKickModal} variant="dark" />
             </div>
 
             <div className="p-5 sm:p-6 space-y-4 text-xs sm:text-sm text-slate-200">

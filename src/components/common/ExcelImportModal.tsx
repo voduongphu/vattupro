@@ -27,6 +27,7 @@ import {
   type MaterialCodeResolutionResult
 } from '../../utils/additiveMerge';
 import { PaginationBar } from './PaginationBar';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 
 interface ExcelImportModalProps {
   isOpen: boolean;
@@ -229,8 +230,16 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     onClose();
   };
 
+  const modalTitle =
+    type === 'materials'
+      ? 'Import Danh Mục Vật Tư & Thiết Bị Từ File Excel'
+      : type === 'inbound'
+        ? 'Import Dữ Liệu Nhập Kho Từ File Excel'
+        : 'Import Dữ Liệu Xuất Kho Từ File Excel';
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto flex bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 animate-in fade-in">
+    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain flex bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 animate-in fade-in">
+      <ModalGuard title={modalTitle} onClose={handleClose} />
       <div className="m-auto bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[92dvh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-start sm:items-center justify-between gap-3 p-3.5 sm:p-5 border-b border-slate-100 bg-slate-50">
@@ -246,11 +255,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
             </div>
             <div className="min-w-0">
               <h3 className="font-bold text-slate-900 text-sm sm:text-base leading-snug">
-                {type === 'materials' 
-                  ? 'Import Danh Mục Vật Tư & Thiết Bị Từ File Excel'
-                  : type === 'inbound' 
-                    ? 'Import Dữ Liệu Nhập Kho Từ File Excel' 
-                    : 'Import Dữ Liệu Xuất Kho Từ File Excel'}
+                {modalTitle}
               </h3>
               <p className="text-slate-500 text-[11px] sm:text-xs mt-0.5 line-clamp-2 sm:line-clamp-none">
                 {type === 'materials'
@@ -261,9 +266,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               </p>
             </div>
           </div>
-          <button onClick={handleClose} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0">
-            <X className="w-5 h-5" />
-          </button>
+          <ModalCloseButton onClick={handleClose} disabled={isSaving || isProcessing} />
         </div>
 
         {/* Action Tabs / Step Indicator */}
@@ -359,7 +362,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         )}
 
         {/* Content Body */}
-        <div className="p-3.5 sm:p-6 overflow-y-auto flex-1">
+        <div className="p-3.5 sm:p-6 overflow-y-auto overscroll-contain flex-1">
           {activeTab === 'upload' ? (
             <div className="space-y-6">
               {/* Drop area */}
@@ -559,7 +562,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               </div>
 
               <div className="border border-slate-200 rounded-xl overflow-hidden">
-                <div className="max-h-80 overflow-x-auto overflow-y-auto">
+                <div className="max-h-80 overflow-x-auto overflow-y-auto overscroll-contain">
                   {type === 'materials' ? (
                     <table className="w-full min-w-[860px] text-left text-xs">
                       <thead className="bg-slate-100 text-slate-700 sticky top-0 font-semibold border-b border-slate-200">

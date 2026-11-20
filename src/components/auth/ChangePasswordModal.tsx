@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { KeyRound, CheckCircle2, AlertCircle, X } from 'lucide-react';
+import { KeyRound, CheckCircle2, AlertCircle } from 'lucide-react';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 
 interface ChangePasswordModalProps {
   isOpen: boolean;
@@ -48,7 +49,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto flex bg-slate-900/50 backdrop-blur-sm p-3 sm:p-4">
+    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain flex bg-slate-900/50 backdrop-blur-sm p-3 sm:p-4">
+      <ModalGuard title="Đổi Mật Khẩu Cá Nhân" onClose={onClose} />
       <div className="m-auto bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md overflow-hidden">
         <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-slate-50">
           <div className="flex items-center gap-2">
@@ -57,13 +59,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
             </div>
             <h3 className="font-bold text-slate-800 text-sm">Đổi Mật Khẩu Cá Nhân</h3>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-w-[40px] min-h-[40px] -mr-1 flex items-center justify-center hover:bg-slate-200 rounded-lg text-slate-500"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <ModalCloseButton onClick={onClose} />
         </div>
 
         <form onSubmit={handleSubmit} className="p-4 sm:p-5 space-y-4">

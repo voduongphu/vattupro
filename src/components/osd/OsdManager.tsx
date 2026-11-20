@@ -20,6 +20,7 @@ import {
   roundQty
 } from '../../utils/additiveMerge';
 import { PaginationBar } from '../common/PaginationBar';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 import {
   FileWarning,
   Plus,
@@ -1326,16 +1327,20 @@ export const OsdManager: React.FC = () => {
       {/* MODAL LẬP / CHỈNH SỬA BIÊN BẢN OSD */}
       {/* ========================================================================= */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto overscroll-contain">
+          <ModalGuard
+            title={editingOsd ? `Chỉnh Sửa Biên Bản OSD: ${editingOsd.osdCode}` : 'Lập Biên Bản OSD Mới'}
+            onClose={() => setIsModalOpen(false)}
+          />
           <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             {/* Modal Header */}
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-amber-100 text-amber-800 rounded-xl">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/70 gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="p-2 bg-amber-100 text-amber-800 rounded-xl shrink-0">
                   <FileWarning className="w-5 h-5" />
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">
+                <div className="min-w-0">
+                  <h3 className="text-base font-bold text-slate-900 truncate">
                     {editingOsd ? `Chỉnh Sửa Biên Bản OSD: ${editingOsd.osdCode}` : 'Lập Biên Bản OSD Mới'}
                   </h3>
                   <p className="text-xs text-slate-500">
@@ -1343,16 +1348,11 @@ export const OsdManager: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <ModalCloseButton onClick={() => setIsModalOpen(false)} />
             </div>
 
             {/* Modal Body */}
-            <form onSubmit={handleSaveOsd} className="flex-1 overflow-y-auto p-5 space-y-5">
+            <form onSubmit={handleSaveOsd} className="flex-1 overflow-y-auto overscroll-contain p-5 space-y-5">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
@@ -1833,17 +1833,21 @@ export const OsdManager: React.FC = () => {
       {/* MODAL XEM CHI TIẾT BIÊN BẢN OSD HIỆN TRƯỜNG */}
       {/* ========================================================================= */}
       {viewingOsd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto overscroll-contain">
+          <ModalGuard
+            title={`Chi Tiết Biên Bản OSD: ${viewingOsd.osdCode}`}
+            onClose={() => setViewingOsd(null)}
+          />
           <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             {/* Header */}
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/80 print:hidden">
-              <div className="flex items-center gap-2">
-                <FileWarning className="w-5 h-5 text-amber-600" />
-                <h3 className="text-base font-bold text-slate-900">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/80 print:hidden gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <FileWarning className="w-5 h-5 text-amber-600 shrink-0" />
+                <h3 className="text-base font-bold text-slate-900 truncate">
                   Biên Bản Ghi Nhận Hàng Hóa Thừa - Thiếu - Hư Hỏng (OSD Report)
                 </h3>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   onClick={() => window.print()}
                   className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
@@ -1851,17 +1855,12 @@ export const OsdManager: React.FC = () => {
                   <Printer className="w-3.5 h-3.5" />
                   <span>In biên bản</span>
                 </button>
-                <button
-                  onClick={() => setViewingOsd(null)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 transition"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                <ModalCloseButton onClick={() => setViewingOsd(null)} />
               </div>
             </div>
 
             {/* Content Printable */}
-            <div className="flex-1 overflow-y-auto p-6 sm:p-8 space-y-6 text-slate-800 font-sans print:p-0">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-6 sm:p-8 space-y-6 text-slate-800 font-sans print:p-0">
               <div className="text-center space-y-1 border-b border-slate-200 pb-4">
                 <h2 className="text-lg sm:text-xl font-bold uppercase text-slate-900">
                   BIÊN BẢN GHI NHẬN HÀNG HÓA THỪA - THIẾU - HƯ HỎNG
@@ -2035,10 +2034,15 @@ export const OsdManager: React.FC = () => {
       {/* MODAL XEM TRỰC TIẾP FILE BIÊN BẢN .PDF */}
       {/* ========================================================================= */}
       {pdfPreviewModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/70 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-slate-900/70 backdrop-blur-sm overscroll-contain">
+          <ModalGuard
+            title={`Xem PDF: ${pdfPreviewModal.fileName}`}
+            priority={60}
+            onClose={() => setPdfPreviewModal(null)}
+          />
           <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[94vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             {/* Header */}
-            <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+            <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50 gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <FileText className="w-5 h-5 text-rose-600 shrink-0" />
                 <span className="font-bold text-sm text-slate-900 truncate">
@@ -2049,7 +2053,7 @@ export const OsdManager: React.FC = () => {
                 </span>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <a
                   href={pdfPreviewModal.dataUrl}
                   download={pdfPreviewModal.fileName}
@@ -2058,12 +2062,7 @@ export const OsdManager: React.FC = () => {
                   <Download className="w-3.5 h-3.5" />
                   <span>Tải PDF về</span>
                 </a>
-                <button
-                  onClick={() => setPdfPreviewModal(null)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 transition"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                <ModalCloseButton onClick={() => setPdfPreviewModal(null)} />
               </div>
             </div>
 
@@ -2097,16 +2096,24 @@ export const OsdManager: React.FC = () => {
       {/* MODAL XÁC NHẬN XÓA BIÊN BẢN OSD */}
       {/* ========================================================================= */}
       {osdToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overscroll-contain">
+          <ModalGuard
+            title={`Xác Nhận Xóa Biên Bản OSD: ${osdToDelete.osdCode}`}
+            priority={70}
+            onClose={() => setOsdToDelete(null)}
+          />
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-rose-100 text-rose-700 rounded-xl shrink-0">
-                <AlertTriangle className="w-6 h-6" />
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2.5 bg-rose-100 text-rose-700 rounded-xl shrink-0">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-slate-900 text-base truncate">Xác Nhận Xóa Biên Bản OSD</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Hành động này không thể hoàn tác</p>
+                </div>
               </div>
-              <div>
-                <h3 className="font-bold text-slate-900 text-base">Xác Nhận Xóa Biên Bản OSD</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Hành động này không thể hoàn tác</p>
-              </div>
+              <ModalCloseButton onClick={() => setOsdToDelete(null)} />
             </div>
 
             <p className="text-xs text-slate-600">

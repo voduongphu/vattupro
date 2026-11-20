@@ -20,6 +20,7 @@ import {
   Warehouse as WarehouseIcon
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   computeEmailAuthDigest,
@@ -692,9 +693,13 @@ export const UserManager: React.FC = () => {
 
       {/* Modal Thêm tài khoản Google mới */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 overscroll-contain">
+          <ModalGuard
+            title="Thêm Tài Khoản Google Mới"
+            onClose={() => setIsAddModalOpen(false)}
+          />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
-            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50">
+            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="p-2 bg-blue-100 text-blue-700 rounded-xl shrink-0">
                   <UserPlus className="w-5 h-5" />
@@ -703,15 +708,10 @@ export const UserManager: React.FC = () => {
                   Thêm Tài Khoản Google Mới
                 </h3>
               </div>
-              <button
-                onClick={() => setIsAddModalOpen(false)}
-                className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <ModalCloseButton onClick={() => setIsAddModalOpen(false)} />
             </div>
 
-            <form onSubmit={handleSaveAdd} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
+            <form onSubmit={handleSaveAdd} className="p-4 sm:p-6 space-y-4 overflow-y-auto overscroll-contain flex-1">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 shrink-0" />
@@ -847,7 +847,7 @@ export const UserManager: React.FC = () => {
                   </p>
                 ) : (
                   <>
-                    <div className="max-h-40 overflow-y-auto grid grid-cols-1 gap-1.5 pr-1">
+                    <div className="max-h-40 overflow-y-auto overscroll-contain grid grid-cols-1 gap-1.5 pr-1">
                       {warehouses.map((w) => {
                         const checked = formAllowedWarehouseIds.includes(w.id);
                         return (
@@ -923,9 +923,13 @@ export const UserManager: React.FC = () => {
 
       {/* Modal Sửa thông tin & phân quyền */}
       {editingUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 overscroll-contain">
+          <ModalGuard
+            title={`Phân Quyền Tài Khoản: ${editingUser.fullName}`}
+            onClose={() => setEditingUser(null)}
+          />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[92dvh] flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50">
+            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="p-2 bg-blue-100 text-blue-700 rounded-xl shrink-0">
                   <Edit3 className="w-5 h-5" />
@@ -934,15 +938,10 @@ export const UserManager: React.FC = () => {
                   Phân Quyền Tài Khoản: {editingUser.fullName}
                 </h3>
               </div>
-              <button
-                onClick={() => setEditingUser(null)}
-                className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <ModalCloseButton onClick={() => setEditingUser(null)} />
             </div>
 
-            <form onSubmit={handleSaveEdit} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
+            <form onSubmit={handleSaveEdit} className="p-4 sm:p-6 space-y-4 overflow-y-auto overscroll-contain flex-1">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 shrink-0" />
@@ -1074,7 +1073,7 @@ export const UserManager: React.FC = () => {
                   </p>
                 ) : (
                   <>
-                    <div className="max-h-40 overflow-y-auto grid grid-cols-1 gap-1.5 pr-1">
+                    <div className="max-h-40 overflow-y-auto overscroll-contain grid grid-cols-1 gap-1.5 pr-1">
                       {warehouses.map((w) => {
                         const checked = formAllowedWarehouseIds.includes(w.id);
                         return (

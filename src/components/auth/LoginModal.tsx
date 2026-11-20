@@ -7,9 +7,9 @@ import {
   AlertCircle,
   CheckCircle2,
   Cloud,
-  LogOut,
-  X
+  LogOut
 } from 'lucide-react';
+import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -123,17 +123,15 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   const isBusy = isSubmitting || isForcingLogout;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto flex bg-slate-900/60 backdrop-blur-sm p-3 sm:p-4">
+    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain flex bg-slate-900/60 backdrop-blur-sm p-3 sm:p-4">
+      <ModalGuard title="Đăng nhập đồng bộ bằng tài khoản Google" onClose={onClose} />
       <div className="m-auto bg-white rounded-2xl shadow-2xl border border-slate-200/80 w-full max-w-md overflow-hidden">
         <div className="bg-gradient-to-r from-blue-700 via-indigo-700 to-slate-900 p-5 sm:p-6 text-white text-center relative">
-          <button
-            type="button"
+          <ModalCloseButton
             onClick={onClose}
-            aria-label="Đóng"
-            className="absolute right-3 top-3 p-2 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition"
-          >
-            <X className="w-4 h-4" />
-          </button>
+            variant="dark"
+            className="absolute right-3 top-3"
+          />
           <div className="mx-auto w-12 h-12 sm:w-14 sm:h-14 bg-white/10 rounded-2xl flex items-center justify-center mb-3 shadow-inner ring-1 ring-white/20">
             <ShieldCheck className="w-7 h-7 sm:w-8 sm:h-8 text-blue-200" />
           </div>
