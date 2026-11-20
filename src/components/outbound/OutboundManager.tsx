@@ -2691,10 +2691,10 @@ export const OutboundManager: React.FC = () => {
       {/* Modal Chọn Từ Tồn Kho (Phân trang mượt cho 100.000+ bản ghi, tích chọn nhanh bằng Checkbox) */}
       {isPickStockOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-[95vw] 2xl:max-w-[1680px] max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="p-3.5 sm:p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between gap-2">
               <div className="min-w-0">
-                <h4 className="font-bold text-slate-900 text-sm truncate">
+                <h4 className="font-bold text-slate-900 text-sm sm:text-base truncate">
                   Chọn Hàng Hóa Từ Tồn Kho Khả Dụng
                 </h4>
                 <p className="text-xs text-slate-500 line-clamp-1">
@@ -2724,7 +2724,7 @@ export const OutboundManager: React.FC = () => {
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 sm:top-2.5" />
               </div>
-              <div className="w-full sm:w-60">
+              <div className="w-full sm:w-72">
                 <select
                   value={stockPickerWarehouseFilter}
                   onChange={(e) => {
@@ -2749,18 +2749,18 @@ export const OutboundManager: React.FC = () => {
 
             <div className="p-3.5 sm:p-4 overflow-y-auto flex-1">
               <div className="border border-slate-200 rounded-xl overflow-hidden">
-                <div className="max-h-96 overflow-x-auto overflow-y-auto">
-                  <table className="w-full min-w-[760px] text-left text-xs">
+                <div className="max-h-[58dvh] overflow-x-auto overflow-y-auto">
+                  <table className="w-full min-w-[1080px] text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 sticky top-0 z-10">
                       <tr>
-                        <th className="p-2.5">Mã Vật Tư</th>
-                        <th className="p-2.5">Tên Vật Tư</th>
-                        <th className="p-2.5">Mã Lô / Số Kiện</th>
-                        <th className="p-2.5">Packing List / Shipment</th>
-                        <th className="p-2.5">Kho hàng</th>
-                        <th className="p-2.5 text-right">Tồn SL</th>
-                        <th className="p-2.5 text-right">Tồn KL (Kg)</th>
-                        <th className="p-2.5 w-20 text-center">
+                        <th className="p-3 whitespace-nowrap min-w-[140px]">Mã Vật Tư</th>
+                        <th className="p-3 min-w-[280px]">Tên Vật Tư</th>
+                        <th className="p-3 whitespace-nowrap min-w-[160px]">Mã Lô / Số Kiện</th>
+                        <th className="p-3 whitespace-nowrap min-w-[170px]">Packing List / Shipment</th>
+                        <th className="p-3 min-w-[170px]">Kho hàng</th>
+                        <th className="p-3 text-right whitespace-nowrap w-24">Tồn SL</th>
+                        <th className="p-3 text-right whitespace-nowrap w-28">Tồn KL (Kg)</th>
+                        <th className="p-3 w-20 text-center whitespace-nowrap">
                           <label
                             className="inline-flex items-center justify-center gap-1.5 cursor-pointer select-none"
                             title={
@@ -2782,7 +2782,7 @@ export const OutboundManager: React.FC = () => {
                             <span>Chọn</span>
                           </label>
                         </th>
-                        <th className="p-2.5 w-24 text-center">Thao tác</th>
+                        <th className="p-3 w-28 text-center whitespace-nowrap">Thao tác</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2807,19 +2807,19 @@ export const OutboundManager: React.FC = () => {
                               }`}
                               title="Bấm 'Chọn' hoặc Nhấp đúp chuột để đưa ngay vào phiếu xuất"
                             >
-                              <td className="p-2.5 font-mono font-bold text-blue-700">
+                              <td className="p-3 font-mono font-bold text-blue-700 whitespace-nowrap">
                                 {st.materialCode}
                               </td>
-                              <td className="p-2.5">
-                                <span className="font-semibold text-slate-900 block">
+                              <td className="p-3">
+                                <span className="font-semibold text-slate-900 block leading-snug">
                                   {st.materialName}
                                 </span>
                                 <span className="text-[11px] text-slate-500">ĐVT: {st.unit}</span>
                               </td>
-                              <td className="p-2.5 font-mono font-semibold text-slate-800">
+                              <td className="p-3 font-mono font-semibold text-slate-800 break-words">
                                 {st.packageNo}
                               </td>
-                              <td className="p-2.5">
+                              <td className="p-3">
                                 <span className="font-mono text-slate-700 block">
                                   {st.packingListNo}
                                 </span>
@@ -2827,7 +2827,7 @@ export const OutboundManager: React.FC = () => {
                                   {st.shipment}
                                 </span>
                               </td>
-                              <td className="p-2.5">
+                              <td className="p-3">
                                 <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded inline-block">
                                   {st.warehouseName || 'Kho hiện tại'}
                                 </span>
@@ -2837,10 +2837,10 @@ export const OutboundManager: React.FC = () => {
                                   </span>
                                 )}
                               </td>
-                              <td className="p-2.5 text-right font-bold text-slate-900 font-mono tabular-nums">
+                              <td className="p-3 text-right font-bold text-slate-900 font-mono tabular-nums whitespace-nowrap">
                                 {st.currentQuantity.toLocaleString('vi-VN')}
                               </td>
-                              <td className="p-2.5 text-right font-mono font-medium text-emerald-700 tabular-nums">
+                              <td className="p-3 text-right font-mono font-medium text-emerald-700 tabular-nums whitespace-nowrap">
                                 {st.currentWeightKg.toLocaleString('en-US', {
                                   minimumFractionDigits: 2,
                                   maximumFractionDigits: 2
