@@ -148,7 +148,11 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
             <span>{t('Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư Dự Án')}</span>
           </div>
           <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight">
-            {language === 'en' ? `Welcome, ${currentUser?.fullName || 'User'}!` : `Xin chào, ${currentUser?.fullName || 'Người dùng'}!`}
+            {language === 'en' ? 'Welcome, ' : 'Xin chào, '}
+            <span data-user-content={currentUser?.fullName ? 'true' : undefined}>
+              {currentUser?.fullName || (language === 'en' ? 'User' : 'Người dùng')}
+            </span>
+            !
           </h1>
           <p className="text-slate-300 text-xs md:text-sm leading-relaxed">
             {language === 'en' ? (
@@ -208,13 +212,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
           <div>
             <div className="font-bold text-sm text-amber-900">
               {stats.hasSystemWarehouses
-                ? 'Tài khoản chưa được phân quyền thao tác kho nào'
-                : 'Chưa tải được dữ liệu kho từ Cloud Firestore'}
+                ? t('Tài khoản chưa được phân quyền thao tác kho nào')
+                : t('Chưa tải được dữ liệu kho từ Cloud Firestore')}
             </div>
             <p className="mt-1 text-amber-800 leading-relaxed">
               {stats.hasSystemWarehouses
-                ? 'Vui lòng liên hệ Quản trị viên (Admin) để cấp quyền truy cập cho các kho bãi bạn phụ trách trong mục Quản Lý Người Dùng.'
-                : 'Vui lòng nhấn nút "Đồng Bộ Cloud" trên thanh tiêu đề để tải danh mục kho và dữ liệu mới nhất từ Cloud Firestore.'}
+                ? t('Vui lòng liên hệ Quản trị viên (Admin) để cấp quyền truy cập cho các kho bãi bạn phụ trách trong mục Quản Lý Người Dùng.')
+                : t('Vui lòng nhấn nút "Đồng Bộ Cloud" trên thanh tiêu đề để tải danh mục kho và dữ liệu mới nhất từ Cloud Firestore.')}
             </p>
           </div>
         </div>
@@ -332,7 +336,18 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
               return (
                 <div key={i} className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-1.5">
                   <div className="flex justify-between items-center text-xs">
-                    <span className="font-semibold text-slate-800 line-clamp-1">{cat.name}</span>
+                    <span
+                      className="font-semibold text-slate-800 line-clamp-1"
+                      data-user-content={
+                        cat.name !== 'Khác' && !cat.name.startsWith('Các hạng mục khác')
+                          ? 'true'
+                          : undefined
+                      }
+                    >
+                      {cat.name === 'Khác' || cat.name.startsWith('Các hạng mục khác')
+                        ? t(cat.name)
+                        : cat.name}
+                    </span>
                     <span className="font-mono font-bold text-slate-700">{cat.weight.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')} kg</span>
                   </div>
                   <progress
@@ -387,7 +402,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
                       </span>
                     </div>
                     <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
-                      <span className="line-clamp-1">{inb.warehouseName}</span>
+                      <span className="line-clamp-1" data-user-content="true">{inb.warehouseName}</span>
                       <span>{formatVoucherDateVi(inb.receiptDate)}</span>
                     </div>
                   </div>
@@ -425,7 +440,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
                     <div className="flex justify-between items-start">
                       <div>
                         <span className="font-mono font-bold text-rose-700">{outb.issueCode}</span>
-                        <div className="text-[11px] text-slate-600 line-clamp-1 font-medium">
+                        <div className="text-[11px] text-slate-600 line-clamp-1 font-medium" data-user-content="true">
                           {outb.recipientDepartment}
                         </div>
                       </div>
@@ -434,7 +449,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
                       </span>
                     </div>
                     <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
-                      <span className="line-clamp-1">{outb.warehouseName}</span>
+                      <span className="line-clamp-1" data-user-content="true">{outb.warehouseName}</span>
                       <span>{formatVoucherDateVi(outb.issueDate)}</span>
                     </div>
                   </div>

@@ -3912,30 +3912,30 @@ export const FirestoreSyncService = {
       }
 
       let msg =
-        'Không thể đăng nhập bằng tài khoản Google. Bạn có thể dùng mục "Đăng nhập tài khoản cục bộ" bên dưới để vào ứng dụng ngay với toàn bộ dữ liệu đang lưu trên máy.';
+        'Không thể đăng nhập bằng tài khoản Google. Vui lòng kiểm tra kết nối mạng và thử lại.';
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         msg = 'Bạn đã đóng cửa sổ chọn tài khoản Google trước khi hoàn tất đăng nhập.';
       } else if (code === 'auth/popup-blocked') {
         msg =
-          'Trình duyệt đã chặn cửa sổ bật lên (Popup). Vui lòng cho phép Popup hoặc dùng mục "Đăng nhập tài khoản cục bộ" bên dưới.';
+          'Trình duyệt đã chặn cửa sổ bật lên (Popup). Vui lòng cho phép Popup cho trang web này và thử đăng nhập lại.';
       } else if (code === 'auth/unauthorized-domain') {
         const host = typeof window !== 'undefined' ? window.location.hostname : 'tên miền hiện tại';
-        msg = `Tên miền "${host}" chưa được thêm vào Authorized Domains trên Firebase Authentication. Bạn có thể dùng "Đăng nhập tài khoản cục bộ" bên dưới để vào ứng dụng ngay.`;
+        msg = `Tên miền "${host}" chưa được thêm vào Authorized Domains trên Firebase Authentication.`;
       } else if (code === 'auth/billing-not-enabled') {
         msg =
-          'Firebase Authentication báo dự án chưa bật gói Blaze/Billing sau khi chuyển về gói Spark. Bạn có thể dùng ngay "Đăng nhập tài khoản cục bộ" bên dưới để vào ứng dụng an toàn.';
+          'Firebase Authentication báo dự án chưa bật gói Blaze/Billing. Vui lòng kiểm tra cấu hình thanh toán trên Firebase Console.';
       } else if (code === 'auth/quota-exceeded') {
         msg =
-          'Firebase Authentication tạm vượt hạn mức trên gói Spark. Hãy dùng ngay "Đăng nhập tài khoản cục bộ" bên dưới để tiếp tục làm việc.';
+          'Firebase Authentication tạm vượt hạn mức. Vui lòng thử lại sau ít phút hoặc kiểm tra hạn mức trên Firebase Console.';
       } else if (
         code === 'auth/operation-not-allowed' ||
         code === 'auth/configuration-not-found' ||
         code === 'auth/internal-error'
       ) {
-        msg = `Dịch vụ đăng nhập Google Firebase tạm gián đoạn (${code}). Bạn hãy dùng "Đăng nhập tài khoản cục bộ" bên dưới để vào ứng dụng ngay mà không mất dữ liệu.`;
+        msg = `Dịch vụ đăng nhập Google Firebase tạm gián đoạn (${code}). Vui lòng thử lại sau giây lát.`;
       } else if (code === 'auth/network-request-failed') {
         msg =
-          'Kết nối mạng bị gián đoạn khi xác thực với Google. Bạn có thể kiểm tra mạng hoặc dùng "Đăng nhập tài khoản cục bộ" để làm việc ngoại tuyến.';
+          'Kết nối mạng bị gián đoạn khi xác thực với Google. Vui lòng kiểm tra Internet và thử lại.';
       }
       const isVerifiedConnected = Boolean(
         auth.currentUser && verifiedWorkspaceUid === auth.currentUser.uid

@@ -349,7 +349,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               >
                 <option value="auto">Tự động nhận diện từ cột "Kho" trong file Excel</option>
                 {availableWarehouses.map(w => (
-                  <option key={w.id} value={w.id}>
+                  <option key={w.id} value={w.id} data-user-content="true">
                     {w.name} ({w.code})
                   </option>
                 ))}
@@ -384,7 +384,11 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                 </div>
                 <div>
                   <h4 className="font-bold text-slate-800 text-base">
-                    {selectedFile ? selectedFile.name : 'Nhấp để chọn file Excel hoặc kéo thả vào đây'}
+                    {selectedFile ? (
+                      <span data-user-content="true">{selectedFile.name}</span>
+                    ) : (
+                      'Nhấp để chọn file Excel hoặc kéo thả vào đây'
+                    )}
                   </h4>
                   <p className="text-slate-500 text-xs mt-1">
                     Hỗ trợ định dạng Microsoft Excel (.xlsx, .xls) hoặc tệp CSV (UTF-8) — Tối ưu hóa dữ liệu lớn trên 100.000 dòng
@@ -595,17 +599,17 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                   </span>
                                 )}
                               </td>
-                              <td className="p-2.5 font-semibold text-slate-900">{r.name}</td>
-                              <td className="p-2.5 text-slate-600 font-medium">{r.unit || 'Bộ'}</td>
+                              <td className="p-2.5 font-semibold text-slate-900" data-user-content="true">{r.name}</td>
+                              <td className="p-2.5 text-slate-600 font-medium" data-user-content="true">{r.unit || 'Bộ'}</td>
                               <td className="p-2.5">
-                                <span className="inline-block px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-[11px] font-medium border border-blue-200">
+                                <span className="inline-block px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-[11px] font-medium border border-blue-200" data-user-content="true">
                                   {r.category || 'Chung'}
                                 </span>
                               </td>
-                              <td className="p-2.5 font-mono font-semibold text-indigo-700">{r.packageNo || 'N/A'}</td>
+                              <td className="p-2.5 font-mono font-semibold text-indigo-700" data-user-content="true">{r.packageNo || 'N/A'}</td>
                               <td className="p-2.5">
-                                <div className="text-[11px] font-medium text-slate-800">NSX: {r.manufacturer || 'N/A'}</div>
-                                <div className="text-[11px] text-slate-500">NCC: {r.supplier || 'N/A'}</div>
+                                <div className="text-[11px] font-medium text-slate-800"><span>NSX:</span> <span data-user-content="true">{r.manufacturer || 'N/A'}</span></div>
+                                <div className="text-[11px] text-slate-500"><span>NCC:</span> <span data-user-content="true">{r.supplier || 'N/A'}</span></div>
                               </td>
                               <td className="p-2.5 text-right font-mono font-medium text-slate-800">
                                 {Number(r.unitWeightKg) ? Number(r.unitWeightKg).toLocaleString('vi-VN') : 0}
@@ -613,7 +617,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               <td className="p-2.5 text-right font-bold text-slate-700">
                                 {r.minStockAlert || 0}
                               </td>
-                              <td className="p-2.5 max-w-[200px]">
+                              <td className="p-2.5 max-w-[200px]" data-user-content="true">
                                 <div className="text-[11px] text-slate-700 truncate" title={r.specification}>{r.specification || '-'}</div>
                                 <div className="text-[10px] text-slate-400 truncate" title={r.notes}>{r.notes || ''}</div>
                               </td>
@@ -706,18 +710,22 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               <td className="p-2.5">
                                 <span className="inline-flex items-center gap-1 font-semibold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                                   <WarehouseIcon className="w-3 h-3 text-blue-600 shrink-0" />
-                                  <span>{getRowWarehouseDisplay(r)}</span>
+                                  <span data-user-content="true">{getRowWarehouseDisplay(r)}</span>
                                 </span>
                               </td>
                               <td className="p-2.5">
-                                <div className="font-semibold text-slate-800">{rowAny.departmentName || 'Bộ phận: —'}</div>
-                                <div className="text-[11px] font-mono text-slate-500">
+                                {rowAny.departmentName ? (
+                                  <div className="font-semibold text-slate-800" data-user-content="true">{rowAny.departmentName}</div>
+                                ) : (
+                                  <div className="font-semibold text-slate-800">Bộ phận: —</div>
+                                )}
+                                <div className="text-[11px] font-mono text-slate-500" data-user-content="true">
                                   {type === 'inbound'
                                     ? [rowAny.contractNo && `HĐ: ${rowAny.contractNo}`, rowAny.requestNo && `ĐX: ${rowAny.requestNo}`].filter(Boolean).join(' • ') || (r.packingListNo ? `PL: ${r.packingListNo}` : '-')
                                     : [rowAny.requestNo && `PYC: ${rowAny.requestNo}`, r.packingListNo && `PL: ${r.packingListNo}`].filter(Boolean).join(' • ') || '-'}
                                 </div>
                               </td>
-                              <td className="p-2.5">
+                              <td className="p-2.5" data-user-content="true">
                                 {type === 'inbound' ? (
                                   <div className="text-[11px] font-medium text-slate-800">{rowAny.delivererName || r.supplier || '-'}</div>
                                 ) : (
@@ -728,13 +736,13 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                 )}
                               </td>
                               <td className="p-2.5">
-                                <div className="font-semibold text-slate-900">{r.materialName}</div>
+                                <div className="font-semibold text-slate-900" data-user-content="true">{r.materialName}</div>
                                 <div className="text-[11px] font-mono text-blue-700 flex items-center gap-1.5 flex-wrap">
                                   {r.materialCode ? (
-                                    <span>{r.materialCode}</span>
+                                    <span data-user-content="true">{r.materialCode}</span>
                                   ) : type === 'inbound' && previewInboundResolvedCodes[globalIdx] ? (
                                     <>
-                                      <span className={previewInboundResolvedCodes[globalIdx].source === 'catalog' ? 'text-emerald-700 font-semibold' : 'text-indigo-700 font-semibold'}>
+                                      <span className={previewInboundResolvedCodes[globalIdx].source === 'catalog' ? 'text-emerald-700 font-semibold' : 'text-indigo-700 font-semibold'} data-user-content="true">
                                         {previewInboundResolvedCodes[globalIdx].code}
                                       </span>
                                       <span className={`font-sans font-medium text-[10px] px-1.5 py-0.5 rounded ${
@@ -755,17 +763,17 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                 </div>
                               </td>
                               <td className="p-2.5 font-mono font-semibold text-indigo-700">
-                                <div>{batchOrPkg}</div>
+                                <div data-user-content="true">{batchOrPkg}</div>
                                 {showSeparatePkg && (
                                   <div className="text-[10px] font-sans font-medium text-teal-700">
-                                    Kiện: {packageNoVal}
+                                    <span>Kiện:</span> <span data-user-content="true">{packageNoVal}</span>
                                   </div>
                                 )}
                               </td>
                               <td className="p-2.5 text-right font-bold text-slate-800">
                                 {Number(r.quantity || 0).toLocaleString('vi-VN')}
                               </td>
-                              <td className="p-2.5 text-center text-slate-600">{r.unit || '-'}</td>
+                              <td className="p-2.5 text-center text-slate-600" data-user-content="true">{r.unit || '-'}</td>
                               <td className="p-2.5 text-right font-mono font-medium text-slate-800">
                                 {Number(r.weightKg || 0).toLocaleString('vi-VN')}
                               </td>
@@ -775,7 +783,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                 </td>
                               )}
                               {type === 'inbound' && (
-                                <td className="p-2.5 max-w-[160px] truncate text-slate-700 font-medium" title={rowAny.storageLocation || ''}>
+                                <td className="p-2.5 max-w-[160px] truncate text-slate-700 font-medium" title={rowAny.storageLocation || ''} data-user-content="true">
                                   {rowAny.storageLocation ? (
                                     <span className="inline-block px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px]">
                                       {rowAny.storageLocation}
@@ -785,7 +793,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                   )}
                                 </td>
                               )}
-                              <td className="p-2.5 max-w-[160px] truncate text-slate-500" title={rowAny.note || ''}>
+                              <td className="p-2.5 max-w-[160px] truncate text-slate-500" title={rowAny.note || ''} data-user-content="true">
                                 {rowAny.note || '-'}
                               </td>
                               <td className="p-2.5 text-center">

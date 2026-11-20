@@ -16,6 +16,7 @@ import {
   Check
 } from 'lucide-react';
 import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
+import { useLanguage } from '../../context/LanguageContext';
 
 interface ReceiptPrintModalProps {
   isOpen: boolean;
@@ -100,6 +101,7 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
   inbound,
   outbound
 }) => {
+  const { language } = useLanguage();
   const [page, setPage] = useState(1);
   const [showCustomize, setShowCustomize] = useState(false);
 
@@ -230,11 +232,8 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
   const startRowNum = (safePage - 1) * PRINT_PAGE_SIZE;
 
   const trimmedDept = customDepartment.trim().toUpperCase();
-  const departmentFormatted = !trimmedDept
-    ? 'BỘ PHẬN:'
-    : trimmedDept.startsWith('BỘ PHẬN:')
-      ? trimmedDept
-      : `BỘ PHẬN: ${trimmedDept}`;
+  const deptPrefix = language === 'en' ? 'DEPARTMENT:' : 'BỘ PHẬN:';
+  const strippedDept = trimmedDept.replace(/^(BỘ PHẬN:|DEPARTMENT:)\s*/i, '');
 
   const handlePrint = () => {
     window.print();
@@ -521,10 +520,18 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
               {/* 2. Khối Tên công ty + BỘ PHẬN: bên trái (không có logo theo đúng mẫu mới) */}
               <div className="w-full sm:w-[58%] print:w-[58%] text-center pl-1 sm:pl-4 print:pl-4">
                 <div className="text-[12.5px] sm:text-[13px] uppercase leading-snug whitespace-nowrap">
-                  CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC
+                  {language === 'en'
+                    ? 'PTSC QUANG NGAI JOINT STOCK COMPANY'
+                    : 'CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC'}
                 </div>
                 <div className="text-[13px] font-bold underline uppercase mt-1 leading-snug">
-                  {departmentFormatted}
+                  <span>{deptPrefix}</span>
+                  {strippedDept && (
+                    <>
+                      {' '}
+                      <span data-user-content="true">{strippedDept}</span>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -536,7 +543,10 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                       <td className="border border-black px-3 py-1.5 font-bold uppercase text-center whitespace-nowrap min-w-[82px]">
                         SỐ PHIẾU:
                       </td>
-                      <td className="border border-black px-3 py-1.5 font-bold text-center min-w-[88px] whitespace-nowrap">
+                      <td
+                        className="border border-black px-3 py-1.5 font-bold text-center min-w-[88px] whitespace-nowrap"
+                        data-user-content="true"
+                      >
                         {code}
                       </td>
                     </tr>
@@ -561,25 +571,37 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                     <span className="w-[130px] sm:w-[140px] shrink-0 leading-snug">
                       Đơn vị giao hàng:
                     </span>
-                    <div className="flex-1 sm:mr-[68px] print:mr-[68px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug">
+                    <div
+                      className="flex-1 sm:mr-[68px] print:mr-[68px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug"
+                      data-user-content="true"
+                    >
                       {customDelivererOrRecipient}
                     </div>
                   </div>
                   <div className="flex items-end">
                     <span className="w-[130px] sm:w-[140px] shrink-0 leading-snug">Hợp đồng:</span>
-                    <div className="flex-1 sm:mr-[68px] print:mr-[68px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug">
+                    <div
+                      className="flex-1 sm:mr-[68px] print:mr-[68px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug"
+                      data-user-content="true"
+                    >
                       {customSubUnitOrContract}
                     </div>
                   </div>
                   <div className="flex items-end">
                     <span className="w-[130px] sm:w-[140px] shrink-0 leading-snug">Đề xuất số:</span>
-                    <div className="flex-1 sm:mr-[68px] print:mr-[68px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug">
+                    <div
+                      className="flex-1 sm:mr-[68px] print:mr-[68px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug"
+                      data-user-content="true"
+                    >
                       {customRequestNo}
                     </div>
                   </div>
                   <div className="flex items-end">
                     <span className="w-[130px] sm:w-[140px] shrink-0 leading-snug">Nội dung:</span>
-                    <div className="flex-1 sm:mr-[68px] print:mr-[68px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug">
+                    <div
+                      className="flex-1 sm:mr-[68px] print:mr-[68px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug"
+                      data-user-content="true"
+                    >
                       {customReasonOrContent}
                     </div>
                   </div>
@@ -588,7 +610,10 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                 <div className="space-y-1 text-[13px] mb-2">
                   <div className="flex items-end">
                     <span className="w-[130px] sm:w-[145px] shrink-0 leading-snug">Người nhận:</span>
-                    <div className="flex-1 sm:mr-[78px] print:mr-[78px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug">
+                    <div
+                      className="flex-1 sm:mr-[78px] print:mr-[78px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug"
+                      data-user-content="true"
+                    >
                       {customDelivererOrRecipient}
                     </div>
                   </div>
@@ -596,13 +621,19 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                     <span className="w-[130px] sm:w-[145px] shrink-0 leading-snug">
                       Đơn vị/Tổ/Nhóm:
                     </span>
-                    <div className="flex-1 sm:mr-[78px] print:mr-[78px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug">
+                    <div
+                      className="flex-1 sm:mr-[78px] print:mr-[78px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug"
+                      data-user-content="true"
+                    >
                       {customSubUnitOrContract}
                     </div>
                   </div>
                   <div className="flex items-end">
                     <span className="w-[130px] sm:w-[145px] shrink-0 leading-snug">Số PYC/PĐX:</span>
-                    <div className="flex-1 sm:mr-[78px] print:mr-[78px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug">
+                    <div
+                      className="flex-1 sm:mr-[78px] print:mr-[78px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug"
+                      data-user-content="true"
+                    >
                       {customRequestNo}
                     </div>
                   </div>
@@ -610,7 +641,10 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                     <span className="w-[130px] sm:w-[145px] shrink-0 leading-snug">
                       Lý do xuất kho:
                     </span>
-                    <div className="flex-1 sm:mr-[78px] print:mr-[78px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug">
+                    <div
+                      className="flex-1 sm:mr-[78px] print:mr-[78px] border-b border-black px-1 pb-0.5 min-h-[20px] leading-snug"
+                      data-user-content="true"
+                    >
                       {customReasonOrContent}
                     </div>
                   </div>
@@ -684,25 +718,25 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                         <th className="border border-black px-2 py-1">Tên vật tư</th>
                         <th className="border border-black px-1.5 py-1 w-[82px]">Mã lô</th>
                         <th className="border border-black px-1 py-1 w-[66px]">
-                          Số lượng
+                          {language === 'en' ? 'Quantity' : 'Số lượng'}
                           <br />
-                          (cây/tấm)
+                          {language === 'en' ? '(pcs/sheets)' : '(cây/tấm)'}
                         </th>
                         <th className="border border-black px-1 py-1 w-[40px]">ĐVT</th>
                         <th className="border border-black px-1 py-1 w-[74px]">
-                          Khối lượng
+                          {language === 'en' ? 'Weight' : 'Khối lượng'}
                           <br />
                           (Kg)
                         </th>
                         <th className="border border-black px-1 py-1 w-[64px]">
-                          Đơn giá
+                          {language === 'en' ? 'Unit Price' : 'Đơn giá'}
                           <br />
-                          (VNĐ)
+                          {language === 'en' ? '(VND)' : '(VNĐ)'}
                         </th>
                         <th className="border border-black px-1 py-1 w-[72px]">
-                          Thành tiền
+                          {language === 'en' ? 'Amount' : 'Thành tiền'}
                           <br />
-                          (VNĐ)
+                          {language === 'en' ? '(VND)' : '(VNĐ)'}
                         </th>
                         <th className="border border-black px-1.5 py-1 w-[68px]">Ghi chú</th>
                       </tr>
@@ -721,19 +755,19 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                             <td className="border border-black px-1 py-1 text-center align-middle">
                               {startRowNum + idx + 1}
                             </td>
-                            <td className="border border-black px-1.5 py-1 text-center align-middle break-all">
+                            <td className="border border-black px-1.5 py-1 text-center align-middle break-all" data-user-content="true">
                               {item.materialCode}
                             </td>
-                            <td className="border border-black px-2 py-1 text-left align-middle">
+                            <td className="border border-black px-2 py-1 text-left align-middle" data-user-content="true">
                               {item.materialName}
                             </td>
-                            <td className="border border-black px-1.5 py-1 text-center align-middle break-words">
+                            <td className="border border-black px-1.5 py-1 text-center align-middle break-words" data-user-content="true">
                               {getItemBatchDisplay(item)}
                             </td>
                             <td className="border border-black px-1.5 py-1 text-right align-middle tabular-nums">
                               {formatQty(qty)}
                             </td>
-                            <td className="border border-black px-1 py-1 text-center align-middle">
+                            <td className="border border-black px-1 py-1 text-center align-middle" data-user-content="true">
                               {item.unit}
                             </td>
                             <td className="border border-black px-1.5 py-1 text-right align-middle tabular-nums">
@@ -745,7 +779,7 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                             <td className="border border-black px-1.5 py-1 text-right align-middle tabular-nums">
                               {formatMoneyOrDash(tPrice)}
                             </td>
-                            <td className="border border-black px-1.5 py-1 text-left align-middle">
+                            <td className="border border-black px-1.5 py-1 text-left align-middle" data-user-content="true">
                               {getInboundItemNote(item)}
                             </td>
                           </tr>
@@ -801,13 +835,13 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                         <th className="border border-black px-2 py-1">Tên vật tư</th>
                         <th className="border border-black px-1.5 py-1 w-[94px]">Mã lô</th>
                         <th className="border border-black px-1.5 py-1 w-[74px]">
-                          Số lượng
+                          {language === 'en' ? 'Quantity' : 'Số lượng'}
                           <br />
-                          (cây/tấm)
+                          {language === 'en' ? '(pcs/sheets)' : '(cây/tấm)'}
                         </th>
                         <th className="border border-black px-1 py-1 w-[46px]">ĐVT</th>
                         <th className="border border-black px-1.5 py-1 w-[86px]">
-                          Khối lượng
+                          {language === 'en' ? 'Weight' : 'Khối lượng'}
                           <br />
                           (Kg)
                         </th>
@@ -820,25 +854,25 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                           <td className="border border-black px-1 py-1 text-center align-middle">
                             {startRowNum + idx + 1}
                           </td>
-                          <td className="border border-black px-1.5 py-1 text-center align-middle break-all">
+                          <td className="border border-black px-1.5 py-1 text-center align-middle break-all" data-user-content="true">
                             {item.materialCode}
                           </td>
-                          <td className="border border-black px-2 py-1 text-left align-middle">
+                          <td className="border border-black px-2 py-1 text-left align-middle" data-user-content="true">
                             {item.materialName}
                           </td>
-                          <td className="border border-black px-1.5 py-1 text-center align-middle break-words">
+                          <td className="border border-black px-1.5 py-1 text-center align-middle break-words" data-user-content="true">
                             {getItemBatchDisplay(item)}
                           </td>
                           <td className="border border-black px-1.5 py-1 text-right align-middle tabular-nums">
                             {formatQty(item.quantity)}
                           </td>
-                          <td className="border border-black px-1 py-1 text-center align-middle">
+                          <td className="border border-black px-1 py-1 text-center align-middle" data-user-content="true">
                             {item.unit}
                           </td>
                           <td className="border border-black px-1.5 py-1 text-right align-middle tabular-nums">
                             {formatWeightKg(item.weightKg)}
                           </td>
-                          <td className="border border-black px-1.5 py-1 text-left align-middle">
+                          <td className="border border-black px-1.5 py-1 text-left align-middle" data-user-content="true">
                             {getOutboundItemNote(item)}
                           </td>
                         </tr>
@@ -885,11 +919,11 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                 <div className="mt-2.5 space-y-0.5 text-[11.5px] leading-relaxed">
                   <div>
                     <span>Viết bằng chữ : </span>
-                    <span className="italic">{customAmountInWords}</span>
+                    <span className="italic" data-user-content="true">{customAmountInWords}</span>
                   </div>
                   <div>
                     <span>Số chứng từ gốc kèm theo: </span>
-                    <span>{customAttachedDocs}</span>
+                    <span data-user-content="true">{customAttachedDocs}</span>
                   </div>
                   <div className="italic underline">
                     Note: Cột số lượng (cây/tấm), mã lô, chiều rộng, chiều dài chỉ áp dụng đối với vật tư chính.
@@ -914,7 +948,9 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                 </div>
 
                 <div>
-                  <div className="font-bold underline">P.TCKT</div>
+                  <div className="font-bold underline">
+                    {language === 'en' ? 'Finance & Acct.' : 'P.TCKT'}
+                  </div>
                   <div className="italic text-[11.5px]">(Ký, ghi rõ họ tên)</div>
                 </div>
 

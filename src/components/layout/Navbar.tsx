@@ -131,7 +131,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
               <button
                 type="button"
                 onClick={onOpenMobileMenu}
-                aria-label="Mở danh mục điều hướng"
+                aria-label={t('openNavMenu')}
                 className="lg:hidden min-w-[44px] min-h-[44px] -ml-1 rounded-xl flex items-center justify-center text-slate-200 hover:text-white hover:bg-slate-800 transition shrink-0"
               >
                 <Menu className="w-5 h-5" />
@@ -207,7 +207,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                     {busy
                       ? t('syncing')
                       : isSparkPaused
-                        ? 'Cloud tạm dừng (Spark)'
+                        ? t('cloudPausedSparkShort')
                         : quotaExceeded
                           ? t('cloudQuotaExceededShort')
                           : t('cloudSync')}
@@ -232,10 +232,10 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                   </div>
                   <div className="hidden md:block">
                     <div className="text-xs font-semibold text-white flex items-center gap-1">
-                      <span className="max-w-[160px] truncate">{currentUser.fullName}</span>
+                      <span className="max-w-[160px] truncate" data-user-content="true">{currentUser.fullName}</span>
                       {isAdmin && <ShieldCheck className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
                     </div>
-                    <div className="text-[10px] text-slate-400 max-w-[170px] truncate">
+                    <div className="text-[10px] text-slate-400 max-w-[170px] truncate" data-user-content="true">
                       {displayEmail}
                     </div>
                   </div>
@@ -250,10 +250,10 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                     />
                     <div className="absolute right-0 mt-2 w-72 max-w-[calc(100vw-1.5rem)] bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 text-slate-700 text-xs z-50">
                       <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50">
-                        <div className="font-bold text-slate-900 truncate">
+                        <div className="font-bold text-slate-900 truncate" data-user-content="true">
                           {currentUser.fullName}
                         </div>
-                        <div className="text-[11px] text-blue-700 font-mono truncate">
+                        <div className="text-[11px] text-blue-700 font-mono truncate" data-user-content="true">
                           {displayEmail}
                         </div>
                         <div className="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-700 font-medium">
@@ -333,13 +333,13 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
               ) : (
                 <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 sm:mt-0" />
               )}
-              <span className="leading-relaxed break-words">{remoteLogoutNotice.message}</span>
+              <span className="leading-relaxed break-words">{t(remoteLogoutNotice.message)}</span>
             </div>
             <button
               type="button"
               onClick={() => setRemoteLogoutNotice(null)}
               className="p-1 rounded-lg hover:bg-white/10 transition shrink-0"
-              title="Đóng thông báo"
+              title={t('closeNotification')}
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -367,18 +367,18 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                   <strong className="mr-1.5">
                     {cloudState.quotaExceeded
                       ? /spark|blaze|thanh toán|billing/i.test(cloudState.errorMessage)
-                        ? 'Cloud Firestore tạm dừng (Gói Spark):'
+                        ? t('cloudPausedSparkPrefix')
                         : `${t('cloudQuotaExceeded')}:`
-                      : 'Lỗi Cloud Firestore:'}
+                      : t('cloudErrorPrefix')}
                   </strong>
-                  {cloudState.errorMessage}
+                  {t(cloudState.errorMessage)}
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setDismissedCloudErrorMsg(cloudState.errorMessage)}
                 className="p-1 rounded-lg hover:bg-white/10 transition shrink-0"
-                title="Đóng thông báo"
+                title={t('closeNotification')}
               >
                 <X className="w-3.5 h-3.5" />
               </button>

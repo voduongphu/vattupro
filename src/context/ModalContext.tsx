@@ -14,6 +14,7 @@ import {
   upsertModalEntry,
   type ModalStackEntry
 } from '../utils/modalStackHelpers';
+import { useLanguage } from './LanguageContext';
 
 interface InternalModalEntry extends ModalStackEntry {
   onClose: () => void;
@@ -33,6 +34,7 @@ interface ModalContextValue {
 const ModalContext = createContext<ModalContextValue | null>(null);
 
 export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { language, t } = useLanguage();
   const [modalStack, setModalStack] = useState<InternalModalEntry[]>([]);
   const [pendingEscTarget, setPendingEscTarget] = useState<InternalModalEntry | null>(null);
   const orderCounterRef = useRef(0);
@@ -138,6 +140,8 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     liveEntry.onClose();
   };
 
+  const localizedPendingTitle = pendingEscTarget ? t(pendingEscTarget.title) : '';
+
   return (
     <ModalContext.Provider
       value={{
@@ -166,29 +170,36 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     id="esc-confirm-modal-title"
                     className="font-bold text-slate-900 text-sm sm:text-base truncate"
                   >
-                    Xác nhận thoát hộp thoại
+                    {t('escConfirmTitle')}
                   </h3>
                   <p className="text-[11px] text-amber-800 font-medium">
-                    Phím ESC vừa được nhấn
+                    {t('escConfirmSubtitle')}
                   </p>
                 </div>
               </div>
               <ModalCloseButton
                 onClick={handleCancelEscClose}
-                title="Hủy và quay lại hộp thoại (ESC)"
+                title={t('escConfirmCancelTitle')}
               />
             </div>
 
             <div className="p-5 space-y-4 text-xs sm:text-sm text-slate-700">
               <p className="leading-relaxed">
-                Bạn có chắc chắn muốn đóng hộp thoại{' '}
-                <strong className="text-slate-900">
-                  &ldquo;{pendingEscTarget.title}&rdquo;
-                </strong>{' '}
-                đang mở không?
+                {language === 'en' ? (
+                  <>
+                    Are you sure you want to close the dialog{' '}
+                    <strong className="text-slate-900">&ldquo;{localizedPendingTitle}&rdquo;</strong>?
+                  </>
+                ) : (
+                  <>
+                    Bạn có chắc chắn muốn đóng hộp thoại{' '}
+                    <strong className="text-slate-900">&ldquo;{localizedPendingTitle}&rdquo;</strong>{' '}
+                    đang mở không?
+                  </>
+                )}
               </p>
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
-                Mọi thông tin đang nhập dở chưa lưu trong hộp thoại này sẽ bị hủy nếu bạn thoát ra.
+                {t('escConfirmWarning')}
               </div>
 
               <div className="flex items-center justify-end gap-2.5 pt-1">
@@ -198,14 +209,14 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   onClick={handleCancelEscClose}
                   className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs sm:text-sm rounded-xl transition cursor-pointer"
                 >
-                  Ở lại tiếp tục
+                  {t('escConfirmStay')}
                 </button>
                 <button
                   type="button"
                   onClick={handleConfirmEscClose}
                   className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-rose-600/20 transition cursor-pointer"
                 >
-                  Xác nhận thoát
+                  {t('escConfirmLeave')}
                 </button>
               </div>
             </div>
@@ -257,12 +268,15 @@ export interface ModalCloseButtonProps {
 
 export const ModalCloseButton: React.FC<ModalCloseButtonProps> = ({
   onClick,
-  title = 'Đóng hộp thoại (ESC)',
-  ariaLabel = 'Đóng hộp thoại',
+  title,
+  ariaLabel,
   variant = 'light',
   className = '',
   disabled = false
 }) => {
+  const { t } = useLanguage();
+  const resolvedTitle = title ? t(title) : t('closeModalTitle');
+  const resolvedAria = ariaLabel ? t(ariaLabel) : t('closeModalAria');
   const baseClass =
     variant === 'dark'
       ? 'inline-flex items-center justify-center w-9 h-9 rounded-xl border-2 border-rose-400 bg-rose-500/25 text-rose-100 hover:bg-rose-600 hover:text-white hover:border-rose-500 shadow-xs transition-colors shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
@@ -273,8 +287,8 @@ export const ModalCloseButton: React.FC<ModalCloseButtonProps> = ({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={title}
-      aria-label={ariaLabel}
+      title={resolvedTitle}
+      aria-label={resolvedAria}
       className={`${baseClass} ${className}`.trim()}
     >
       <X className="w-4 h-4 stroke-[2.5]" />

@@ -501,7 +501,7 @@ export const MaterialCatalog: React.FC = () => {
           >
             <option value="all">Tất cả hạng mục ({materials.length.toLocaleString('vi-VN')})</option>
             {categories.map(c => (
-              <option key={c} value={c}>{c}</option>
+              <option key={c} value={c} data-user-content="true">{c}</option>
             ))}
           </select>
         </div>
@@ -622,20 +622,20 @@ export const MaterialCatalog: React.FC = () => {
                     )}
                     <td className="px-5 py-4">
                       <div>
-                        <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200/70 inline-block mb-1">
+                        <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200/70 inline-block mb-1" data-user-content="true">
                           {m.code}
                         </span>
-                        <div className="font-semibold text-slate-900 text-sm leading-snug">{m.name}</div>
+                        <div className="font-semibold text-slate-900 text-sm leading-snug" data-user-content="true">{m.name}</div>
                         {m.specification && (
                           <div className="text-xs text-slate-500 line-clamp-1 mt-0.5">
-                            Quy cách: {m.specification}
+                            <span>Quy cách:</span> <span data-user-content="true">{m.specification}</span>
                           </div>
                         )}
                       </div>
                     </td>
 
                     <td className="px-5 py-4">
-                      <span className="inline-block bg-slate-100 text-slate-700 text-xs px-2.5 py-1 rounded-md border border-slate-200">
+                      <span className="inline-block bg-slate-100 text-slate-700 text-xs px-2.5 py-1 rounded-md border border-slate-200" data-user-content="true">
                         {m.category || 'Chung'}
                       </span>
                     </td>
@@ -644,7 +644,7 @@ export const MaterialCatalog: React.FC = () => {
                       {m.packageNo ? (
                         <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/70 font-mono text-xs font-semibold">
                           <Boxes className="w-3.5 h-3.5 shrink-0" />
-                          <span>{m.packageNo}</span>
+                          <span data-user-content="true">{m.packageNo}</span>
                         </div>
                       ) : (
                         <span className="text-slate-400 text-xs italic">N/A</span>
@@ -654,16 +654,16 @@ export const MaterialCatalog: React.FC = () => {
                     <td className="px-5 py-4">
                       <div className="text-xs space-y-0.5">
                         <div className="font-medium text-slate-800">
-                          NSX: <span className="text-slate-900 font-semibold">{m.manufacturer || 'N/A'}</span>
+                          <span>NSX:</span> <span className="text-slate-900 font-semibold" data-user-content="true">{m.manufacturer || 'N/A'}</span>
                         </div>
                         <div className="text-slate-500">
-                          NCC: <span>{m.supplier || 'N/A'}</span>
+                          <span>NCC:</span> <span data-user-content="true">{m.supplier || 'N/A'}</span>
                         </div>
                       </div>
                     </td>
 
                     <td className="px-5 py-4 text-center">
-                      <span className="bg-slate-50 font-medium px-2 py-1 rounded border border-slate-200 text-xs text-slate-700">
+                      <span className="bg-slate-50 font-medium px-2 py-1 rounded border border-slate-200 text-xs text-slate-700" data-user-content="true">
                         {m.unit}
                       </span>
                     </td>

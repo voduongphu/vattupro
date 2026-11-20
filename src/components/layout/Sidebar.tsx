@@ -56,7 +56,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'osd',
       label: t('navOsd'),
       icon: FileWarning,
-      meta: 'Mới'
+      meta: t('sidebarBadgeNew')
     },
     {
       id: 'report',
@@ -158,12 +158,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : (
           <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
         )}
-        <span>{isAdmin ? 'Quyền Quản Trị Viên' : 'Chế độ Nhân Viên'}</span>
+        <span>{isAdmin ? t('sidebarRoleAdminTitle') : t('sidebarRoleStaffTitle')}</span>
       </div>
       <p className="text-[11px] text-slate-600 leading-relaxed">
-        {isAdmin
-          ? 'Toàn quyền thêm/sửa/xóa kho bãi, vật tư, người dùng & duyệt phiếu'
-          : 'Quyền thực hiện nhập/xuất kho và tra cứu báo cáo tồn kho'}
+        {isAdmin ? t('sidebarRoleAdminDesc') : t('sidebarRoleStaffDesc')}
       </p>
     </div>
   );
@@ -180,7 +178,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {isMobileOpen && (
         <div className="lg:hidden fixed inset-0 z-50 flex overscroll-contain">
           {onCloseMobile && (
-            <ModalGuard title="Danh mục điều hướng" onClose={onCloseMobile} />
+            <ModalGuard title={t('navMenuTitle')} onClose={onCloseMobile} />
           )}
           <div
             className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs"
@@ -196,10 +194,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <Boxes className="w-4 h-4" />
                   </div>
                   <div className="min-w-0">
-                    <div className="font-bold text-xs text-slate-900 truncate">
-                      {currentUser?.fullName || 'Hệ thống kho vận'}
+                    <div
+                      className="font-bold text-xs text-slate-900 truncate"
+                      data-user-content={currentUser?.fullName ? 'true' : undefined}
+                    >
+                      {currentUser?.fullName || t('sidebarSystemFallback')}
                     </div>
-                    <div className="text-[11px] text-slate-500 font-mono truncate">
+                    <div className="text-[11px] text-slate-500 font-mono truncate" data-user-content="true">
                       {currentUser?.email || (currentUser?.username ? `@${currentUser.username}` : '')}
                     </div>
                   </div>
@@ -208,7 +209,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {onCloseMobile && (
                   <ModalCloseButton
                     onClick={onCloseMobile}
-                    ariaLabel="Đóng danh mục"
+                    ariaLabel={t('closeNavMenu')}
                   />
                 )}
               </div>
@@ -227,7 +228,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200/70 text-xs font-semibold flex items-center justify-center gap-2 transition"
               >
                 <LogOut className="w-4 h-4 shrink-0" />
-                <span>Đăng Xuất Phiên Thiết Bị</span>
+                <span>{t('logoutDeviceSession')}</span>
               </button>
             </div>
           </aside>

@@ -29,6 +29,7 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = ({
   const locItemType = language === 'en'
     ? (itemType === 'mục này' ? 'this item' : itemType === 'kho bãi này' ? 'this warehouse' : itemType === 'vật tư này' ? 'this material item' : itemType === 'người dùng này' ? 'this user' : t(itemType))
     : itemType;
+  const locItemName = language === 'en' ? t(itemName, itemName) : itemName;
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overscroll-contain animate-in fade-in duration-150">
@@ -57,7 +58,7 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = ({
 
           <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-900 text-sm break-words flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
-            <span data-user-content="true">{itemName}</span>
+            <span data-user-content="true">{locItemName}</span>
           </div>
 
           {warningText ? (

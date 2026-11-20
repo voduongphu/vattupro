@@ -30,9 +30,8 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
   const startIdx = (safePage - 1) * pageSize + 1;
   const endIdx = Math.min(totalItems, safePage * pageSize);
 
-  const locItemLabel = language === 'en'
-    ? (itemLabel === 'dòng' ? 'rows' : itemLabel === 'kho' ? 'warehouses' : itemLabel === 'vật tư' ? 'items' : t(itemLabel))
-    : itemLabel;
+  const numLocale = language === 'en' ? 'en-US' : 'vi-VN';
+  const locItemLabel = language === 'en' ? t(itemLabel) : itemLabel;
 
   // Tính dãy trang hiển thị gọn gàng
   const getVisiblePages = () => {
@@ -55,9 +54,12 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
     <div className="px-3 sm:px-4 py-3 bg-slate-50/90 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-2.5 sm:gap-3 text-xs">
       <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 sm:gap-3 text-slate-600 text-center sm:text-left">
         <span>
-          {language === 'en' ? 'Showing' : 'Hiển thị'} <strong className="text-slate-900 font-mono tabular-nums">{startIdx.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}</strong> -{' '}
-          <strong className="text-slate-900 font-mono tabular-nums">{endIdx.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}</strong> / {language === 'en' ? 'Total' : 'Tổng'}{' '}
-          <strong className="text-blue-700 font-mono tabular-nums">{totalItems.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}</strong> {locItemLabel}
+          {language === 'en' ? 'Showing' : 'Hiển thị'}{' '}
+          <strong className="text-slate-900 font-mono tabular-nums">{startIdx.toLocaleString(numLocale)}</strong> -{' '}
+          <strong className="text-slate-900 font-mono tabular-nums">{endIdx.toLocaleString(numLocale)}</strong> /{' '}
+          {language === 'en' ? 'Total' : 'Tổng'}{' '}
+          <strong className="text-blue-700 font-mono tabular-nums">{totalItems.toLocaleString(numLocale)}</strong>{' '}
+          {locItemLabel}
         </span>
 
         {onPageSizeChange && (
@@ -89,7 +91,7 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
             disabled={safePage === 1}
             onClick={() => onPageChange(1)}
             className="min-w-[36px] min-h-[36px] sm:min-w-[30px] sm:min-h-[30px] p-1.5 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
-            title="Trang đầu"
+            title={t('Trang đầu')}
           >
             <ChevronsLeft className="w-3.5 h-3.5" />
           </button>
@@ -98,7 +100,7 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
             disabled={safePage === 1}
             onClick={() => onPageChange(safePage - 1)}
             className="min-w-[36px] min-h-[36px] sm:min-w-[30px] sm:min-h-[30px] p-1.5 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
-            title="Trang trước"
+            title={t('Trang trước')}
           >
             <ChevronLeft className="w-3.5 h-3.5" />
           </button>
@@ -114,7 +116,7 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
                   : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
               }`}
             >
-              {p.toLocaleString('vi-VN')}
+              {p.toLocaleString(numLocale)}
             </button>
           ))}
 
@@ -123,7 +125,7 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
             disabled={safePage === totalPages}
             onClick={() => onPageChange(safePage + 1)}
             className="min-w-[36px] min-h-[36px] sm:min-w-[30px] sm:min-h-[30px] p-1.5 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
-            title="Trang tiếp"
+            title={t('Trang tiếp')}
           >
             <ChevronRight className="w-3.5 h-3.5" />
           </button>
@@ -132,13 +134,13 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
             disabled={safePage === totalPages}
             onClick={() => onPageChange(totalPages)}
             className="min-w-[36px] min-h-[36px] sm:min-w-[30px] sm:min-h-[30px] p-1.5 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
-            title="Trang cuối"
+            title={t('Trang cuối')}
           >
             <ChevronsRight className="w-3.5 h-3.5" />
           </button>
 
           <span className="ml-1 text-[11px] text-slate-500 font-mono tabular-nums">
-            Trang {safePage.toLocaleString('vi-VN')}/{totalPages.toLocaleString('vi-VN')}
+            {language === 'en' ? 'Page' : 'Trang'} {safePage.toLocaleString(numLocale)}/{totalPages.toLocaleString(numLocale)}
           </span>
         </div>
       )}

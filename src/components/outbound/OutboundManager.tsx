@@ -1681,7 +1681,7 @@ export const OutboundManager: React.FC = () => {
           >
             <option value="all">Tất cả kho xuất ({authorizedWarehouses.length})</option>
             {authorizedWarehouses.map((w) => (
-              <option key={w.id} value={w.id}>
+              <option key={w.id} value={w.id} data-user-content="true">
                 {w.name}
               </option>
             ))}
@@ -1929,7 +1929,7 @@ export const OutboundManager: React.FC = () => {
                       )}
                       <td className="px-5 py-4">
                         <div>
-                          <span className="font-mono font-bold text-xs text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200 inline-block mb-1">
+                          <span className="font-mono font-bold text-xs text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200 inline-block mb-1" data-user-content="true">
                             {r.issueCode}
                           </span>
                           <div className="text-xs text-slate-500 flex items-center gap-1">
@@ -1942,9 +1942,13 @@ export const OutboundManager: React.FC = () => {
                       <td className="px-5 py-4">
                         <div>
                           <div className="font-bold text-slate-900 text-xs">
-                            {r.recipientName || 'Chưa ghi tên'}
+                            {r.recipientName ? (
+                              <span data-user-content="true">{r.recipientName}</span>
+                            ) : (
+                              <span>Chưa ghi tên</span>
+                            )}
                           </div>
-                          <div className="text-xs text-slate-600">{r.recipientDepartment}</div>
+                          <div className="text-xs text-slate-600" data-user-content="true">{r.recipientDepartment}</div>
                           <div className="text-[11px] text-slate-400">
                             {r.outboundType === 'transfer'
                               ? 'Phiếu xuất điều chuyển'
@@ -1955,26 +1959,28 @@ export const OutboundManager: React.FC = () => {
 
                       <td className="px-5 py-4">
                         {r.departmentName && r.departmentName !== 'DỰ ÁN LTIA-4.9' ? (
-                          <div className="text-xs font-semibold text-slate-800">{r.departmentName}</div>
+                          <div className="text-xs font-semibold text-slate-800" data-user-content="true">{r.departmentName}</div>
                         ) : (
                           <div className="text-xs font-medium text-slate-500">Bộ phận: —</div>
                         )}
-                        <div className="text-[11px] text-slate-500">Kho: {r.warehouseName}</div>
+                        <div className="text-[11px] text-slate-500">
+                          <span>Kho:</span> <span data-user-content="true">{r.warehouseName}</span>
+                        </div>
                       </td>
 
                       <td className="px-5 py-4">
                         <div className="text-xs space-y-0.5">
                           {r.requestNo ? (
                             <div className="font-mono font-semibold text-blue-700">
-                              PYC/PĐX: {r.requestNo}
+                              <span>PYC/PĐX:</span> <span data-user-content="true">{r.requestNo}</span>
                             </div>
                           ) : (
-                            <div className="font-mono font-semibold text-blue-700 line-clamp-1">
+                            <div className="font-mono font-semibold text-blue-700 line-clamp-1" data-user-content="true">
                               {plDisplay}
                             </div>
                           )}
                           {r.notes && !r.notes.startsWith('Import thành công ') && (
-                            <div className="text-xs text-slate-700 line-clamp-1">{r.notes}</div>
+                            <div className="text-xs text-slate-700 line-clamp-1" data-user-content="true">{r.notes}</div>
                           )}
                           <div className="text-[11px] text-slate-500">
                             ({r.items.length.toLocaleString('vi-VN')} mục hàng)
@@ -2203,7 +2209,7 @@ export const OutboundManager: React.FC = () => {
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg outline-none focus:border-blue-500"
                     >
                       {authorizedWarehouses.map((w) => (
-                        <option key={w.id} value={w.id}>
+                        <option key={w.id} value={w.id} data-user-content="true">
                           {w.name}
                         </option>
                       ))}
@@ -2411,17 +2417,17 @@ export const OutboundManager: React.FC = () => {
                               >
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-1.5">
-                                    <span className="font-mono font-bold text-blue-700 text-xs">
+                                    <span className="font-mono font-bold text-blue-700 text-xs" data-user-content="true">
                                       {st.materialCode}
                                     </span>
                                     {st.packageNo && st.packageNo !== 'N/A' && (
                                       <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded text-[10px] font-mono font-semibold">
-                                        Kiện: {st.packageNo}
+                                        <span>Kiện:</span> <span data-user-content="true">{st.packageNo}</span>
                                       </span>
                                     )}
                                     {st.packingListNo && st.packingListNo !== 'N/A' && (
                                       <span className="text-slate-400 text-[10px] font-mono">
-                                        PL: {st.packingListNo}
+                                        PL: <span data-user-content="true">{st.packingListNo}</span>
                                       </span>
                                     )}
                                     {isAdded && (
@@ -2430,30 +2436,44 @@ export const OutboundManager: React.FC = () => {
                                       </span>
                                     )}
                                   </div>
-                                  <div className="text-slate-800 font-semibold truncate mt-1">
+                                  <div className="text-slate-800 font-semibold truncate mt-1" data-user-content="true">
                                     {st.materialName}
                                   </div>
                                   <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-2 mt-0.5">
-                                    <span>Kho: {st.warehouseName || 'Hiện tại'}</span>
+                                    <span>
+                                      <span>Kho:</span>{' '}
+                                      {st.warehouseName ? (
+                                        <span data-user-content="true">{st.warehouseName}</span>
+                                      ) : (
+                                        <span>Hiện tại</span>
+                                      )}
+                                    </span>
                                     {st.storageLocation && (
                                       <>
                                         <span>•</span>
-                                        <span className="text-emerald-700 font-semibold">Vị trí: {st.storageLocation}</span>
+                                        <span className="text-emerald-700 font-semibold">
+                                          <span>Vị trí:</span> <span data-user-content="true">{st.storageLocation}</span>
+                                        </span>
                                       </>
                                     )}
                                     <span>•</span>
-                                    <span>ĐVT: {st.unit}</span>
+                                    <span>
+                                      <span>ĐVT:</span> <span data-user-content="true">{st.unit}</span>
+                                    </span>
                                     {st.drawingNo && st.drawingNo !== 'N/A' && (
                                       <>
                                         <span>•</span>
-                                        <span className="font-mono text-[10px]">Bản vẽ: {st.drawingNo}</span>
+                                        <span className="font-mono text-[10px]">
+                                          <span>Bản vẽ:</span> <span data-user-content="true">{st.drawingNo}</span>
+                                        </span>
                                       </>
                                     )}
                                   </div>
                                 </div>
                                 <div className="text-right shrink-0">
                                   <div className="font-bold text-slate-900 font-mono text-sm tabular-nums">
-                                    {st.currentQuantity.toLocaleString('vi-VN')} {st.unit}
+                                    {st.currentQuantity.toLocaleString('vi-VN')}{' '}
+                                    <span data-user-content="true">{st.unit}</span>
                                   </div>
                                   <div className="text-[11px] font-mono text-emerald-700 tabular-nums">
                                     {st.currentWeightKg.toLocaleString('en-US', {
@@ -2561,7 +2581,7 @@ export const OutboundManager: React.FC = () => {
                               />
                               {item.packageNo && item.packageNo !== 'N/A' && item.batchCode !== item.packageNo && (
                                 <span className="text-[10px] text-slate-400 font-mono block mt-0.5 truncate">
-                                  Kiện: {item.packageNo}
+                                  <span>Kiện:</span> <span data-user-content="true">{item.packageNo}</span>
                                 </span>
                               )}
                             </td>
@@ -2815,33 +2835,39 @@ export const OutboundManager: React.FC = () => {
                               }`}
                               title="Bấm 'Chọn' hoặc Nhấp đúp chuột để đưa ngay vào phiếu xuất"
                             >
-                              <td className="p-3 font-mono font-bold text-blue-700 whitespace-nowrap">
+                              <td className="p-3 font-mono font-bold text-blue-700 whitespace-nowrap" data-user-content="true">
                                 {st.materialCode}
                               </td>
                               <td className="p-3">
-                                <span className="font-semibold text-slate-900 block leading-snug">
+                                <span className="font-semibold text-slate-900 block leading-snug" data-user-content="true">
                                   {st.materialName}
                                 </span>
-                                <span className="text-[11px] text-slate-500">ĐVT: {st.unit}</span>
+                                <span className="text-[11px] text-slate-500">
+                                  <span>ĐVT:</span> <span data-user-content="true">{st.unit}</span>
+                                </span>
                               </td>
-                              <td className="p-3 font-mono font-semibold text-slate-800 break-words">
+                              <td className="p-3 font-mono font-semibold text-slate-800 break-words" data-user-content="true">
                                 {st.packageNo}
                               </td>
                               <td className="p-3">
-                                <span className="font-mono text-slate-700 block">
+                                <span className="font-mono text-slate-700 block" data-user-content="true">
                                   {st.packingListNo}
                                 </span>
-                                <span className="font-mono text-slate-400 text-[11px]">
+                                <span className="font-mono text-slate-400 text-[11px]" data-user-content="true">
                                   {st.shipment}
                                 </span>
                               </td>
                               <td className="p-3">
                                 <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded inline-block">
-                                  {st.warehouseName || 'Kho hiện tại'}
+                                  {st.warehouseName ? (
+                                    <span data-user-content="true">{st.warehouseName}</span>
+                                  ) : (
+                                    <span>Kho hiện tại</span>
+                                  )}
                                 </span>
                                 {st.storageLocation && (
                                   <span className="block mt-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
-                                    Vị trí: {st.storageLocation}
+                                    <span>Vị trí:</span> <span data-user-content="true">{st.storageLocation}</span>
                                   </span>
                                 )}
                               </td>
@@ -2994,9 +3020,10 @@ export const OutboundManager: React.FC = () => {
                     Phiếu Xuất Kho: {viewingReceipt.issueCode}
                   </h3>
                   <p className="text-xs text-slate-500 line-clamp-1">
-                    Ngày: {formatVoucherDateVi(viewingReceipt.issueDate)} | Kho:{' '}
-                    {viewingReceipt.warehouseName} | {viewingReceipt.items.length.toLocaleString('vi-VN')}{' '}
-                    mục hàng | Tổng SL:{' '}
+                    <span>Ngày:</span> <span>{formatVoucherDateVi(viewingReceipt.issueDate)}</span> |{' '}
+                    <span>Kho:</span> <span data-user-content="true">{viewingReceipt.warehouseName}</span> |{' '}
+                    <span>{viewingReceipt.items.length.toLocaleString('vi-VN')} mục hàng</span> |{' '}
+                    <span>Tổng SL:</span>{' '}
                     <strong className="text-rose-700 font-mono">
                       {viewingReceiptTotals.totalQuantity.toLocaleString('vi-VN')}
                     </strong>
@@ -3058,7 +3085,7 @@ export const OutboundManager: React.FC = () => {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs bg-slate-50 p-3.5 sm:p-4 rounded-xl border border-slate-200">
                 <div>
                   <span className="text-slate-400 block">Bộ phận:</span>
-                  <span className="font-bold text-slate-900">
+                  <span className="font-bold text-slate-900" data-user-content="true">
                     {viewingReceipt.departmentName && viewingReceipt.departmentName !== 'DỰ ÁN LTIA-4.9'
                       ? viewingReceipt.departmentName
                       : '-'}
@@ -3066,23 +3093,23 @@ export const OutboundManager: React.FC = () => {
                 </div>
                 <div>
                   <span className="text-slate-400 block">Người nhận:</span>
-                  <span className="font-bold text-slate-900">{viewingReceipt.recipientName}</span>
+                  <span className="font-bold text-slate-900" data-user-content="true">{viewingReceipt.recipientName}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 block">Đơn vị/Tổ/Nhóm:</span>
-                  <span className="font-semibold text-slate-900">
+                  <span className="font-semibold text-slate-900" data-user-content="true">
                     {viewingReceipt.recipientDepartment}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-400 block">Số PYC/PĐX:</span>
-                  <span className="font-mono font-semibold text-blue-700">
+                  <span className="font-mono font-semibold text-blue-700" data-user-content="true">
                     {viewingReceipt.requestNo || '-'}
                   </span>
                 </div>
                 <div className="col-span-2 md:col-span-3">
                   <span className="text-slate-400 block">Lý do xuất kho:</span>
-                  <span className="font-medium text-slate-800">
+                  <span className="font-medium text-slate-800" data-user-content="true">
                     {viewingReceipt.notes || '-'}
                   </span>
                 </div>
@@ -3143,13 +3170,13 @@ export const OutboundManager: React.FC = () => {
                               <td className="p-2.5 text-center font-mono text-slate-400">
                                 {(globalIdx + 1).toLocaleString('vi-VN')}
                               </td>
-                              <td className="p-2.5 font-mono font-semibold text-blue-700">
+                              <td className="p-2.5 font-mono font-semibold text-blue-700" data-user-content="true">
                                 {it.materialCode}
                               </td>
-                              <td className="p-2.5 font-medium text-slate-900">
+                              <td className="p-2.5 font-medium text-slate-900" data-user-content="true">
                                 {it.materialName}
                               </td>
-                              <td className="p-2.5 text-center font-mono text-slate-800">
+                              <td className="p-2.5 text-center font-mono text-slate-800" data-user-content="true">
                                 {batchText}
                               </td>
                               <td className="p-2.5 text-right font-bold font-mono text-slate-900 tabular-nums">
@@ -3157,14 +3184,14 @@ export const OutboundManager: React.FC = () => {
                                   ? roundQty(it.quantity).toLocaleString('vi-VN')
                                   : '-'}
                               </td>
-                              <td className="p-2.5 text-center">{it.unit}</td>
+                              <td className="p-2.5 text-center" data-user-content="true">{it.unit}</td>
                               <td className="p-2.5 text-right font-bold font-mono text-rose-700 tabular-nums">
                                 {Number(it.weightKg || 0).toLocaleString('en-US', {
                                   minimumFractionDigits: 2,
                                   maximumFractionDigits: 2
                                 })}
                               </td>
-                              <td className="p-2.5 text-[11px] text-slate-600">
+                              <td className="p-2.5 text-[11px] text-slate-600" data-user-content="true">
                                 {it.note ?? it.purpose ?? ''}
                               </td>
                             </tr>

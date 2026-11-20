@@ -1886,7 +1886,7 @@ export const InboundManager: React.FC = () => {
           >
             <option value="all">Tất cả kho bãi ({authorizedWarehouses.length})</option>
             {authorizedWarehouses.map((w) => (
-              <option key={w.id} value={w.id}>
+              <option key={w.id} value={w.id} data-user-content="true">
                 {w.name}
               </option>
             ))}
@@ -2136,7 +2136,7 @@ export const InboundManager: React.FC = () => {
                       )}
                       <td className="px-5 py-4">
                         <div>
-                          <span className="font-mono font-bold text-xs text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 inline-block mb-1">
+                          <span className="font-mono font-bold text-xs text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 inline-block mb-1" data-user-content="true">
                             {r.receiptCode}
                           </span>
                           <div className="text-xs text-slate-500 flex items-center gap-1">
@@ -2148,25 +2148,37 @@ export const InboundManager: React.FC = () => {
 
                       <td className="px-5 py-4">
                         <div className="text-xs font-bold text-slate-900 line-clamp-1">
-                          {delivererDisplay || 'Đang cập nhật'}
+                          {delivererDisplay ? (
+                            <span data-user-content="true">{delivererDisplay}</span>
+                          ) : (
+                            <span>Đang cập nhật</span>
+                          )}
                         </div>
                         {r.contractNo ? (
-                          <div className="text-[11px] text-slate-600 font-mono">HĐ: {r.contractNo}</div>
+                          <div className="text-[11px] text-slate-600 font-mono">
+                            <span>HĐ:</span> <span data-user-content="true">{r.contractNo}</span>
+                          </div>
                         ) : (
-                          <div className="text-[11px] text-slate-500 font-mono">PL: {r.packingListNo}</div>
+                          <div className="text-[11px] text-slate-500 font-mono">
+                            PL: <span data-user-content="true">{r.packingListNo}</span>
+                          </div>
                         )}
                         {r.requestNo && (
-                          <div className="text-[11px] text-indigo-700 font-mono">ĐX: {r.requestNo}</div>
+                          <div className="text-[11px] text-indigo-700 font-mono">
+                            <span>ĐX:</span> <span data-user-content="true">{r.requestNo}</span>
+                          </div>
                         )}
                       </td>
 
                       <td className="px-5 py-4">
                         {r.departmentName && r.departmentName !== 'DỰ ÁN LTIA-4.9' ? (
-                          <div className="text-xs font-semibold text-slate-800">{r.departmentName}</div>
+                          <div className="text-xs font-semibold text-slate-800" data-user-content="true">{r.departmentName}</div>
                         ) : (
                           <div className="text-xs font-medium text-slate-500">Bộ phận: —</div>
                         )}
-                        <div className="text-[11px] text-slate-500">Kho: {r.warehouseName}</div>
+                        <div className="text-[11px] text-slate-500">
+                          <span>Kho:</span> <span data-user-content="true">{r.warehouseName}</span>
+                        </div>
                         {(() => {
                           const locSummary = summarizeReceiptStorageLocations(r.items);
                           return locSummary ? (
@@ -2174,7 +2186,7 @@ export const InboundManager: React.FC = () => {
                               className="text-[11px] text-emerald-700 font-medium mt-0.5 line-clamp-1"
                               title={`Vị trí lưu kho/bãi: ${locSummary}`}
                             >
-                              Vị trí: {locSummary}
+                              <span>Vị trí:</span> <span data-user-content="true">{locSummary}</span>
                             </div>
                           ) : null;
                         })()}
@@ -2182,9 +2194,13 @@ export const InboundManager: React.FC = () => {
 
                       <td className="px-5 py-4">
                         <div className="text-xs text-slate-700 line-clamp-2">
-                          {r.notes && !r.notes.startsWith('Import thành công ')
-                            ? r.notes
-                            : `Shipment: ${r.shipment}`}
+                          {r.notes && !r.notes.startsWith('Import thành công ') ? (
+                            <span data-user-content="true">{r.notes}</span>
+                          ) : (
+                            <>
+                              <span>Shipment:</span> <span data-user-content="true">{r.shipment}</span>
+                            </>
+                          )}
                         </div>
                         <div className="text-[11px] text-indigo-700 font-medium mt-0.5">
                           ({r.items.length.toLocaleString('vi-VN')} mục hàng)
@@ -2417,7 +2433,7 @@ export const InboundManager: React.FC = () => {
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg outline-none focus:border-blue-500"
                     >
                       {authorizedWarehouses.map((w) => (
-                        <option key={w.id} value={w.id}>
+                        <option key={w.id} value={w.id} data-user-content="true">
                           {w.name}
                         </option>
                       ))}
@@ -2706,22 +2722,35 @@ export const InboundManager: React.FC = () => {
                             >
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
-                                  <span className="font-mono font-bold text-blue-700 shrink-0">
+                                  <span className="font-mono font-bold text-blue-700 shrink-0" data-user-content="true">
                                     {mat.code}
                                   </span>
-                                  <span className="font-semibold text-slate-900 truncate">
+                                  <span className="font-semibold text-slate-900 truncate" data-user-content="true">
                                     {mat.name}
                                   </span>
                                 </div>
                                 <div className="text-[11px] text-slate-500 mt-0.5 truncate">
-                                  ĐVT: {mat.unit || 'Ống'}
-                                  {mat.category ? ` · ${mat.category}` : ''}
-                                  {mat.packageNo && mat.packageNo !== 'N/A'
-                                    ? ` · Kiện/Lô: ${mat.packageNo}`
-                                    : ''}
-                                  {Number(mat.unitWeightKg) > 0
-                                    ? ` · KL đơn vị: ${Number(mat.unitWeightKg).toLocaleString('en-US')} Kg`
-                                    : ''}
+                                  <span>ĐVT:</span> <span data-user-content="true">{mat.unit || 'Ống'}</span>
+                                  {mat.category && (
+                                    <>
+                                      {' · '}
+                                      <span data-user-content="true">{mat.category}</span>
+                                    </>
+                                  )}
+                                  {mat.packageNo && mat.packageNo !== 'N/A' && (
+                                    <>
+                                      {' · '}
+                                      <span>Kiện/Lô:</span>{' '}
+                                      <span data-user-content="true">{mat.packageNo}</span>
+                                    </>
+                                  )}
+                                  {Number(mat.unitWeightKg) > 0 && (
+                                    <>
+                                      {' · '}
+                                      <span>KL đơn vị:</span>{' '}
+                                      <span>{Number(mat.unitWeightKg).toLocaleString('en-US')} Kg</span>
+                                    </>
+                                  )}
                                 </div>
                               </div>
                               <span className="text-[11px] font-semibold text-blue-600 shrink-0 pt-0.5">
@@ -3064,7 +3093,7 @@ export const InboundManager: React.FC = () => {
               >
                 <option value="all">Tất cả hạng mục ({materials.length.toLocaleString('vi-VN')})</option>
                 {catalogCategories.map((cat) => (
-                  <option key={cat} value={cat}>
+                  <option key={cat} value={cat} data-user-content="true">
                     {cat}
                   </option>
                 ))}
@@ -3123,45 +3152,49 @@ export const InboundManager: React.FC = () => {
                                   : 'hover:bg-slate-50'
                               }`}
                             >
-                              <td className="p-2.5 font-mono font-bold text-blue-700">
+                              <td className="p-2.5 font-mono font-bold text-blue-700" data-user-content="true">
                                 {mat.code}
                               </td>
                               <td className="p-2.5">
-                                <span className="font-semibold text-slate-900 block">
+                                <span className="font-semibold text-slate-900 block" data-user-content="true">
                                   {mat.name}
                                 </span>
                                 {(mat.drawingNo && mat.drawingNo !== 'N/A') ||
                                 (mat.supplier && mat.supplier !== 'N/A') ? (
                                   <span className="text-[11px] text-slate-500">
-                                    {mat.drawingNo && mat.drawingNo !== 'N/A'
-                                      ? `Bản vẽ: ${mat.drawingNo}`
-                                      : ''}
+                                    {mat.drawingNo && mat.drawingNo !== 'N/A' && (
+                                      <>
+                                        <span>Bản vẽ:</span> <span data-user-content="true">{mat.drawingNo}</span>
+                                      </>
+                                    )}
                                     {mat.drawingNo &&
                                     mat.drawingNo !== 'N/A' &&
                                     mat.supplier &&
                                     mat.supplier !== 'N/A'
                                       ? ' · '
                                       : ''}
-                                    {mat.supplier && mat.supplier !== 'N/A'
-                                      ? `NCC: ${mat.supplier}`
-                                      : ''}
+                                    {mat.supplier && mat.supplier !== 'N/A' && (
+                                      <>
+                                        <span>NCC:</span> <span data-user-content="true">{mat.supplier}</span>
+                                      </>
+                                    )}
                                   </span>
                                 ) : null}
                               </td>
-                              <td className="p-2.5 text-center font-medium text-slate-700">
+                              <td className="p-2.5 text-center font-medium text-slate-700" data-user-content="true">
                                 {mat.unit || 'Ống'}
                               </td>
                               <td className="p-2.5 font-mono text-xs">
-                                <span className="font-semibold text-blue-700 block">
+                                <span className="font-semibold text-blue-700 block" data-user-content="true">
                                   {mat.packingListNo && mat.packingListNo !== 'N/A'
                                     ? mat.packingListNo
                                     : '-'}
                                 </span>
-                                <span className="text-[11px] text-slate-500 block">
+                                <span className="text-[11px] text-slate-500 block" data-user-content="true">
                                   {mat.shipment && mat.shipment !== 'N/A' ? mat.shipment : '-'}
                                 </span>
                               </td>
-                              <td className="p-2.5 font-mono text-slate-700">
+                              <td className="p-2.5 font-mono text-slate-700" data-user-content="true">
                                 {mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo : '-'}
                               </td>
                               <td className="p-2.5 text-right font-mono font-medium text-emerald-700 tabular-nums">
@@ -3309,9 +3342,10 @@ export const InboundManager: React.FC = () => {
                     Phiếu Nhập Kho: {viewingReceipt.receiptCode}
                   </h3>
                   <p className="text-xs text-slate-500 line-clamp-1">
-                    Ngày: {formatVoucherDateVi(viewingReceipt.receiptDate)} | Kho:{' '}
-                    {viewingReceipt.warehouseName} | {viewingReceipt.items.length.toLocaleString('vi-VN')}{' '}
-                    mục hàng | Tổng SL:{' '}
+                    <span>Ngày:</span> <span>{formatVoucherDateVi(viewingReceipt.receiptDate)}</span> |{' '}
+                    <span>Kho:</span> <span data-user-content="true">{viewingReceipt.warehouseName}</span> |{' '}
+                    <span>{viewingReceipt.items.length.toLocaleString('vi-VN')} mục hàng</span> |{' '}
+                    <span>Tổng SL:</span>{' '}
                     <strong className="text-blue-700 font-mono">
                       {viewingReceiptTotals.totalQuantity.toLocaleString('vi-VN')}
                     </strong>
@@ -3373,7 +3407,7 @@ export const InboundManager: React.FC = () => {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs bg-slate-50 p-3.5 sm:p-4 rounded-xl border border-slate-200">
                 <div>
                   <span className="text-slate-400 block">Bộ phận:</span>
-                  <span className="font-bold text-slate-900">
+                  <span className="font-bold text-slate-900" data-user-content="true">
                     {viewingReceipt.departmentName && viewingReceipt.departmentName !== 'DỰ ÁN LTIA-4.9'
                       ? viewingReceipt.departmentName
                       : '-'}
@@ -3381,31 +3415,31 @@ export const InboundManager: React.FC = () => {
                 </div>
                 <div>
                   <span className="text-slate-400 block">Đơn vị giao hàng:</span>
-                  <span className="font-bold text-slate-900">
+                  <span className="font-bold text-slate-900" data-user-content="true">
                     {viewingReceipt.delivererName || viewingReceipt.supplier}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-400 block">Hợp đồng:</span>
-                  <span className="font-semibold text-slate-900">
+                  <span className="font-semibold text-slate-900" data-user-content="true">
                     {viewingReceipt.contractNo || '-'}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-400 block">Đề xuất số:</span>
-                  <span className="font-semibold text-slate-900">
+                  <span className="font-semibold text-slate-900" data-user-content="true">
                     {viewingReceipt.requestNo || '-'}
                   </span>
                 </div>
                 <div className="col-span-2 md:col-span-2">
                   <span className="text-slate-400 block">Nội dung:</span>
-                  <span className="font-medium text-slate-800">
+                  <span className="font-medium text-slate-800" data-user-content="true">
                     {viewingReceipt.notes || '-'}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-400 block">Vị trí lưu kho/bãi:</span>
-                  <span className="font-semibold text-emerald-700">
+                  <span className="font-semibold text-emerald-700" data-user-content="true">
                     {summarizeReceiptStorageLocations(viewingReceipt.items) || '-'}
                   </span>
                 </div>
@@ -3471,16 +3505,16 @@ export const InboundManager: React.FC = () => {
                               <td className="p-2.5 text-center font-mono text-slate-400">
                                 {(globalIdx + 1).toLocaleString('vi-VN')}
                               </td>
-                              <td className="p-2.5 font-mono font-semibold text-blue-700">
+                              <td className="p-2.5 font-mono font-semibold text-blue-700" data-user-content="true">
                                 {it.materialCode}
                               </td>
-                              <td className="p-2.5 font-medium text-slate-900">
+                              <td className="p-2.5 font-medium text-slate-900" data-user-content="true">
                                 {it.materialName}
                               </td>
-                              <td className="p-2.5 text-center font-mono font-semibold text-indigo-700">
+                              <td className="p-2.5 text-center font-mono font-semibold text-indigo-700" data-user-content="true">
                                 {pkgText}
                               </td>
-                              <td className="p-2.5 text-center font-mono text-slate-800">
+                              <td className="p-2.5 text-center font-mono text-slate-800" data-user-content="true">
                                 {batchText || '-'}
                               </td>
                               <td className="p-2.5 text-right font-bold font-mono text-slate-900 tabular-nums">
@@ -3488,7 +3522,7 @@ export const InboundManager: React.FC = () => {
                                   ? roundQty(it.quantity).toLocaleString('vi-VN')
                                   : '-'}
                               </td>
-                              <td className="p-2.5 text-center">{it.unit}</td>
+                              <td className="p-2.5 text-center" data-user-content="true">{it.unit}</td>
                               <td className="p-2.5 text-right font-bold font-mono text-emerald-700 tabular-nums">
                                 {Number(it.weightKg || 0).toLocaleString('en-US', {
                                   minimumFractionDigits: 2,
@@ -3500,14 +3534,14 @@ export const InboundManager: React.FC = () => {
                               </td>
                               <td className="p-2.5 text-[11px] font-medium text-emerald-800">
                                 {it.storageLocation ? (
-                                  <span className="inline-block px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200">
+                                  <span className="inline-block px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200" data-user-content="true">
                                     {it.storageLocation}
                                   </span>
                                 ) : (
                                   <span className="text-slate-400">-</span>
                                 )}
                               </td>
-                              <td className="p-2.5 text-[11px] text-slate-600">
+                              <td className="p-2.5 text-[11px] text-slate-600" data-user-content="true">
                                 {it.note ?? it.conditionNote ?? ''}
                               </td>
                             </tr>

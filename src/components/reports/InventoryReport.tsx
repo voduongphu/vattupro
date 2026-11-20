@@ -323,7 +323,7 @@ export const InventoryReport: React.FC = () => {
             >
               <option value="all">Tất cả kho ({authorizedWarehouses.length})</option>
               {authorizedWarehouses.map(w => (
-                <option key={w.id} value={w.id}>{w.name}</option>
+                <option key={w.id} value={w.id} data-user-content="true">{w.name}</option>
               ))}
             </select>
           </div>
@@ -597,30 +597,31 @@ export const InventoryReport: React.FC = () => {
                 pagedRecords.map((r, idx) => (
                   <tr key={r.id} className="hover:bg-slate-50/80 transition">
                     <td className="p-3 text-center text-slate-400">{(pageStartIdx + idx + 1).toLocaleString('vi-VN')}</td>
-                    <td className="p-3 font-mono font-bold text-blue-700">{r.packingListNo}</td>
-                    <td className="p-3 font-mono text-slate-700">{r.shipment}</td>
+                    <td className="p-3 font-mono font-bold text-blue-700" data-user-content="true">{r.packingListNo}</td>
+                    <td className="p-3 font-mono text-slate-700" data-user-content="true">{r.shipment}</td>
                     <td className="p-3">
-                      <span className="font-bold text-slate-900 block">{r.packageNo}</span>
+                      <span className="font-bold text-slate-900 block" data-user-content="true">{r.packageNo}</span>
                       {r.packageName &&
                         r.packageName.trim().toUpperCase() !== r.packageNo.trim().toUpperCase() && (
-                          <span className="text-[11px] text-slate-500 line-clamp-1">{r.packageName}</span>
+                          <span className="text-[11px] text-slate-500 line-clamp-1" data-user-content="true">{r.packageName}</span>
                         )}
                     </td>
                     <td className="p-3 font-mono font-semibold text-slate-800">
                       {r.materialCode && r.materialCode !== 'N/A' ? (
-                        <span>{r.materialCode}</span>
+                        <span data-user-content="true">{r.materialCode}</span>
                       ) : (
                         <span className="text-slate-400 font-normal">N/A</span>
                       )}
                     </td>
                     <td className="p-3">
-                      <span className="font-semibold text-slate-900 block text-xs">{r.materialName}</span>
+                      <span className="font-semibold text-slate-900 block text-xs" data-user-content="true">{r.materialName}</span>
                     </td>
                     <td className="p-3">
                       {r.storageLocation ? (
                         <span
                           className="inline-block px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-medium"
                           title={r.storageLocation}
+                          data-user-content="true"
                         >
                           {r.storageLocation}
                         </span>
@@ -628,7 +629,7 @@ export const InventoryReport: React.FC = () => {
                         <span className="text-slate-400">-</span>
                       )}
                     </td>
-                    <td className="p-3 text-center font-medium text-slate-600">{r.unit}</td>
+                    <td className="p-3 text-center font-medium text-slate-600" data-user-content="true">{r.unit}</td>
                     
                     {/* Nhập chuẩn */}
                     <td className="p-3 text-right bg-blue-50/30 font-mono">

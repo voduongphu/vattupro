@@ -1087,7 +1087,7 @@ export const OsdManager: React.FC = () => {
             >
               <option value="all">Tất cả kho ({authorizedWarehouses.length})</option>
               {authorizedWarehouses.map((w) => (
-                <option key={w.id} value={w.id}>
+                <option key={w.id} value={w.id} data-user-content="true">
                   {w.name}
                 </option>
               ))}
@@ -1144,7 +1144,7 @@ export const OsdManager: React.FC = () => {
                       </td>
 
                       {/* Mã biên bản OSD */}
-                      <td className="p-3 font-mono font-bold text-blue-700">
+                      <td className="p-3 font-mono font-bold text-blue-700" data-user-content="true">
                         {osd.osdCode}
                       </td>
 
@@ -1155,23 +1155,23 @@ export const OsdManager: React.FC = () => {
 
                       {/* Phiếu nhập nguồn */}
                       <td className="p-3">
-                        <span className="font-mono font-semibold text-slate-900 block">
+                        <span className="font-mono font-semibold text-slate-900 block" data-user-content="true">
                           {osd.inboundReceiptCode}
                         </span>
                         {osd.packingListNo && (
                           <span className="text-[10px] text-slate-500 font-mono block">
-                            PL: {osd.packingListNo}
+                            PL: <span data-user-content="true">{osd.packingListNo}</span>
                           </span>
                         )}
                       </td>
 
                       {/* Kho bãi */}
-                      <td className="p-3 font-medium text-slate-700">
+                      <td className="p-3 font-medium text-slate-700" data-user-content="true">
                         {osd.warehouseName}
                       </td>
 
                       {/* Đơn vị giao / NCC */}
-                      <td className="p-3 text-slate-700 line-clamp-1">
+                      <td className="p-3 text-slate-700 line-clamp-1" data-user-content="true">
                         {osd.supplier || 'N/A'}
                       </td>
 
@@ -1201,7 +1201,7 @@ export const OsdManager: React.FC = () => {
                         <span className="font-semibold text-slate-900 block">
                           {osd.items.length} mục vật tư (SL: {osd.totalOsdQuantity})
                         </span>
-                        <span className="text-[10px] text-slate-500 line-clamp-1">
+                        <span className="text-[10px] text-slate-500 line-clamp-1" data-user-content="true">
                           {osd.items.map((it) => it.materialCode).filter(Boolean).join(', ')}
                         </span>
                       </td>
@@ -1410,8 +1410,8 @@ export const OsdManager: React.FC = () => {
                     >
                       <option value="">-- Bấm để chọn Phiếu Nhập Kho ({authorizedInbounds.length} phiếu) --</option>
                       {authorizedInbounds.map((inb) => (
-                        <option key={inb.id} value={inb.id}>
-                          {inb.receiptCode} - {inb.receiptDate} | {inb.warehouseName} | {inb.supplier || inb.delivererName} ({inb.items.length} vật tư)
+                        <option key={inb.id} value={inb.id} data-user-content="true">
+                          {inb.receiptCode} - {inb.receiptDate} | {inb.warehouseName} | {inb.supplier || inb.delivererName} ({inb.items.length})
                         </option>
                       ))}
                     </select>
@@ -1506,7 +1506,12 @@ export const OsdManager: React.FC = () => {
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
                           <span className="font-bold text-xs text-slate-800">
-                            #{idx + 1}. {item.materialName || item.materialCode || 'Vật tư mới'}
+                            #{idx + 1}.{' '}
+                            {item.materialName || item.materialCode ? (
+                              <span data-user-content="true">{item.materialName || item.materialCode}</span>
+                            ) : (
+                              <span>Vật tư mới</span>
+                            )}
                           </span>
 
                           <div className="flex items-center gap-2">
@@ -1676,7 +1681,7 @@ export const OsdManager: React.FC = () => {
                           <FileText className="w-5 h-5" />
                         </div>
                         <div className="min-w-0">
-                          <span className="font-bold text-xs text-slate-800 block truncate">
+                          <span className="font-bold text-xs text-slate-800 block truncate" data-user-content="true">
                             {formPdf.fileName}
                           </span>
                           <span className="text-[10px] text-slate-400">
@@ -1869,14 +1874,19 @@ export const OsdManager: React.FC = () => {
                   OVERAGE - SHORTAGE - DAMAGE (OSD) REPORT
                 </p>
                 <div className="flex justify-center items-center gap-4 text-xs font-mono text-slate-500 pt-1">
-                  <span>Số biên bản: <b>{viewingOsd.osdCode}</b></span>
-                  <span>•</span>
-                  <span>Ngày lập: <b>{viewingOsd.osdDate}</b></span>
+                  <span>
+                    <span>Số biên bản:</span>{' '}
+                    <b data-user-content="true">{viewingOsd.osdCode}</b>
+                  </span>
                   <span>•</span>
                   <span>
-                    Trạng thái: 
-                    <b className={viewingOsd.status === 'open' ? ' text-amber-700' : ' text-emerald-700'}>
-                      {viewingOsd.status === 'open' ? ' MỞ (Chưa xử lý)' : ' ĐÓNG (Đã xử lý)'}
+                    <span>Ngày lập:</span> <b>{viewingOsd.osdDate}</b>
+                  </span>
+                  <span>•</span>
+                  <span>
+                    <span>Trạng thái:</span>{' '}
+                    <b className={viewingOsd.status === 'open' ? 'text-amber-700' : 'text-emerald-700'}>
+                      {viewingOsd.status === 'open' ? 'MỞ (Chưa xử lý)' : 'ĐÓNG (Đã xử lý)'}
                     </b>
                   </span>
                 </div>
@@ -1886,19 +1896,19 @@ export const OsdManager: React.FC = () => {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-slate-50 p-4 rounded-xl border border-slate-200">
                 <div>
                   <span className="text-slate-400 uppercase text-[10px] block">Phiếu nhập kho liên kết</span>
-                  <span className="font-bold text-slate-800 font-mono">{viewingOsd.inboundReceiptCode}</span>
+                  <span className="font-bold text-slate-800 font-mono" data-user-content="true">{viewingOsd.inboundReceiptCode}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 uppercase text-[10px] block">Kho tiếp nhận</span>
-                  <span className="font-semibold text-slate-800">{viewingOsd.warehouseName}</span>
+                  <span className="font-semibold text-slate-800" data-user-content="true">{viewingOsd.warehouseName}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 uppercase text-[10px] block">Đơn vị giao hàng / NCC</span>
-                  <span className="font-semibold text-slate-800">{viewingOsd.supplier || 'N/A'}</span>
+                  <span className="font-semibold text-slate-800" data-user-content="true">{viewingOsd.supplier || 'N/A'}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 uppercase text-[10px] block">Số Packing List / Shipment</span>
-                  <span className="font-mono text-slate-800">
+                  <span className="font-mono text-slate-800" data-user-content="true">
                     {viewingOsd.packingListNo || 'N/A'} / {viewingOsd.shipment || 'N/A'}
                   </span>
                 </div>
@@ -1928,10 +1938,10 @@ export const OsdManager: React.FC = () => {
                       {viewingOsd.items.map((it, i) => (
                         <tr key={it.id}>
                           <td className="p-2.5 text-center text-slate-400 font-mono">{i + 1}</td>
-                          <td className="p-2.5 font-mono font-bold text-blue-700">{it.materialCode}</td>
-                          <td className="p-2.5 font-medium">{it.materialName}</td>
-                          <td className="p-2.5 text-center text-slate-600">{it.unit}</td>
-                          <td className="p-2.5 font-mono">{it.packageNo}</td>
+                          <td className="p-2.5 font-mono font-bold text-blue-700" data-user-content="true">{it.materialCode}</td>
+                          <td className="p-2.5 font-medium" data-user-content="true">{it.materialName}</td>
+                          <td className="p-2.5 text-center text-slate-600" data-user-content="true">{it.unit}</td>
+                          <td className="p-2.5 font-mono" data-user-content="true">{it.packageNo}</td>
                           <td className="p-2.5 text-right font-mono">{it.inboundQuantity}</td>
                           <td className="p-2.5 text-center">
                             <span
@@ -1954,9 +1964,11 @@ export const OsdManager: React.FC = () => {
                             {it.osdQuantity}
                           </td>
                           <td className="p-2.5 text-[11px]">
-                            <div className="font-semibold text-slate-800">{it.defectDescription}</div>
+                            <div className="font-semibold text-slate-800" data-user-content="true">{it.defectDescription}</div>
                             {it.proposedAction && (
-                              <div className="text-slate-500 italic mt-0.5">KN: {it.proposedAction}</div>
+                              <div className="text-slate-500 italic mt-0.5">
+                                <span>KN:</span> <span data-user-content="true">{it.proposedAction}</span>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -1973,7 +1985,7 @@ export const OsdManager: React.FC = () => {
                     <div className="flex items-center gap-2 min-w-0">
                       <Paperclip className="w-4 h-4 text-rose-600 shrink-0" />
                       <div className="min-w-0">
-                        <span className="font-bold text-rose-900 block truncate">
+                        <span className="font-bold text-rose-900 block truncate" data-user-content="true">
                           {viewingOsd.pdfAttachment.fileName}
                         </span>
                         <span className="text-[10px] text-rose-700">
@@ -2000,10 +2012,12 @@ export const OsdManager: React.FC = () => {
                     <span className="font-bold text-slate-700 block uppercase text-[10px]">
                       Ghi chú kết quả xử lý:
                     </span>
-                    <p className="text-slate-700 mt-1 italic">{viewingOsd.resolutionNotes}</p>
+                    <p className="text-slate-700 mt-1 italic" data-user-content="true">{viewingOsd.resolutionNotes}</p>
                     {viewingOsd.resolvedBy && (
                       <span className="text-[10px] text-slate-400 block mt-1">
-                        Xác nhận bởi: {viewingOsd.resolvedBy} {viewingOsd.resolvedAt && `(${viewingOsd.resolvedAt.slice(0, 10)})`}
+                        <span>Xác nhận bởi:</span>{' '}
+                        <span data-user-content="true">{viewingOsd.resolvedBy}</span>{' '}
+                        {viewingOsd.resolvedAt && `(${viewingOsd.resolvedAt.slice(0, 10)})`}
                       </span>
                     )}
                   </div>
@@ -2022,7 +2036,7 @@ export const OsdManager: React.FC = () => {
                 </div>
                 <div className="space-y-12">
                   <span className="font-bold text-slate-700 uppercase block">NGƯỜI LẬP BIÊN BẢN</span>
-                  <span className="text-slate-800 font-semibold text-[11px] block mt-12">{viewingOsd.createdBy}</span>
+                  <span className="text-slate-800 font-semibold text-[11px] block mt-12" data-user-content="true">{viewingOsd.createdBy}</span>
                 </div>
               </div>
             </div>
@@ -2045,7 +2059,7 @@ export const OsdManager: React.FC = () => {
             <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50 gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <FileText className="w-5 h-5 text-rose-600 shrink-0" />
-                <span className="font-bold text-sm text-slate-900 truncate">
+                <span className="font-bold text-sm text-slate-900 truncate" data-user-content="true">
                   {pdfPreviewModal.fileName}
                 </span>
                 <span className="text-xs text-slate-400 shrink-0">
@@ -2117,9 +2131,9 @@ export const OsdManager: React.FC = () => {
             </div>
 
             <p className="text-xs text-slate-600">
-              Bạn có chắc chắn muốn xóa biên bản OSD số{' '}
-              <b className="font-mono text-slate-900">{osdToDelete.osdCode}</b> (gồm{' '}
-              {osdToDelete.items.length} mục vật tư ảnh hưởng)?
+              <span>Bạn có chắc chắn muốn xóa biên bản OSD số</span>{' '}
+              <b className="font-mono text-slate-900" data-user-content="true">{osdToDelete.osdCode}</b>{' '}
+              <span>(gồm {osdToDelete.items.length} mục vật tư ảnh hưởng)?</span>
             </p>
 
             <div className="flex items-center justify-end gap-2 pt-2">

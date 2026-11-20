@@ -1,16 +1,23 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { Globe, Languages } from 'lucide-react';
-import { COMPREHENSIVE_UI_PHRASES_EN } from './translationsDict';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { Languages } from 'lucide-react';
+import {
+  COMPREHENSIVE_UI_PHRASES_EN,
+  SYSTEM_UI_PATTERN_RULES_EN
+} from './translationsDict';
 
 export type AppLanguage = 'vi' | 'en';
 
 const TRANSLATIONS = {
   vi: {
-    // Top Bar & Brand
+    // Document & Top Bar & Brand
+    documentTitle: 'Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư Thiết Bị',
     appTitle: 'LOGISTICS & INVENTORY',
     appSubtitle: 'Quản Lý Nhập - Xuất - Tồn Vật Tư Thiết Bị Dự Án',
     cloudSync: 'Đồng Bộ Cloud',
     syncing: 'Đang đồng bộ...',
+    cloudPausedSparkShort: 'Cloud tạm dừng (Spark)',
+    cloudPausedSparkPrefix: 'Cloud Firestore tạm dừng (Gói Spark):',
+    cloudErrorPrefix: 'Lỗi Cloud Firestore:',
     cloudQuotaExceeded: 'Hết hạn mức Cloud Firestore trong ngày',
     cloudQuotaExceededShort: 'Hết hạn mức Cloud',
     cloudSyncedTooltip: 'Đã kết nối Google Cloud — Bấm để đồng bộ phần dữ liệu thay đổi với Cloud Firestore',
@@ -23,6 +30,11 @@ const TRANSLATIONS = {
     googleUserBadge: 'Tài khoản Google đồng bộ',
     sessionAlertTitle: 'Cảnh báo phiên đăng nhập:',
     understand: 'Đã hiểu',
+    closeNotification: 'Đóng thông báo',
+    openNavMenu: 'Mở danh mục điều hướng',
+    closeNavMenu: 'Đóng danh mục',
+    navMenuTitle: 'Danh mục điều hướng',
+    logoutDeviceSession: 'Đăng Xuất Phiên Thiết Bị',
     languageToggleTooltip: 'Chuyển sang Tiếng Anh (Switch to English)',
     languageCurrent: 'Tiếng Việt',
 
@@ -36,6 +48,12 @@ const TRANSLATIONS = {
     navWarehouses: 'Quản Lý Kho Bãi',
     navMaterials: 'Danh Mục Vật Tư',
     navUsers: 'Người Sử Dụng',
+    sidebarBadgeNew: 'Mới',
+    sidebarRoleAdminTitle: 'Quyền Quản Trị Viên',
+    sidebarRoleStaffTitle: 'Chế độ Nhân Viên',
+    sidebarRoleAdminDesc: 'Toàn quyền thêm/sửa/xóa kho bãi, vật tư, người dùng & duyệt phiếu',
+    sidebarRoleStaffDesc: 'Quyền thực hiện nhập/xuất kho và tra cứu báo cáo tồn kho',
+    sidebarSystemFallback: 'Hệ thống kho vận',
 
     // Mobile Quick Tabs
     quickTabDashboard: 'Tổng quan',
@@ -47,9 +65,18 @@ const TRANSLATIONS = {
     quickTabMaterials: 'Vật tư',
     quickTabUsers: 'Người dùng',
 
-    // Login Screen
+    // Login Screen & Login Modal
+    loginModalTitle: 'Hệ Thống Quản Lý Vật Tư',
+    loginModalSubtitle: 'Đăng nhập đồng bộ bằng tài khoản Google',
     loginWithGoogle: 'Đăng nhập bằng tài khoản Google',
     openingGoogleAuth: 'Đang mở xác thực Google...',
+    authenticatingLabel: 'Đang xác thực...',
+    switchingSession: 'Đang chuyển phiên...',
+    googleLoginSuccessRedirect: 'Đăng nhập Google thành công! Đang chuyển vào hệ thống...',
+    loginSuccessShort: 'Đăng nhập thành công!',
+    redirectingToGoogle: 'Đang chuyển hướng sang trang đăng nhập Google...',
+    currentGoogleAccount: 'Tài khoản hiện tại',
+    continueWithAccount: 'Tiếp tục với',
     googleAuthHeaderBadge: 'Xác thực đồng bộ bằng Google Cloud',
     googleAuthTitle: 'Đăng Nhập Bằng Google',
     googleAuthDesc: 'Đăng nhập trực tiếp bằng tài khoản Google (Gmail) để vào hệ thống và tự động đồng bộ dữ liệu thời gian thực giữa Máy tính và Điện thoại.',
@@ -67,20 +94,49 @@ const TRANSLATIONS = {
     heroFeatureSecurityDesc: 'Tự động ngắt phiên cũ khi chuyển sang máy mới',
     heroFooterSystem: 'Hệ thống Quản lý Kho vận Công trình',
     sessionTerminatedTitle: 'Đã tự động thoát phiên trên thiết bị này',
+    sessionSecurityAlertTitle: 'Cảnh Báo Bảo Mật Phiên Thiết Bị',
     conflictTitle: 'Tài khoản Google đang hoạt động trên thiết bị khác',
+    activeOnOtherDevicePrefix: 'Đang đăng nhập trên',
+    otherDeviceLabel: 'Thiết bị khác',
     conflictDeviceLabel: 'Thiết bị đang mở:',
     conflictLoginAt: 'Đăng nhập lúc:',
     forceLogoutAndContinue: 'Đăng xuất thiết bị kia & Vào hệ thống',
     requestLogoutOnly: 'Chỉ gửi yêu cầu đăng xuất thiết bị kia',
+    logoutOtherDeviceOnlyShort: 'Chỉ đăng xuất thiết bị kia',
     switchGoogleAccountBtn: 'Chọn tài khoản Google khác',
-    retryGoogleLogin: 'Thử lại đăng nhập Google'
+    retryGoogleLogin: 'Thử lại đăng nhập Google',
+    accountLabel: 'Tài khoản:',
+    requestingDeviceLabel: 'Thiết bị yêu cầu:',
+    newDeviceLabel: 'Thiết bị mới:',
+    timeLabel: 'Thời điểm:',
+    sessionReplacedSecurityHint:
+      'Nếu không phải bạn vừa đăng nhập trên thiết bị mới, vui lòng đăng nhập lại bằng tài khoản Google và kiểm tra bảo mật tài khoản của bạn.',
+    acknowledgeReturnGoogle: 'Đã hiểu & Quay lại đăng nhập Google',
+    cloudNoticeTitle: 'Thông báo kết nối Cloud Firestore',
+    cloudNoticeDefaultDesc:
+      'Kết nối Cloud Firestore đang tạm gián đoạn. Vui lòng thử đăng nhập lại hoặc kiểm tra kết nối mạng.',
+
+    // ESC Confirm Modal
+    escConfirmTitle: 'Xác nhận thoát hộp thoại',
+    escConfirmSubtitle: 'Phím ESC vừa được nhấn',
+    escConfirmCancelTitle: 'Hủy và quay lại hộp thoại (ESC)',
+    escConfirmWarning:
+      'Mọi thông tin đang nhập dở chưa lưu trong hộp thoại này sẽ bị hủy nếu bạn thoát ra.',
+    escConfirmStay: 'Ở lại tiếp tục',
+    escConfirmLeave: 'Xác nhận thoát',
+    closeModalTitle: 'Đóng hộp thoại (ESC)',
+    closeModalAria: 'Đóng hộp thoại'
   },
   en: {
-    // Top Bar & Brand
+    // Document & Top Bar & Brand
+    documentTitle: 'Equipment & Material Logistics Inventory System',
     appTitle: 'LOGISTICS & INVENTORY',
     appSubtitle: 'Project Equipment & Material Logistics Management',
     cloudSync: 'Cloud Sync',
     syncing: 'Syncing...',
+    cloudPausedSparkShort: 'Cloud Paused (Spark)',
+    cloudPausedSparkPrefix: 'Cloud Firestore Paused (Spark Plan):',
+    cloudErrorPrefix: 'Cloud Firestore Error:',
     cloudQuotaExceeded: 'Daily Cloud Firestore quota exceeded',
     cloudQuotaExceededShort: 'Quota Exceeded',
     cloudSyncedTooltip: 'Connected to Google Cloud — Click to sync changed data only with Cloud Firestore',
@@ -93,7 +149,12 @@ const TRANSLATIONS = {
     googleUserBadge: 'Synced Google Account',
     sessionAlertTitle: 'Session Alert:',
     understand: 'Understood',
-    languageToggleTooltip: 'Switch to Vietnamese (Chuyển sang Tiếng Việt)',
+    closeNotification: 'Dismiss notification',
+    openNavMenu: 'Open navigation menu',
+    closeNavMenu: 'Close menu',
+    navMenuTitle: 'Navigation Menu',
+    logoutDeviceSession: 'Sign Out This Device Session',
+    languageToggleTooltip: 'Switch to Vietnamese',
     languageCurrent: 'English',
 
     // Navigation / Sidebar
@@ -106,6 +167,12 @@ const TRANSLATIONS = {
     navWarehouses: 'Warehouse Setup',
     navMaterials: 'Materials Catalog',
     navUsers: 'User Accounts',
+    sidebarBadgeNew: 'New',
+    sidebarRoleAdminTitle: 'Administrator Access',
+    sidebarRoleStaffTitle: 'Staff Mode',
+    sidebarRoleAdminDesc: 'Full access to add/edit/delete warehouses, materials, users & approve vouchers',
+    sidebarRoleStaffDesc: 'Authorized to perform inbound/outbound operations and view inventory reports',
+    sidebarSystemFallback: 'Logistics System',
 
     // Mobile Quick Tabs
     quickTabDashboard: 'Dashboard',
@@ -117,9 +184,18 @@ const TRANSLATIONS = {
     quickTabMaterials: 'Materials',
     quickTabUsers: 'Users',
 
-    // Login Screen
+    // Login Screen & Login Modal
+    loginModalTitle: 'Material Management System',
+    loginModalSubtitle: 'Sign in with Google Account for Cloud Sync',
     loginWithGoogle: 'Sign in with Google Account',
     openingGoogleAuth: 'Opening Google authentication...',
+    authenticatingLabel: 'Authenticating...',
+    switchingSession: 'Switching session...',
+    googleLoginSuccessRedirect: 'Google sign-in successful! Entering the system...',
+    loginSuccessShort: 'Signed in successfully!',
+    redirectingToGoogle: 'Redirecting to Google sign-in...',
+    currentGoogleAccount: 'Current Google account',
+    continueWithAccount: 'Continue with',
     googleAuthHeaderBadge: 'Authenticated via Google Cloud',
     googleAuthTitle: 'Sign In With Google',
     googleAuthDesc: 'Sign in directly with your Google account (Gmail) to access the system and sync real-time inventory between PC and Mobile.',
@@ -137,19 +213,45 @@ const TRANSLATIONS = {
     heroFeatureSecurityDesc: 'Automatically revokes prior session when switching devices',
     heroFooterSystem: 'Construction Project Logistics System',
     sessionTerminatedTitle: 'Session ended on this device',
+    sessionSecurityAlertTitle: 'Device Session Security Alert',
     conflictTitle: 'Google account is currently active on another device',
+    activeOnOtherDevicePrefix: 'Currently signed in on',
+    otherDeviceLabel: 'Another device',
     conflictDeviceLabel: 'Active device:',
     conflictLoginAt: 'Logged in at:',
     forceLogoutAndContinue: 'Log Out Other Device & Proceed',
     requestLogoutOnly: 'Request Logout on Other Device Only',
+    logoutOtherDeviceOnlyShort: 'Log out other device only',
     switchGoogleAccountBtn: 'Choose Another Google Account',
-    retryGoogleLogin: 'Retry Google Login'
+    retryGoogleLogin: 'Retry Google Login',
+    accountLabel: 'Account:',
+    requestingDeviceLabel: 'Requesting device:',
+    newDeviceLabel: 'New device:',
+    timeLabel: 'Timestamp:',
+    sessionReplacedSecurityHint:
+      'If this was not you signing in on a new device, please sign back in with your Google account and review your account security.',
+    acknowledgeReturnGoogle: 'Understood & Return to Google Sign-In',
+    cloudNoticeTitle: 'Cloud Firestore Connection Notice',
+    cloudNoticeDefaultDesc:
+      'Cloud Firestore connection is temporarily interrupted. Please try signing in again or check your internet connection.',
+
+    // ESC Confirm Modal
+    escConfirmTitle: 'Confirm Closing Dialog',
+    escConfirmSubtitle: 'ESC key was pressed',
+    escConfirmCancelTitle: 'Cancel and return to dialog (ESC)',
+    escConfirmWarning:
+      'Any unsaved information entered in this dialog will be discarded if you leave.',
+    escConfirmStay: 'Stay & Continue',
+    escConfirmLeave: 'Confirm Close',
+    closeModalTitle: 'Close dialog (ESC)',
+    closeModalAria: 'Close dialog'
   }
 };
 
 /**
- * Từ điển các cụm từ UI cố định xuất hiện trong các tab (Chỉ dịch các nhãn nút, tiêu đề bảng, filter...
- * Tuyệt đối không dịch nội dung dữ liệu do người dùng tự nhập)
+ * Core system UI phrases dictionary (VI -> EN).
+ * Strictly limited to system UI controls, headers, filters, modals, and system messages.
+ * User-entered data is NEVER translated.
  */
 const UI_PHRASES_EN: Record<string, string> = {
   // Common Actions & Controls
@@ -160,6 +262,8 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Tìm kiếm theo mã, tên vật tư...': 'Search by code, material name...',
   'Tìm kiếm kho bãi...': 'Search warehouses...',
   'Tìm kiếm người dùng...': 'Search users...',
+  'Tìm theo mã kho, tên kho, địa điểm, thủ kho...': 'Search by code, warehouse name, location, keeper...',
+  'Tìm theo Email Google, họ tên, phòng ban...': 'Search by Google Email, name, department...',
   'Thêm mới': 'Add New',
   'Thêm Mới': 'Add New',
   'Thêm vật tư': 'Add Material',
@@ -264,11 +368,13 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Hạng Mục': 'Category',
   'Hạng Mục Thi Công': 'Construction Work Item',
   'Số lô': 'Lot No.',
-  'Mã lô': 'Lot No.',
-  'Mã Lô': 'Lot No.',
-  'Kiện / Lô': 'Package / Lot',
+  'Mã lô': 'Batch No.',
+  'Mã Lô': 'Batch No.',
+  'Kiện / Lô': 'Package / Batch',
   'Số kiện': 'Package No.',
   'Số kiện / Package No.': 'Package No.',
+  'Số kiện (Package No.)': 'Package No.',
+  'Số Kiện (Package No.)': 'Package No.',
   'Package No.': 'Package No.',
   'Tên kiện': 'Package Name',
   'Tên kiện / Package Name': 'Package Name',
@@ -301,8 +407,8 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Kho lưu trữ': 'Storage Warehouse',
   'Kho Lưu Trữ': 'Storage Warehouse',
   'Bộ Phận & Kho Lưu Trữ': 'Department & Warehouse',
-  'Đơn Vị Giao Hàng & Hợp Đồng': 'Delivery Contractor & Contract',
-  'Đơn vị giao hàng': 'Delivery Contractor',
+  'Đơn Vị Giao Hàng & Hợp Đồng': 'Delivery Unit & Contract',
+  'Đơn vị giao hàng': 'Delivery Unit',
   'Người giao hàng': 'Deliverer',
   'Người nhận hàng': 'Receiver',
   'Người Nhận Hàng': 'Receiver',
@@ -377,25 +483,16 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Đã đền bù': 'Compensated',
   'Đã đổi trả': 'Replaced',
 
-  // Tab & Section Titles
-  'Tổng Quan & KPI': 'Dashboard & KPIs',
-  'Quản Lý Nhập Kho': 'Inbound Management',
-  'Quản Lý Xuất Kho': 'Outbound Management',
-  'Quản Lý Vật Tư OSD': 'OS&D Item Management',
-  'Báo Cáo Nhập-Xuất-Tồn': 'Inventory Reports',
+  // Section Titles & Empty States
   'Báo Cáo Nhập - Xuất - Tồn Đa Chiều': 'Multidimensional Inventory Report',
-  'Quản Lý Kho Bãi': 'Warehouse Management',
-  'Danh Mục Vật Tư': 'Materials Catalog',
-  'Danh Mục Vật Tư Thiết Bị': 'Equipment & Materials Catalog',
-  'Người Sử Dụng': 'User Management',
-  'Quản Trị Người Dùng & Phân Quyền': 'User & Permissions Management',
+  'Tra cứu đa điều kiện: Packing List, Shipment, Bản vẽ, Hạng mục, Kiện hàng, NSX, NCC, Khối lượng & Số lượng':
+    'Multi-criteria query: Packing List, Shipment, Drawing, Category, Package, Mfr, Supplier, Weight & Quantity',
   'Hư Hỏng, Thiếu Hụt, Thừa Hàng (OS&D)': 'Over, Short & Damaged (OS&D)',
   'Danh Sách Phiếu Nhập': 'Inbound Receipts List',
   'Lập Phiếu Nhập Mới': 'Create Inbound Receipt',
   'Danh Sách Phiếu Xuất': 'Outbound Issues List',
   'Lập Phiếu Xuất Mới': 'Create Outbound Issue',
   'Danh Sách Biên Bản OSD': 'OS&D Reports List',
-  'Lập Biên Bản OSD Mới': 'Create OS&D Report',
   'Chi Tiết Phiếu Nhập': 'Inbound Receipt Details',
   'Chi Tiết Phiếu Xuất': 'Outbound Issue Details',
   'Bộ Lọc Tra Cứu': 'Search Filters',
@@ -407,10 +504,6 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Danh Sách Hàng Hóa': 'Cargo & Items List',
   'Tổng Kết': 'Summary',
   'Tổng Quan Kho': 'Warehouse Overview',
-  'Phân Bổ Tồn Kho Theo Hạng Mục': 'Stock Distribution by Category',
-  'Phiếu Nhập Gần Đây': 'Recent Inbound Receipts',
-  'Phiếu Xuất Gần Đây': 'Recent Outbound Issues',
-  'Xem tất cả': 'View all',
   'Không có dữ liệu': 'No data available',
   'Không tìm thấy dữ liệu phù hợp': 'No matching records found',
   'Không có phiếu nhập nào': 'No inbound receipts found',
@@ -419,44 +512,22 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Không có kho nào': 'No warehouses found',
   'Không có biên bản nào': 'No OS&D reports found',
   'Chưa có dòng vật tư nào': 'No material lines added yet',
-  'Hiển thị': 'Showing',
-  'Tổng': 'Total',
-  'Dòng/trang:': 'Rows/page:',
-  'dòng': 'rows',
-  'mục': 'items',
-  'kho': 'warehouses',
-  'kho bãi': 'warehouses',
-  'phiếu': 'vouchers',
-  'trang': 'page',
   'Từ ngày': 'From Date',
   'Đến ngày': 'To Date',
   'Hôm nay': 'Today',
   'Tuần này': 'This Week',
   'Tháng này': 'This Month',
-
-  // Dashboard specifics
-  'Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư Dự Án': 'Project Equipment & Material Logistics Management System',
-  'Nhập Kho Mới / Import Excel': 'New Inbound / Import Excel',
-  'Lập Phiếu Xuất Kho': 'Create Outbound Issue',
-  'Xem Báo Cáo NXT Đa Chiều': 'View Multidimensional Inventory Report',
-  'Tổng Khối Lượng Tồn': 'Total Inventory Weight',
-  'Tổng Số Lượng Tồn': 'Total Inventory Quantity',
-  'Đơn vị / Kiện': 'Units / Packages',
-  'mã vật tư thiết bị': 'material items',
   'Shipment & Packing List': 'Shipment & Packing List',
   'Shipment quốc tế': 'International Shipments',
   'Mạng Lưới Kho Bãi': 'Warehouse Network',
   'kho đang hoạt động': 'active warehouses',
   'Sức chứa linh hoạt': 'Flexible storage capacity',
-  'Khu bãi & kho': 'Yards & Warehouses',
-  'Tấn': 'Tons',
 
-  // Warehouse details
+  // Warehouse / User / Voucher Details
   'Mã kho': 'Warehouse Code',
   'Mã Kho': 'Warehouse Code',
   'Tên kho bãi': 'Warehouse Name',
   'Tên Kho Bãi': 'Warehouse Name',
-  'Địa điểm / Vị trí': 'Location / Address',
   'Loại kho': 'Warehouse Type',
   'Kho Kín / Có Mái': 'Covered / Indoor Warehouse',
   'Kho Hở / Bãi Ngoài Trời': 'Open Yard / Outdoor Storage',
@@ -469,8 +540,6 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Thủ Kho / Người Phụ Trách': 'Warehouse Keeper / Person in Charge',
   'Số điện thoại': 'Phone Number',
   'Số Điện Thoại': 'Phone Number',
-
-  // User details
   'Họ và tên': 'Full Name',
   'Họ Và Tên': 'Full Name',
   'Tài khoản / Username': 'Username',
@@ -478,17 +547,9 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Vai trò / Phân quyền': 'Role / Permissions',
   'Quản trị viên (Admin)': 'Administrator (Admin)',
   'Thủ kho / Nhân viên': 'Warehouse Keeper / Staff',
-  'Phòng ban / Đơn vị': 'Department / Division',
-  'Ban Quản Lý Kho Bãi': 'Warehouse Management Division',
   'Trạng thái hoạt động': 'Account Status',
   'Kích hoạt tài khoản': 'Active Account',
   'Đổi mật khẩu': 'Change Password',
-  'Đổi Mật Khẩu Cá Nhân': 'Change Personal Password',
-  'Mật khẩu hiện tại': 'Current Password',
-  'Mật khẩu mới': 'New Password',
-  'Xác nhận mật khẩu mới': 'Confirm New Password',
-
-  // Inbound & Outbound Details
   'Số Phiếu Nhập': 'Inbound Receipt No.',
   'Số Phiếu Xuất': 'Outbound Issue No.',
   'Mã phiếu xuất': 'Outbound Issue No.',
@@ -509,8 +570,6 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Khối lượng nhập (Kg)': 'Receipt Weight (Kg)',
   'Số lượng nhập': 'Receipt Quantity',
   'Hàng Hóa Tồn Kho': 'Inventory Stock',
-
-  // OS&D Details
   'Mã Biên Bản': 'Report No.',
   'Mã biên bản': 'Report No.',
   'Loại bất thường': 'Discrepancy Type',
@@ -526,76 +585,34 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Đơn vị chịu trách nhiệm': 'Responsible Party',
   'Số lượng ảnh hưởng': 'Affected Quantity',
   'Khối lượng ảnh hưởng (Kg)': 'Affected Weight (Kg)',
-
-  // Uppercase table headers & report specifics
-  'NGÀY LẬP': 'VOUCHER DATE',
-  'PHÂN LOẠI': 'CLASSIFICATION',
-  'THAO TÁC': 'ACTIONS',
-  'KIỆN HÀNG': 'PACKAGE',
-  'MÃ BIÊN BẢN': 'REPORT NO.',
-  'MÃ VẬT TƯ': 'MATERIAL CODE',
-  'PACKING LIST': 'PACKING LIST',
-  'PHIẾU NHẬP NGUỒN': 'SOURCE INBOUND RECEIPT',
-  'BIÊN BẢN PDF': 'PDF REPORT',
-  'KHO TIẾP NHẬN': 'RECEIVING WAREHOUSE',
-  'ĐƠN VỊ GIAO / NCC': 'DELIVERY / SUPPLIER',
-  'TRẠNG THÁI XỬ LÝ (TICK THỦ CÔNG)': 'RESOLUTION STATUS (MANUAL)',
-  'VẬT TƯ BỊ ẢNH HƯỞNG': 'AFFECTED MATERIALS',
-  'VẬT TƯ THIẾT BỊ': 'MATERIALS & EQUIPMENT',
-  'TỔNG NHẬP': 'TOTAL INBOUND',
-  'NHẬP TRẢ KHO': 'RETURN TO STOCK',
-  'TỔNG XUẤT': 'TOTAL OUTBOUND',
-  'TÁI XUẤT': 'TRANSFER OUT',
-  'TỒN SL': 'STOCK QTY',
-  'TỒN KL (KG)': 'STOCK WEIGHT (KG)',
-  'TỒN KHO (SL)': 'STOCK ON HAND (QTY)',
-  'TỒN KHO (kg)': 'STOCK ON HAND (KG)',
-  'Bộ Lọc Điều Kiện Chuyên Sâu': 'Advanced Filter Parameters',
-  'Xuất Báo Cáo Ra Excel': 'Export Report to Excel',
-  'Báo Cáo Nhập - Xuất - Tồn Vật Tư Thiết Bị': 'Equipment & Material Inventory Report',
-  'Bảng Chi Tiết Nhập - Xuất - Tồn Sau Gộp': 'Consolidated Inventory Inbound-Outbound-Stock Details',
-  'Tra cứu đa điều kiện: Packing List, Shipment, Bản vẽ, Hạng mục, Kiện hàng, NSX, NCC, Khối lượng & Số lượng': 'Multi-criteria query: Packing List, Shipment, Drawing, Category, Package, Mfr, Supplier, Weight & Quantity',
-
-  // Additional tab specific controls & placeholders
-  'Loại hình:': 'Type:',
-  'Kho kín tiêu chuẩn': 'Standard Covered Warehouse',
-  'Bãi ngoài trời': 'Open Yard Storage',
-  'Kho chuyên dụng / điều hòa': 'Specialized / AC Storage',
-  'Bãi trung chuyển': 'Transit Yard',
-  'Hoạt động': 'Active',
-  'Đầy tải': 'Full Capacity',
-  'Bảo trì': 'Maintenance',
-  'Tìm theo mã kho, tên kho, địa điểm, thủ kho...': 'Search by code, warehouse name, location, keeper...',
-  'Quản Lý Kho': 'Warehouse Manager',
-  'Chỉ Xem': 'Viewer Only',
-  'Tìm theo Email Google, họ tên, phòng ban...': 'Search by Google Email, name, department...',
-  'Vai trò:': 'Role:',
-  'Đồng Bộ Nhập/Xuất': 'Sync Inbound/Outbound',
-  'Xóa Toàn Bộ': 'Delete All',
   'Tải Mẫu Excel Vật Tư': 'Download Materials Template',
-  'Tải Mẫu Excel Nhập Kho': 'Download Inbound Template',
-  'Tải Mẫu Excel Xuất Kho': 'Download Outbound Template',
   'Mở Bảng Tồn Kho Đầy Đủ': 'Open Full Inventory Table',
-  'Nhập trả kho (Hàng hoàn trả từ công trường)': 'Return to Warehouse (Returned from Site)',
-  'Xuất điều chuyển (Tái xuất sang kho khác/công trường)': 'Transfer Outbound (Transfer to another warehouse/site)',
-  'Quản Lý Danh Mục Kho Bãi': 'Warehouse Directory Management',
-  'Quản lý hệ thống kho bãi lưu trữ vật tư, bãi cảng hàng nặng, diện tích & sức chứa': 'Manage material warehouses, heavy cargo yards, area capacity & tonnage',
-  'Thêm Kho Bãi Mới': 'Add New Warehouse',
-  'Chỉnh Sửa Kho Bãi': 'Edit Warehouse',
-  'Chỉ quyền Admin mới có thể thêm/sửa/xóa kho bãi': 'Admin rights required to add/edit/delete warehouses',
-  'Chỉ Admin (voduongphu@gmail.com) mới có quyền thêm/sửa/khóa người dùng': 'Only Admin (voduongphu@gmail.com) can add/edit/lock users',
-  'Chỉ Quản trị viên (Admin) mới có quyền import danh mục vật tư.': 'Only Administrators (Admin) can import materials catalog.',
-  'Số kiện (Package No.)': 'Package No.',
-  'Số Kiện (Package No.)': 'Package No.',
-  'Tự tạo nếu để trống': 'Auto if blank',
-  'Tự động tạo mã vật tư không trùng': 'Auto-generate unique material code',
-  'Tự sinh mã': 'Auto-generated',
-  'Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô trong phiếu...': 'Search Material Code, Name, Package No., Batch No. in receipt...',
-  'Tự động lấy số phiếu nhập kế tiếp theo năm lập phiếu': 'Auto-generate next inbound receipt number by voucher year',
-  'Tự động lấy số phiếu nhập kế tiếp theo kho và năm lập phiếu': 'Auto-generate next inbound receipt number by warehouse & voucher year',
-  'Tự động lấy số phiếu xuất kế tiếp theo kho và năm lập phiếu': 'Auto-generate next outbound issue number by warehouse & voucher year',
-  'Mã viết tắt số phiếu (VD: LP, LT)': 'Voucher Prefix Code (e.g., LP, LT)',
-  'Ký hiệu phiếu:': 'Voucher Prefix:'
+  'Chỉ Admin (voduongphu@gmail.com) mới có quyền thêm/sửa/khóa người dùng':
+    'Only Admin (voduongphu@gmail.com) can add/edit/lock users',
+  'Chỉ Quản trị viên (Admin) mới có quyền import danh mục vật tư.':
+    'Only Administrators (Admin) can import materials catalog.',
+  'Tự động lấy số phiếu nhập kế tiếp theo năm lập phiếu':
+    'Auto-generate next inbound receipt number by voucher year',
+  'Tự động lấy số phiếu nhập kế tiếp theo kho và năm lập phiếu':
+    'Auto-generate next inbound receipt number by warehouse & voucher year',
+  'Tự động lấy số phiếu xuất kế tiếp theo kho và năm lập phiếu':
+    'Auto-generate next outbound issue number by warehouse & voucher year',
+
+  // Auth / Cloud System Errors
+  'Không thể đăng nhập bằng tài khoản Google. Vui lòng kiểm tra kết nối mạng và thử lại.':
+    'Unable to sign in with Google account. Please check your internet connection and try again.',
+  'Bạn đã đóng cửa sổ chọn tài khoản Google trước khi hoàn tất đăng nhập.':
+    'You closed the Google account chooser window before completing sign-in.',
+  'Trình duyệt đã chặn cửa sổ bật lên (Popup). Vui lòng cho phép Popup cho trang web này và thử đăng nhập lại.':
+    'The browser blocked the sign-in popup window. Please allow popups for this site and try again.',
+  'Tài khoản Google không cung cấp địa chỉ email hợp lệ. Vui lòng chọn tài khoản Google khác.':
+    'This Google account did not provide a valid email address. Please choose another Google account.',
+  'Firebase Authentication báo dự án chưa bật gói Blaze/Billing. Vui lòng kiểm tra cấu hình thanh toán trên Firebase Console.':
+    'Firebase Authentication reported that billing/Blaze is not enabled. Please check billing settings in Firebase Console.',
+  'Firebase Authentication tạm vượt hạn mức. Vui lòng thử lại sau ít phút hoặc kiểm tra hạn mức trên Firebase Console.':
+    'Firebase Authentication temporarily exceeded its quota. Please try again shortly or check Firebase Console.',
+  'Kết nối mạng bị gián đoạn khi xác thực với Google. Vui lòng kiểm tra Internet và thử lại.':
+    'Network connection interrupted while authenticating with Google. Please check your internet and try again.'
 };
 
 // Merge all specialized and comprehensive phrases into one unified dictionary
@@ -610,8 +627,17 @@ for (const [k, v] of Object.entries(ALL_UI_PHRASES_EN)) {
   LOWER_CASE_MAP[k.trim().toLowerCase()] = v;
 }
 
+function matchExactPhrase(str: string): string | null {
+  if (ALL_UI_PHRASES_EN[str]) return ALL_UI_PHRASES_EN[str];
+  const lower = str.toLowerCase();
+  if (LOWER_CASE_MAP[lower]) return LOWER_CASE_MAP[lower];
+  return null;
+}
+
 /**
- * Intelligent phrase translator with support for punctuation, colons, counts, and symbols
+ * Intelligent system UI phrase translator.
+ * - Handles exact matches, punctuation (:, (*), +, •), counts, quoted labels, and dynamic system patterns.
+ * - Returns null for arbitrary user-entered text so user data is NEVER altered.
  */
 export function lookupTranslation(rawText: string): string | null {
   if (!rawText) return null;
@@ -619,47 +645,62 @@ export function lookupTranslation(rawText: string): string | null {
   if (!trimmed) return null;
 
   // 1. Direct exact or trimmed match
-  if (ALL_PHRASES_MATCH(trimmed)) {
-    return ALL_PHRASES_MATCH(trimmed)!;
-  }
+  const direct = matchExactPhrase(trimmed);
+  if (direct) return direct;
 
   // 2. Trailing colon handling: "Kho bãi:" -> "Warehouse:"
   if (trimmed.endsWith(':')) {
     const withoutColon = trimmed.slice(0, -1).trim();
-    const trans = ALL_PHRASES_MATCH(withoutColon);
+    const trans = matchExactPhrase(withoutColon);
     if (trans) return `${trans}:`;
   }
 
-  // 3. Parentheses with numbers or counts: "Tất cả kho (4)" -> "All Warehouses (4)"
+  // 3. Parentheses with numbers or codes: "Tất cả kho (4)" -> "All Warehouses (4)"
   const parenMatch = trimmed.match(/^(.*?)(\s*\([0-9.,\s/A-Za-z-]+\))$/);
   if (parenMatch) {
     const base = parenMatch[1].trim();
     const suffix = parenMatch[2];
-    const trans = ALL_PHRASES_MATCH(base);
+    const trans = matchExactPhrase(base);
     if (trans) return `${trans}${suffix}`;
   }
 
-  // 4. Leading symbols: "+ Chọn" -> "+ Select", "+ Thêm dòng" -> "+ Add line"
+  // 4. Leading plus or bullet symbols: "+ Chọn" -> "+ Select", "• Hạng mục" -> "• Category"
   if (trimmed.startsWith('+')) {
     const base = trimmed.replace(/^\+\s*/, '').trim();
-    const trans = ALL_PHRASES_MATCH(base);
+    const trans = matchExactPhrase(base);
     if (trans) return `+ ${trans}`;
+  }
+  if (trimmed.startsWith('•')) {
+    const base = trimmed.replace(/^•\s*/, '').trim();
+    const trans = matchExactPhrase(base);
+    if (trans) return `• ${trans}`;
   }
 
   // 5. Asterisk suffix: "Tên vật tư (*)" -> "Material Name (*)"
   if (trimmed.endsWith('(*)') || trimmed.endsWith('*')) {
     const base = trimmed.replace(/\s*\(\*\)$|\s*\*$/, '').trim();
-    const trans = ALL_PHRASES_MATCH(base);
+    const trans = matchExactPhrase(base);
     if (trans) return `${trans} (*)`;
   }
 
-  return null;
-}
+  // 6. Quoted system phrase: '"Thêm dòng vật tư"' -> '"Add Material Line"'
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith('“') && trimmed.endsWith('”'))
+  ) {
+    const inner = trimmed.slice(1, -1).trim();
+    const trans = matchExactPhrase(inner);
+    if (trans) return `"${trans}"`;
+  }
 
-function ALL_PHRASES_MATCH(str: string): string | null {
-  if (ALL_UI_PHRASES_EN[str]) return ALL_UI_PHRASES_EN[str];
-  const lower = str.toLowerCase();
-  if (LOWER_CASE_MAP[lower]) return LOWER_CASE_MAP[lower];
+  // 7. Dynamic system UI patterns (preserves interpolated user values verbatim)
+  for (let i = 0; i < SYSTEM_UI_PATTERN_RULES_EN.length; i++) {
+    const rule = SYSTEM_UI_PATTERN_RULES_EN[i];
+    if (rule.pattern.test(trimmed)) {
+      return trimmed.replace(rule.pattern, rule.replace);
+    }
+  }
+
   return null;
 }
 
@@ -673,6 +714,16 @@ interface LanguageContextType {
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
 const LANGUAGE_STORAGE_KEY = 'vtp_app_language';
+
+const USER_PROTECTED_SELECTOR = '[data-user-content="true"], .user-data, code, pre, input, textarea';
+
+function isProtectedUserContentElement(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  if (el.closest(USER_PROTECTED_SELECTOR)) return true;
+  if (el.tagName === 'TD' && el.classList.contains('font-mono')) return true;
+  return false;
+}
 
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [language, setLanguageState] = useState<AppLanguage>(() => {
@@ -700,12 +751,12 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const t = (keyOrPhrase: string, fallback?: string): string => {
     if (language === 'vi') {
-      const direct = (TRANSLATIONS.vi as any)?.[keyOrPhrase];
+      const direct = (TRANSLATIONS.vi as Record<string, string>)?.[keyOrPhrase];
       return direct || keyOrPhrase;
     }
 
     // language === 'en'
-    const structured = (TRANSLATIONS.en as any)?.[keyOrPhrase];
+    const structured = (TRANSLATIONS.en as Record<string, string>)?.[keyOrPhrase];
     if (structured) return structured;
 
     const trans = lookupTranslation(keyOrPhrase);
@@ -714,44 +765,54 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return fallback || keyOrPhrase;
   };
 
-  // Safe TreeWalker DOM text node translation hook for static UI elements across tabs
-  // Preserves user-entered content (inputs, textareas, elements with user data)
+  // Keep <html lang> and document.title in sync with active language
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.documentElement.lang = language;
+    document.title = TRANSLATIONS[language].documentTitle;
+  }, [language]);
+
+  // Safe TreeWalker DOM text-node & attribute translator for system UI across tabs.
+  // Strictly preserves user-entered content (inputs, textareas, data-user-content="true", .user-data).
   useEffect(() => {
     const isEn = language === 'en';
     let isScanning = false;
 
-    const translateAttributes = (el: HTMLElement) => {
-      // Check placeholder
-      if (el.hasAttribute('placeholder')) {
-        const ph = el.getAttribute('placeholder') || '';
-        if (isEn) {
-          const trans = lookupTranslation(ph);
-          if (trans) {
-            if (!el.hasAttribute('data-vi-placeholder')) {
-              el.setAttribute('data-vi-placeholder', ph);
-            }
-            el.setAttribute('placeholder', trans);
-          }
-        } else if (el.hasAttribute('data-vi-placeholder')) {
-          el.setAttribute('placeholder', el.getAttribute('data-vi-placeholder') || ph);
-        }
-      }
+    const syncAttribute = (el: HTMLElement, attr: 'placeholder' | 'title' | 'aria-label') => {
+      if (!el.hasAttribute(attr)) return;
+      if (attr !== 'placeholder' && isProtectedUserContentElement(el)) return;
 
-      // Check title tooltip
-      if (el.hasAttribute('title')) {
-        const tt = el.getAttribute('title') || '';
-        if (isEn) {
-          const trans = lookupTranslation(tt);
-          if (trans) {
-            if (!el.hasAttribute('data-vi-title')) {
-              el.setAttribute('data-vi-title', tt);
-            }
-            el.setAttribute('title', trans);
+      const viKey = `data-vi-${attr}`;
+      const enKey = `data-en-${attr}`;
+      const currentVal = el.getAttribute(attr) || '';
+
+      if (isEn) {
+        const lastEn = el.getAttribute(enKey);
+        // If React updated the attribute to a new Vietnamese string, refresh the stored VI source
+        if (lastEn !== currentVal) {
+          const trans = lookupTranslation(currentVal);
+          if (trans && trans !== currentVal) {
+            el.setAttribute(viKey, currentVal);
+            el.setAttribute(enKey, trans);
+            el.setAttribute(attr, trans);
           }
-        } else if (el.hasAttribute('data-vi-title')) {
-          el.setAttribute('title', el.getAttribute('data-vi-title') || tt);
         }
+      } else if (el.hasAttribute(viKey)) {
+        const storedVi = el.getAttribute(viKey);
+        const lastEn = el.getAttribute(enKey);
+        // Only restore stored VI if React hasn't already overwritten the attribute with a fresh value
+        if (storedVi !== null && (lastEn === null || currentVal === lastEn)) {
+          el.setAttribute(attr, storedVi);
+        }
+        el.removeAttribute(viKey);
+        el.removeAttribute(enKey);
       }
+    };
+
+    const translateAttributes = (el: HTMLElement) => {
+      syncAttribute(el, 'placeholder');
+      syncAttribute(el, 'title');
+      syncAttribute(el, 'aria-label');
     };
 
     const scanAll = () => {
@@ -759,46 +820,37 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       isScanning = true;
 
       try {
-        // 1. Translate placeholders and tooltips
-        const attrElements = document.body.querySelectorAll<HTMLElement>('[placeholder], [title]');
+        // 1. Translate placeholders, title tooltips, and aria-labels
+        const attrElements = document.body.querySelectorAll<HTMLElement>(
+          '[placeholder], [title], [aria-label]'
+        );
         attrElements.forEach(translateAttributes);
 
-        // 2. High-performance TreeWalker for all text nodes
-        const walker = document.createTreeWalker(
-          document.body,
-          NodeFilter.SHOW_TEXT,
-          {
-            acceptNode(node) {
-              const parent = node.parentElement;
-              if (!parent) return NodeFilter.FILTER_REJECT;
+        // 2. High-performance TreeWalker for all system UI text nodes
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+          acceptNode(node) {
+            const parent = node.parentElement;
+            if (!parent) return NodeFilter.FILTER_REJECT;
 
-              const tagName = parent.tagName;
-              if (
-                tagName === 'SCRIPT' ||
-                tagName === 'STYLE' ||
-                tagName === 'INPUT' ||
-                tagName === 'TEXTAREA' ||
-                tagName === 'CODE' ||
-                tagName === 'PRE' ||
-                parent.isContentEditable ||
-                parent.getAttribute('data-user-content') === 'true' ||
-                parent.classList.contains('user-data')
-              ) {
-                return NodeFilter.FILTER_REJECT;
-              }
-
-              // Protect user data cells in tables (like codes, user notes)
-              if (tagName === 'TD' && parent.classList.contains('font-mono')) {
-                return NodeFilter.FILTER_REJECT;
-              }
-
-              const val = node.nodeValue;
-              if (!val || !val.trim()) return NodeFilter.FILTER_REJECT;
-
-              return NodeFilter.FILTER_ACCEPT;
+            const tagName = parent.tagName;
+            if (
+              tagName === 'SCRIPT' ||
+              tagName === 'STYLE' ||
+              tagName === 'INPUT' ||
+              tagName === 'TEXTAREA' ||
+              tagName === 'CODE' ||
+              tagName === 'PRE' ||
+              isProtectedUserContentElement(parent)
+            ) {
+              return NodeFilter.FILTER_REJECT;
             }
+
+            const val = node.nodeValue;
+            if (!val || !val.trim()) return NodeFilter.FILTER_REJECT;
+
+            return NodeFilter.FILTER_ACCEPT;
           }
-        );
+        });
 
         let currentNode: Node | null;
         while ((currentNode = walker.nextNode())) {
@@ -809,16 +861,28 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const anyNode = currentNode as any;
 
           if (isEn) {
+            // If React updated this text node since our last translation, capture the fresh VI text
+            if (anyNode.__lastEnText !== undefined && raw !== anyNode.__lastEnText) {
+              anyNode.__origViText = undefined;
+              anyNode.__lastEnText = undefined;
+            }
+
             const trans = lookupTranslation(trimmed);
             if (trans && trans !== trimmed) {
               if (anyNode.__origViText === undefined) {
                 anyNode.__origViText = raw;
               }
-              currentNode.nodeValue = raw.replace(trimmed, trans);
+              const replaced = raw.replace(trimmed, trans);
+              anyNode.__lastEnText = replaced;
+              currentNode.nodeValue = replaced;
             }
           } else {
             if (anyNode.__origViText !== undefined) {
-              currentNode.nodeValue = anyNode.__origViText;
+              if (anyNode.__lastEnText === undefined || raw === anyNode.__lastEnText) {
+                currentNode.nodeValue = anyNode.__origViText;
+              }
+              anyNode.__origViText = undefined;
+              anyNode.__lastEnText = undefined;
             }
           }
         }
@@ -827,27 +891,29 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     };
 
-    // Run initial scan
+    // Run initial scan immediately
     scanAll();
 
-    // Use a lightweight MutationObserver to catch tab changes, re-renders, and modals
-    let debounceTimer: any = null;
+    // Observe DOM mutations (tab switches, modals, async list renders)
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const observer = new MutationObserver(() => {
       if (isScanning) return;
-      clearTimeout(debounceTimer);
+      if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         scanAll();
-      }, 35);
+      }, 30);
     });
 
     observer.observe(document.body, {
       childList: true,
       subtree: true,
-      characterData: true
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['placeholder', 'title', 'aria-label']
     });
 
     return () => {
-      clearTimeout(debounceTimer);
+      if (debounceTimer) clearTimeout(debounceTimer);
       observer.disconnect();
     };
   }, [language]);

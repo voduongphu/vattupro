@@ -18,18 +18,14 @@ import {
   Clock,
   Cloud,
   RefreshCw,
-  KeyRound,
-  Eye,
-  EyeOff,
-  HardDrive,
   X
 } from 'lucide-react';
 
-function formatKickTime(iso?: string): string {
+function formatKickTime(iso?: string, lang: 'vi' | 'en' = 'vi'): string {
   try {
     const d = iso ? new Date(iso) : new Date();
     if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleString('vi-VN', {
+    return d.toLocaleString(lang === 'en' ? 'en-US' : 'vi-VN', {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
@@ -66,8 +62,6 @@ const GoogleLogoIcon: React.FC<{ className?: string }> = ({ className = 'w-5 h-5
 export const LoginScreen: React.FC = () => {
   const {
     loginWithGoogle,
-    login,
-    requestLogoutOtherDevice,
     requestLogoutOtherDeviceWithGoogle,
     cloudState,
     sessionKickNotice,
@@ -76,13 +70,7 @@ export const LoginScreen: React.FC = () => {
     acknowledgeKickModal,
     clearSessionKickNotice
   } = useAuth();
-  const { t } = useLanguage();
-
-  const [authMode, setAuthMode] = useState<'google' | 'local'>('google');
-  const [localUsername, setLocalUsername] = useState('');
-  const [localPassword, setLocalPassword] = useState('');
-  const [showLocalPassword, setShowLocalPassword] = useState(false);
-  const [conflictOrigin, setConflictOrigin] = useState<'google' | 'local'>('google');
+  const { language, t } = useLanguage();
 
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -90,14 +78,6 @@ export const LoginScreen: React.FC = () => {
   const [conflictMessage, setConflictMessage] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isRequestingRemoteLogout, setIsRequestingRemoteLogout] = useState(false);
-
-  const switchAuthMode = (nextMode: 'google' | 'local') => {
-    setAuthMode(nextMode);
-    setErrorMessage('');
-    setSuccessMessage('');
-    setConflictSession(null);
-    setConflictMessage('');
-  };
 
   const handleGoogleSignIn = async (
     forceLogoutOtherDevice = false,
@@ -121,51 +101,10 @@ export const LoginScreen: React.FC = () => {
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
-        setSuccessMessage(res.message || 'Đăng nhập Google thành công! Đang chuyển vào hệ thống...');
+        setSuccessMessage(res.message || t('googleLoginSuccessRedirect'));
       } else if (res.redirected) {
-        setSuccessMessage(res.message || 'Đang chuyển hướng sang trang đăng nhập Google...');
+        setSuccessMessage(res.message || t('redirectingToGoogle'));
       } else if (res.conflict) {
-        setConflictOrigin('google');
-        setConflictSession(res.activeSession || null);
-        setConflictMessage(res.message);
-      } else {
-        setErrorMessage(res.message);
-      }
-    } finally {
-      setIsAuthenticating(false);
-    }
-  };
-
-  const handleLocalSignIn = async (
-    e?: React.FormEvent,
-    forceLogoutOtherDevice = false
-  ) => {
-    if (e) e.preventDefault();
-    setErrorMessage('');
-    setSuccessMessage('');
-    const cleanUser = localUsername.trim();
-    if (!cleanUser) {
-      setErrorMessage('Vui lòng nhập tên đăng nhập hoặc địa chỉ email.');
-      return;
-    }
-    if (!localPassword) {
-      setErrorMessage('Vui lòng nhập mật khẩu đăng nhập.');
-      return;
-    }
-    if (!forceLogoutOtherDevice) {
-      setConflictSession(null);
-      setConflictMessage('');
-    }
-    clearSessionKickNotice();
-    setIsAuthenticating(true);
-    try {
-      const res = await login(cleanUser, localPassword, forceLogoutOtherDevice, true);
-      if (res.success) {
-        setConflictSession(null);
-        setConflictMessage('');
-        setSuccessMessage(res.message || 'Đăng nhập cục bộ thành công! Đang vào ứng dụng...');
-      } else if (res.conflict) {
-        setConflictOrigin('local');
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);
       } else {
@@ -179,11 +118,7 @@ export const LoginScreen: React.FC = () => {
   const handleForceLogoutAndContinue = async () => {
     setIsRequestingRemoteLogout(true);
     try {
-      if (conflictOrigin === 'local') {
-        await handleLocalSignIn(undefined, true);
-      } else {
-        await handleGoogleSignIn(true, false, true);
-      }
+      await handleGoogleSignIn(true, false, true);
     } finally {
       setIsRequestingRemoteLogout(false);
     }
@@ -195,10 +130,7 @@ export const LoginScreen: React.FC = () => {
     clearSessionKickNotice();
     setIsRequestingRemoteLogout(true);
     try {
-      const res =
-        conflictOrigin === 'local'
-          ? await requestLogoutOtherDevice(localUsername.trim(), localPassword)
-          : await requestLogoutOtherDeviceWithGoogle();
+      const res = await requestLogoutOtherDeviceWithGoogle();
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
@@ -248,7 +180,7 @@ export const LoginScreen: React.FC = () => {
                 </div>
               </div>
 
-              {/* Tiêu đề & Language Switcher */}
+              {/* Tiêu đề */}
               <div>
                 <div className="flex items-center justify-between gap-2 mb-1.5">
                   <div className="flex items-center gap-1.5 text-blue-400 text-xs font-semibold">
@@ -272,13 +204,13 @@ export const LoginScreen: React.FC = () => {
                     <div className="font-bold text-amber-300 mb-0.5">
                       {t('sessionTerminatedTitle')}
                     </div>
-                    <div>{sessionKickNotice}</div>
+                    <div>{t(sessionKickNotice)}</div>
                   </div>
                   <button
                     type="button"
                     onClick={clearSessionKickNotice}
                     className="min-w-[36px] min-h-[36px] -mr-1 -mt-1 flex items-center justify-center text-amber-400 hover:text-white rounded-lg transition shrink-0"
-                    title="Đóng thông báo"
+                    title={t('closeNotification')}
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -292,9 +224,9 @@ export const LoginScreen: React.FC = () => {
                     <ShieldAlert className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
                     <div className="flex-1 leading-relaxed">
                       <div className="font-bold text-amber-300 text-sm mb-0.5">
-                        Tài khoản Google đang hoạt động trên thiết bị khác
+                        {t('conflictTitle')}
                       </div>
-                      <p className="text-amber-100/90">{conflictMessage}</p>
+                      <p className="text-amber-100/90">{t(conflictMessage)}</p>
                     </div>
                   </div>
 
@@ -303,20 +235,20 @@ export const LoginScreen: React.FC = () => {
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-slate-400 flex items-center gap-1.5">
                           <MonitorSmartphone className="w-3.5 h-3.5 text-amber-400" />
-                          <span>Thiết bị đang mở:</span>
+                          <span>{t('conflictDeviceLabel')}</span>
                         </span>
-                        <span className="font-bold text-amber-300 text-right">
-                          {conflictSession.deviceLabel || 'Thiết bị khác'}
+                        <span className="font-bold text-amber-300 text-right" data-user-content="true">
+                          {conflictSession.deviceLabel || t('otherDeviceLabel')}
                         </span>
                       </div>
-                      {formatKickTime(conflictSession.loginAt) && (
+                      {formatKickTime(conflictSession.loginAt, language) && (
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-slate-400 flex items-center gap-1.5">
                             <Clock className="w-3.5 h-3.5 text-slate-400" />
-                            <span>Đăng nhập lúc:</span>
+                            <span>{t('conflictLoginAt')}</span>
                           </span>
                           <span className="font-mono text-slate-300">
-                            {formatKickTime(conflictSession.loginAt)}
+                            {formatKickTime(conflictSession.loginAt, language)}
                           </span>
                         </div>
                       )}
@@ -349,51 +281,28 @@ export const LoginScreen: React.FC = () => {
                 </div>
               )}
 
-              {/* Thông báo khi Cloud Firestore đang tạm dừng (VD: chuyển từ Blaze về gói Spark) */}
+              {/* Thông báo khi Cloud Firestore đang tạm gián đoạn */}
               {isCloudNoticeVisible && (
-                <div className="p-3.5 bg-amber-950/75 border border-amber-700/80 rounded-2xl text-amber-100 text-xs space-y-2.5">
+                <div className="p-3.5 bg-amber-950/75 border border-amber-700/80 rounded-2xl text-amber-100 text-xs">
                   <div className="flex items-start gap-2.5">
                     <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
                     <div className="leading-relaxed">
                       <div className="font-bold text-amber-300 mb-0.5">
-                        Cloud Firestore đang tạm dừng — Vẫn vào ứng dụng bình thường
+                        {t('cloudNoticeTitle')}
                       </div>
                       <p className="text-amber-100/90">
-                        {cloudState.errorMessage ||
-                          'Kết nối Cloud Firestore đang tạm gián đoạn (gói Spark hoặc hết hạn mức). Toàn bộ dữ liệu cục bộ trên thiết bị vẫn nguyên vẹn.'}
+                        {cloudState.errorMessage ? t(cloudState.errorMessage) : t('cloudNoticeDefaultDesc')}
                       </p>
                     </div>
                   </div>
-                  {authMode === 'google' && (
-                    <button
-                      type="button"
-                      onClick={() => switchAuthMode('local')}
-                      className="w-full min-h-[38px] px-3 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-200 font-bold text-xs rounded-xl transition flex items-center justify-center gap-2"
-                    >
-                      <HardDrive className="w-3.5 h-3.5 shrink-0" />
-                      <span>Chuyển sang đăng nhập cục bộ ngay</span>
-                    </button>
-                  )}
                 </div>
               )}
 
               {/* Thông báo lỗi */}
               {errorMessage && (
-                <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs space-y-2.5">
-                  <div className="flex items-start gap-2.5">
-                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
-                    <span className="font-medium leading-relaxed">{errorMessage}</span>
-                  </div>
-                  {authMode === 'google' && (
-                    <button
-                      type="button"
-                      onClick={() => switchAuthMode('local')}
-                      className="w-full min-h-[38px] px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-rose-700/70 text-rose-100 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-2"
-                    >
-                      <KeyRound className="w-3.5 h-3.5 shrink-0" />
-                      <span>Dùng tài khoản cục bộ để vào ứng dụng ngay</span>
-                    </button>
-                  )}
+                <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                  <span className="font-medium leading-relaxed">{t(errorMessage)}</span>
                 </div>
               )}
 
@@ -401,202 +310,89 @@ export const LoginScreen: React.FC = () => {
               {successMessage && (
                 <div className="p-3.5 bg-emerald-950/75 border border-emerald-800 rounded-2xl text-emerald-200 text-xs flex items-center gap-2.5">
                   <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-                  <span className="font-medium leading-relaxed">{successMessage}</span>
+                  <span className="font-medium leading-relaxed">{t(successMessage)}</span>
                 </div>
               )}
 
-              {/* Bộ chuyển phương thức đăng nhập: Google (Chính) / Cục bộ (Dự phòng khi Spark/Cloud gián đoạn) */}
-              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950 border border-slate-800 rounded-xl">
-                <button
-                  type="button"
-                  onClick={() => switchAuthMode('google')}
-                  disabled={isBusy}
-                  className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 ${
-                    authMode === 'google'
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                  }`}
-                >
-                  <GoogleLogoIcon className="w-4 h-4 shrink-0" />
-                  <span>Google Cloud</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => switchAuthMode('local')}
-                  disabled={isBusy}
-                  className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 ${
-                    authMode === 'local'
-                      ? 'bg-emerald-600 text-white shadow-md'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                  }`}
-                >
-                  <KeyRound className="w-4 h-4 shrink-0" />
-                  <span>Tài khoản cục bộ</span>
-                </button>
-              </div>
-
-              {authMode === 'google' ? (
-                /* Khối nút Đăng Nhập Google Chính */
-                <div className="p-5 sm:p-6 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-4 shadow-inner">
-                  {activeGoogleEmail ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/60 text-xs text-emerald-200">
-                        <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[11px] text-emerald-300/80">
-                            {activeGoogleEmail}
-                          </div>
-                          <div className="font-bold text-white truncate">{activeGoogleEmail}</div>
+              {/* Khối nút Đăng Nhập Google Chính */}
+              <div className="p-5 sm:p-6 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-4 shadow-inner">
+                {activeGoogleEmail ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/60 text-xs text-emerald-200">
+                      <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] text-emerald-300/80">
+                          {t('currentGoogleAccount')}
+                        </div>
+                        <div className="font-bold text-white truncate" data-user-content="true">
+                          {activeGoogleEmail}
                         </div>
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleGoogleSignIn(false, false, true)}
-                        disabled={isBusy}
-                        className="w-full min-h-[52px] py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-bold text-sm rounded-xl shadow-lg shadow-blue-950/40 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
-                      >
-                        {isAuthenticating && !isRequestingRemoteLogout ? (
-                          <>
-                            <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-                            <span>{t('syncing')}</span>
-                          </>
-                        ) : (
-                          <>
-                            <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                            <span className="truncate">Google: {activeGoogleEmail}</span>
-                          </>
-                        )}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleGoogleSignIn(false, true, false)}
-                        disabled={isBusy}
-                        className="w-full min-h-[44px] py-2.5 px-4 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
-                      >
-                        <GoogleLogoIcon className="w-4 h-4 shrink-0" />
-                        <span>{t('switchGoogleAccountBtn')}</span>
-                      </button>
                     </div>
-                  ) : (
+
                     <button
                       type="button"
-                      onClick={() => handleGoogleSignIn(false, true, false)}
+                      onClick={() => handleGoogleSignIn(false, false, true)}
                       disabled={isBusy}
-                      className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
+                      className="w-full min-h-[52px] py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-bold text-sm rounded-xl shadow-lg shadow-blue-950/40 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
                     >
                       {isAuthenticating && !isRequestingRemoteLogout ? (
                         <>
                           <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-                          <span>{t('openingGoogleAuth')}</span>
+                          <span>{t('syncing')}</span>
                         </>
                       ) : (
                         <>
                           <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                          <span>{t('loginWithGoogle')}</span>
+                          <span className="truncate">
+                            {t('continueWithAccount')} <span data-user-content="true">{activeGoogleEmail}</span>
+                          </span>
                         </>
                       )}
                     </button>
-                  )}
 
-                  <div className="pt-2 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400 leading-relaxed">
-                    <div className="flex items-start gap-2">
-                      <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      <span>{t('adminDefaultNotice')}</span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <Cloud className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-                      <span>{t('staffNotice')}</span>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                /* Khối Đăng Nhập Cục Bộ Dự Phòng (hoạt động tức thì kể cả khi Firebase về Spark hoặc mất mạng) */
-                <form
-                  onSubmit={(e) => handleLocalSignIn(e, false)}
-                  className="p-5 sm:p-6 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-4 shadow-inner"
-                >
-                  <div className="space-y-1.5">
-                    <label
-                      htmlFor="local-login-username"
-                      className="block text-xs font-semibold text-slate-300"
-                    >
-                      Tên đăng nhập hoặc Email
-                    </label>
-                    <input
-                      id="local-login-username"
-                      type="text"
-                      autoComplete="username"
-                      value={localUsername}
-                      onChange={(e) => setLocalUsername(e.target.value)}
-                      placeholder="VD: Võ Dương Phú hoặc email đã đăng ký"
+                    <button
+                      type="button"
+                      onClick={() => handleGoogleSignIn(false, true, false)}
                       disabled={isBusy}
-                      className="w-full min-h-[44px] px-3.5 py-2.5 bg-slate-900 border border-slate-700 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/25 rounded-xl text-sm text-white placeholder-slate-500 outline-none transition"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label
-                      htmlFor="local-login-password"
-                      className="block text-xs font-semibold text-slate-300"
+                      className="w-full min-h-[44px] py-2.5 px-4 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
                     >
-                      Mật khẩu
-                    </label>
-                    <div className="relative">
-                      <input
-                        id="local-login-password"
-                        type={showLocalPassword ? 'text' : 'password'}
-                        autoComplete="current-password"
-                        value={localPassword}
-                        onChange={(e) => setLocalPassword(e.target.value)}
-                        placeholder="Nhập mật khẩu tài khoản..."
-                        disabled={isBusy}
-                        className="w-full min-h-[44px] pl-3.5 pr-11 py-2.5 bg-slate-900 border border-slate-700 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/25 rounded-xl text-sm text-white placeholder-slate-500 outline-none transition"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowLocalPassword((prev) => !prev)}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-white rounded-lg transition"
-                        title={showLocalPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                      >
-                        {showLocalPassword ? (
-                          <EyeOff className="w-4 h-4" />
-                        ) : (
-                          <Eye className="w-4 h-4" />
-                        )}
-                      </button>
-                    </div>
+                      <GoogleLogoIcon className="w-4 h-4 shrink-0" />
+                      <span>{t('switchGoogleAccountBtn')}</span>
+                    </button>
                   </div>
-
+                ) : (
                   <button
-                    type="submit"
+                    type="button"
+                    onClick={() => handleGoogleSignIn(false, true, false)}
                     disabled={isBusy}
-                    className="w-full min-h-[50px] py-3 px-5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm rounded-xl shadow-lg shadow-emerald-950/50 transition active:scale-[0.99] flex items-center justify-center gap-2.5 disabled:opacity-70"
+                    className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
                   >
                     {isAuthenticating && !isRequestingRemoteLogout ? (
                       <>
-                        <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
-                        <span>Đang xác thực cục bộ...</span>
+                        <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                        <span>{t('openingGoogleAuth')}</span>
                       </>
                     ) : (
                       <>
-                        <HardDrive className="w-4 h-4 shrink-0" />
-                        <span>Đăng nhập cục bộ ngay</span>
+                        <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                        <span>{t('loginWithGoogle')}</span>
                       </>
                     )}
                   </button>
+                )}
 
-                  <div className="pt-2 border-t border-slate-800/80 space-y-1.5 text-[11px] text-slate-400 leading-relaxed">
-                    <div className="flex items-start gap-2">
-                      <HardDrive className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      <span>
-                        Hoạt động trực tiếp trên dữ liệu cục bộ lưu trong trình duyệt (IndexedDB), không bị chặn khi chuyển về gói miễn phí Spark hoặc khi Cloud Firestore tạm dừng.
-                      </span>
-                    </div>
+                <div className="pt-2 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400 leading-relaxed">
+                  <div className="flex items-start gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>{t('adminDefaultNotice')}</span>
                   </div>
-                </form>
-              )}
+                  <div className="flex items-start gap-2">
+                    <Cloud className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                    <span>{t('staffNotice')}</span>
+                  </div>
+                </div>
+              </div>
 
               <div className="text-center text-xs text-slate-500">
                 {t('singleDeviceNotice')}
@@ -684,7 +480,7 @@ export const LoginScreen: React.FC = () => {
           aria-modal="true"
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm overflow-y-auto overscroll-contain"
         >
-          <ModalGuard title="Cảnh Báo Bảo Mật Phiên Thiết Bị" onClose={acknowledgeKickModal} />
+          <ModalGuard title={t('sessionSecurityAlertTitle')} onClose={acknowledgeKickModal} />
           <div className="my-auto w-full max-w-md bg-slate-900 border border-amber-500/50 rounded-2xl sm:rounded-3xl shadow-2xl shadow-black/80 overflow-hidden">
             <div className="bg-gradient-to-r from-amber-600/25 via-rose-600/20 to-slate-900 px-5 py-4 sm:px-6 sm:py-5 border-b border-amber-500/30 flex items-start gap-3.5">
               <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-300 shrink-0">
@@ -692,17 +488,17 @@ export const LoginScreen: React.FC = () => {
               </div>
               <div className="flex-1 min-w-0">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400 block">
-                  Cảnh Báo Bảo Mật Phiên Thiết Bị
+                  {t('sessionSecurityAlertTitle')}
                 </span>
                 <h3 className="text-base sm:text-lg font-extrabold text-white leading-snug mt-0.5">
-                  {sessionKickAlert.title}
+                  {t(sessionKickAlert.title)}
                 </h3>
               </div>
               <ModalCloseButton onClick={acknowledgeKickModal} variant="dark" />
             </div>
 
             <div className="p-5 sm:p-6 space-y-4 text-xs sm:text-sm text-slate-200">
-              <p className="leading-relaxed text-slate-200">{sessionKickAlert.message}</p>
+              <p className="leading-relaxed text-slate-200">{t(sessionKickAlert.message)}</p>
 
               {(sessionKickAlert.username ||
                 sessionKickAlert.deviceLabel ||
@@ -712,9 +508,9 @@ export const LoginScreen: React.FC = () => {
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-slate-400 flex items-center gap-1.5 shrink-0">
                         <User className="w-3.5 h-3.5 text-blue-400" />
-                        <span>Tài khoản:</span>
+                        <span>{t('accountLabel')}</span>
                       </span>
-                      <span className="font-bold text-white text-right truncate">
+                      <span className="font-bold text-white text-right truncate" data-user-content="true">
                         {sessionKickAlert.fullName || sessionKickAlert.username}
                       </span>
                     </div>
@@ -726,24 +522,24 @@ export const LoginScreen: React.FC = () => {
                         <MonitorSmartphone className="w-3.5 h-3.5 text-amber-400" />
                         <span>
                           {sessionKickAlert.reason === 'force_logout'
-                            ? 'Thiết bị yêu cầu:'
-                            : 'Thiết bị mới:'}
+                            ? t('requestingDeviceLabel')
+                            : t('newDeviceLabel')}
                         </span>
                       </span>
-                      <span className="font-bold text-amber-300 text-right truncate">
+                      <span className="font-bold text-amber-300 text-right truncate" data-user-content="true">
                         {sessionKickAlert.deviceLabel}
                       </span>
                     </div>
                   )}
 
-                  {formatKickTime(sessionKickAlert.loginAt) && (
+                  {formatKickTime(sessionKickAlert.loginAt, language) && (
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-slate-400 flex items-center gap-1.5 shrink-0">
                         <Clock className="w-3.5 h-3.5 text-slate-400" />
-                        <span>Thời điểm:</span>
+                        <span>{t('timeLabel')}</span>
                       </span>
                       <span className="font-mono text-slate-300 text-right">
-                        {formatKickTime(sessionKickAlert.loginAt)}
+                        {formatKickTime(sessionKickAlert.loginAt, language)}
                       </span>
                     </div>
                   )}
@@ -752,7 +548,7 @@ export const LoginScreen: React.FC = () => {
 
               {sessionKickAlert.reason === 'replaced' && (
                 <p className="text-[11px] sm:text-xs text-amber-200/80 bg-amber-950/50 border border-amber-800/50 rounded-xl p-3 leading-relaxed">
-                  Nếu không phải bạn vừa đăng nhập trên thiết bị mới, vui lòng đăng nhập lại bằng tài khoản Google và kiểm tra bảo mật tài khoản của bạn.
+                  {t('sessionReplacedSecurityHint')}
                 </p>
               )}
 
@@ -761,7 +557,7 @@ export const LoginScreen: React.FC = () => {
                 onClick={acknowledgeKickModal}
                 className="w-full min-h-[48px] py-3 px-4 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-extrabold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition active:scale-[0.99]"
               >
-                Đã hiểu & Quay lại đăng nhập Google
+                {t('acknowledgeReturnGoogle')}
               </button>
             </div>
           </div>
