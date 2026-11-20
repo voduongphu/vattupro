@@ -26,6 +26,7 @@ import {
   isFirestoreCircuitOpen,
   isFirestoreQuotaExhausted,
   isQuotaExceededError,
+  isFirestoreBillingOrPlanError,
   notifyFirestoreQuotaExceeded,
   clearFirestoreQuotaExhaustedFlag,
   resetFirestoreCircuitForRetry,
@@ -746,6 +747,9 @@ function computeOsdOnlyDigest(osdList: OsdReceipt[], tombstones: TombstoneMap): 
 // Firestore Safe Document Read / Write Wrappers (Preserving Immortal createdAt)
 // ============================================================================
 function isPermissionError(err: unknown): boolean {
+  if (isFirestoreBillingOrPlanError(err)) {
+    return false;
+  }
   const code = (err as any)?.code || '';
   const msg = err instanceof Error ? err.message : String(err);
   return (
@@ -1724,7 +1728,10 @@ function deserializeOutboundItem(m: Record<string, any>): OutboundItemDetail {
 // ============================================================================
 // Workspace Membership Bootstrap & Real-Time Listeners
 // ============================================================================
-async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
+async function ensureWorkspaceReady(
+  fbUser: FirebaseUser,
+  options?: { readTimeoutMs?: number; maxRetries?: number }
+): Promise<boolean> {
   if (isFirestoreCircuitOpen()) {
     if (isFirestoreQuotaExhausted()) {
       emitCloudState({
@@ -1916,7 +1923,9 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
     };
 
     // Đọc memberRef để kiểm tra tư cách thành viên
-    const memberSnap = await safeGetDoc(memberRef, memberPath);
+    const readTimeout = options?.readTimeoutMs;
+    const readRetries = options?.maxRetries;
+    const memberSnap = await safeGetDoc(memberRef, memberPath, readTimeout, readRetries);
     if (memberSnap.exists()) {
       const mData = memberSnap.data();
       if (mData.status !== 'active') {
@@ -1926,7 +1935,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
         });
         return false;
       }
-      const wsSnap = await safeGetDoc(wsRef, wsPath);
+      const wsSnap = await safeGetDoc(wsRef, wsPath, readTimeout, readRetries);
       if (!wsSnap.exists()) {
         await createInitialBatch(isCloudAdmin(fbUser) ? 'admin' : 'member');
       } else {
@@ -1941,7 +1950,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
     }
 
     if (isCloudAdmin(fbUser)) {
-      const wsSnap = await safeGetDoc(wsRef, wsPath);
+      const wsSnap = await safeGetDoc(wsRef, wsPath, readTimeout, readRetries);
       if (!wsSnap.exists()) {
         await createInitialBatch('admin');
       } else {
@@ -1975,7 +1984,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
         updatedAt: serverTimestamp()
       });
       knownExistingPaths.add(memberRef.path);
-      const wsSnap = await safeGetDoc(wsRef, wsPath);
+      const wsSnap = await safeGetDoc(wsRef, wsPath, readTimeout, readRetries);
       if (wsSnap.exists()) {
         cachedWsManifest = { data: wsSnap.data() as WorkspaceManifestDoc, atMs: Date.now() };
       }
@@ -1987,7 +1996,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
         return false;
       }
       try {
-        const wsSnap = await safeGetDoc(wsRef, wsPath);
+        const wsSnap = await safeGetDoc(wsRef, wsPath, readTimeout, readRetries);
         if (!wsSnap.exists()) {
           await createInitialBatch('member');
           verifiedWorkspaceUid = uid;
@@ -3583,7 +3592,11 @@ export const FirestoreSyncService = {
     return Boolean(auth.currentUser && auth.currentUser.emailVerified);
   },
 
-  async ensureReadyForAuth(timeoutMs = 6000): Promise<boolean> {
+  async ensureReadyForAuth(timeoutMs = 5000): Promise<boolean> {
+    if (isFirestoreCircuitOpen()) {
+      settleConnectingStateIfNeeded();
+      return false;
+    }
     if (!currentState.authReady) {
       let timer: ReturnType<typeof setTimeout> | null = null;
       await Promise.race([
@@ -3601,19 +3614,34 @@ export const FirestoreSyncService = {
         if (timer) clearTimeout(timer);
       });
     }
+    if (isFirestoreCircuitOpen()) {
+      settleConnectingStateIfNeeded();
+      return false;
+    }
     const fbUser = auth.currentUser;
     if (!fbUser || !fbUser.emailVerified) {
       settleConnectingStateIfNeeded();
       return false;
     }
     if (currentState.status !== 'connected') {
+      let readyTimer: ReturnType<typeof setTimeout> | null = null;
       try {
-        const tokenOk = await ensureValidFirebaseAuthToken(fbUser);
+        const tokenOk = await ensureValidFirebaseAuthToken(fbUser, Math.min(timeoutMs, 4000));
         if (!tokenOk) {
           settleConnectingStateIfNeeded();
           return false;
         }
-        const ok = await ensureWorkspaceReady(fbUser);
+        const ok = await Promise.race<boolean>([
+          ensureWorkspaceReady(fbUser, {
+            readTimeoutMs: Math.min(timeoutMs, 4500),
+            maxRetries: 0
+          }),
+          new Promise<boolean>((resolve) => {
+            readyTimer = setTimeout(() => resolve(false), timeoutMs);
+          })
+        ]).finally(() => {
+          if (readyTimer) clearTimeout(readyTimer);
+        });
         if (ok) {
           attachWorkspaceRealtimeListener();
           emitCloudState({ status: 'connected', errorMessage: null });
@@ -3621,7 +3649,11 @@ export const FirestoreSyncService = {
         }
         settleConnectingStateIfNeeded();
       } catch (err) {
-        settleConnectingStateIfNeeded(err instanceof Error ? err.message : undefined);
+        if (isQuotaExceededError(err)) {
+          notifyFirestoreQuotaExceeded(300_000, err);
+        } else {
+          settleConnectingStateIfNeeded(err instanceof Error ? err.message : undefined);
+        }
         return false;
       }
     }
@@ -3879,17 +3911,31 @@ export const FirestoreSyncService = {
         }
       }
 
-      let msg = 'Không thể đăng nhập bằng tài khoản Google. Vui lòng thử lại.';
+      let msg =
+        'Không thể đăng nhập bằng tài khoản Google. Bạn có thể dùng mục "Đăng nhập tài khoản cục bộ" bên dưới để vào ứng dụng ngay với toàn bộ dữ liệu đang lưu trên máy.';
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         msg = 'Bạn đã đóng cửa sổ chọn tài khoản Google trước khi hoàn tất đăng nhập.';
       } else if (code === 'auth/popup-blocked') {
         msg =
-          'Trình duyệt đã chặn cửa sổ bật lên (Popup). Vui lòng cho phép Popup trên thanh địa chỉ trình duyệt rồi nhấn đăng nhập lại.';
+          'Trình duyệt đã chặn cửa sổ bật lên (Popup). Vui lòng cho phép Popup hoặc dùng mục "Đăng nhập tài khoản cục bộ" bên dưới.';
       } else if (code === 'auth/unauthorized-domain') {
         const host = typeof window !== 'undefined' ? window.location.hostname : 'tên miền hiện tại';
-        msg = `Tên miền "${host}" chưa được thêm vào Authorized Domains trên Firebase Authentication. Vui lòng thêm "${host}" trong Firebase Console > Authentication > Settings > Authorized domains.`;
+        msg = `Tên miền "${host}" chưa được thêm vào Authorized Domains trên Firebase Authentication. Bạn có thể dùng "Đăng nhập tài khoản cục bộ" bên dưới để vào ứng dụng ngay.`;
+      } else if (code === 'auth/billing-not-enabled') {
+        msg =
+          'Firebase Authentication báo dự án chưa bật gói Blaze/Billing sau khi chuyển về gói Spark. Bạn có thể dùng ngay "Đăng nhập tài khoản cục bộ" bên dưới để vào ứng dụng an toàn.';
+      } else if (code === 'auth/quota-exceeded') {
+        msg =
+          'Firebase Authentication tạm vượt hạn mức trên gói Spark. Hãy dùng ngay "Đăng nhập tài khoản cục bộ" bên dưới để tiếp tục làm việc.';
+      } else if (
+        code === 'auth/operation-not-allowed' ||
+        code === 'auth/configuration-not-found' ||
+        code === 'auth/internal-error'
+      ) {
+        msg = `Dịch vụ đăng nhập Google Firebase tạm gián đoạn (${code}). Bạn hãy dùng "Đăng nhập tài khoản cục bộ" bên dưới để vào ứng dụng ngay mà không mất dữ liệu.`;
       } else if (code === 'auth/network-request-failed') {
-        msg = 'Kết nối mạng bị gián đoạn khi xác thực với Google. Vui lòng kiểm tra mạng và thử lại.';
+        msg =
+          'Kết nối mạng bị gián đoạn khi xác thực với Google. Bạn có thể kiểm tra mạng hoặc dùng "Đăng nhập tài khoản cục bộ" để làm việc ngoại tuyến.';
       }
       const isVerifiedConnected = Boolean(
         auth.currentUser && verifiedWorkspaceUid === auth.currentUser.uid
@@ -5608,7 +5654,7 @@ export const FirestoreSyncService = {
     deviceId: string,
     deviceLabel: string,
     forceLogoutOtherDevice: boolean,
-    timeoutMs = 20000
+    timeoutMs = 6000
   ): Promise<{
     handled: boolean;
     success: boolean;
@@ -5626,7 +5672,8 @@ export const FirestoreSyncService = {
     }
 
     let timedOut = false;
-    const effectiveTimeoutMs = Math.max(timeoutMs, 20000);
+    const effectiveTimeoutMs = Math.max(1500, Math.min(timeoutMs, 15000));
+    const fastReadTimeoutMs = Math.min(effectiveTimeoutMs, 4500);
     const attemptId = ++activeInteractiveAuthAttemptId;
 
     const executeFastCloudLogin = async (): Promise<{
@@ -5642,12 +5689,18 @@ export const FirestoreSyncService = {
     }> => {
       interactiveAuthInFlight = true;
       try {
-        const tokenOk = await ensureValidFirebaseAuthToken(fbUser, 10000);
+        const tokenOk = await ensureValidFirebaseAuthToken(
+          fbUser,
+          Math.min(effectiveTimeoutMs, 4000)
+        );
         if (!tokenOk || timedOut || activeInteractiveAuthAttemptId !== attemptId) {
           settleConnectingStateIfNeeded();
           return { handled: false, success: false, message: '' };
         }
-        const ok = await ensureWorkspaceReady(fbUser);
+        const ok = await ensureWorkspaceReady(fbUser, {
+          readTimeoutMs: fastReadTimeoutMs,
+          maxRetries: 0
+        });
         if (!ok || !fbUser.email || timedOut || activeInteractiveAuthAttemptId !== attemptId) {
           settleConnectingStateIfNeeded();
           return { handled: false, success: false, message: '' };
@@ -5665,7 +5718,9 @@ export const FirestoreSyncService = {
           try {
             const wsSnap = await safeGetDoc(
               doc(db, 'workspaces', WORKSPACE_ID),
-              `workspaces/${WORKSPACE_ID}`
+              `workspaces/${WORKSPACE_ID}`,
+              fastReadTimeoutMs,
+              0
             );
             if (wsSnap.exists()) {
               wsManifest = wsSnap.data() as WorkspaceManifestDoc;
@@ -5731,7 +5786,7 @@ export const FirestoreSyncService = {
         const sessionDocId = makeSafeDocId('sess', userKey);
         const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
         const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
-        const sessSnap = await safeGetDoc(sessRef, sessPath);
+        const sessSnap = await safeGetDoc(sessRef, sessPath, fastReadTimeoutMs, 0);
 
         if (timedOut) {
           return { handled: false, success: false, message: '' };
@@ -5882,8 +5937,12 @@ export const FirestoreSyncService = {
           message: `Đăng nhập thành công với ${emailLower}!`
         };
       } catch (err) {
-        console.warn('Cloud Google identity login deferred to server fallback:', err);
-        settleConnectingStateIfNeeded();
+        console.warn('Cloud Google identity login deferred to server/local fallback:', err);
+        if (isQuotaExceededError(err)) {
+          notifyFirestoreQuotaExceeded(300_000, err);
+        } else {
+          settleConnectingStateIfNeeded();
+        }
         return { handled: false, success: false, message: '' };
       } finally {
         if (activeInteractiveAuthAttemptId === attemptId) {

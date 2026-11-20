@@ -660,8 +660,12 @@ function saveStaticSessionEntry(userKey: string, session: ActiveUserSession | nu
 }
 
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers || {});
+async function fetchJson<T>(
+  url: string,
+  init?: RequestInit & { timeoutMs?: number }
+): Promise<T> {
+  const { timeoutMs: customTimeoutMs, ...requestInit } = init || {};
+  const headers = new Headers(requestInit.headers || {});
   let sentSessionToken = '';
   if (url.startsWith('/api/sync') && !FirestoreSyncService.isCloudConnected()) {
     const current = getStoredUnifiedSession();
@@ -681,27 +685,31 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   let abortedByTimeout = false;
   let externalSignalListener: (() => void) | null = null;
-  if (controller && init?.signal) {
-    if (init.signal.aborted) {
+  if (controller && requestInit.signal) {
+    if (requestInit.signal.aborted) {
       controller.abort();
     } else {
       externalSignalListener = () => controller.abort();
-      init.signal.addEventListener('abort', externalSignalListener, { once: true });
+      requestInit.signal.addEventListener('abort', externalSignalListener, { once: true });
     }
   }
+  const effectiveTimeoutMs =
+    typeof customTimeoutMs === 'number' && Number.isFinite(customTimeoutMs) && customTimeoutMs > 0
+      ? customTimeoutMs
+      : 12000;
   const timeoutTimer =
     controller &&
     setTimeout(() => {
       abortedByTimeout = true;
       controller.abort();
-    }, 12000);
+    }, effectiveTimeoutMs);
 
   let res: Response;
   try {
     res = await fetch(url, {
       cache: 'no-store',
-      ...init,
-      signal: controller ? controller.signal : init?.signal,
+      ...requestInit,
+      signal: controller ? controller.signal : requestInit.signal,
       headers
     });
   } catch (err) {
@@ -2797,14 +2805,14 @@ export const SyncService = {
       const deviceId = getDeviceId();
       const deviceLabel = getDeviceLabel();
 
-      // 1. Ưu tiên cấp phiên tốc độ cao trên Cloud Firestore
-      if (authRes.cloudReady && authRes.fbUser) {
+      // 1. Ưu tiên cấp phiên tốc độ cao trên Cloud Firestore (giới hạn 6s để không bao giờ treo khi gói Spark hạn chế Cloud)
+      if (authRes.cloudReady && authRes.fbUser && !FirestoreSyncService.isQuotaExhausted()) {
         let cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
           authRes.fbUser,
           deviceId,
           deviceLabel,
           forceFlag,
-          20000
+          6000
         );
 
         if (
@@ -2819,7 +2827,7 @@ export const SyncService = {
             deviceId,
             deviceLabel,
             true,
-            20000
+            6000
           );
         }
 
@@ -2908,6 +2916,7 @@ export const SyncService = {
             users?: User[];
           }>('/api/auth/google-login', {
             method: 'POST',
+            timeoutMs: 4000,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               email: emailLower,
@@ -2973,16 +2982,20 @@ export const SyncService = {
         connectWebSocket();
         sendWsAuthCheck();
 
-        // Mở giao diện chính ngay tức thì, đồng bộ phiên lên Cloud và dữ liệu kho hoàn toàn dưới nền
+        // Mở giao diện chính ngay tức thì, đồng bộ phiên lên Cloud và dữ liệu kho hoàn toàn dưới nền (bỏ qua Cloud nếu đang tạm dừng do Spark/Quota)
         setTimeout(() => {
-          if (authRes.fbUser) {
+          if (
+            authRes.fbUser &&
+            !FirestoreSyncService.isQuotaExhausted() &&
+            FirestoreSyncService.hasAuthenticatedCloudUser()
+          ) {
             void FirestoreSyncService.syncActiveSessionToCloudIfConnected(issuedServerSession)
               .catch(() => {})
               .finally(() => {
                 void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
               });
           } else {
-            void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
+            void reconcileInternal({ trigger: 'startup' });
           }
         }, 120);
 
@@ -3060,7 +3073,9 @@ export const SyncService = {
         });
 
         setTimeout(() => {
-          void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
+          if (!FirestoreSyncService.isQuotaExhausted()) {
+            void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
+          }
         }, 120);
 
         return {
@@ -3097,7 +3112,7 @@ export const SyncService = {
         deviceId,
         deviceLabel,
         forceFlag,
-        20000
+        6000
       );
       if (
         cloudRes.handled &&
@@ -3111,7 +3126,7 @@ export const SyncService = {
           deviceId,
           deviceLabel,
           true,
-          20000
+          6000
         );
       }
 
@@ -3165,6 +3180,7 @@ export const SyncService = {
           users?: User[];
         }>('/api/auth/google-login', {
           method: 'POST',
+          timeoutMs: 4000,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             email: emailLower,
@@ -3386,13 +3402,14 @@ export const SyncService = {
   async loginWithServer(
     username: string,
     password: string,
-    options?: { forceLogoutOtherDevice?: boolean }
+    options?: { forceLogoutOtherDevice?: boolean; preferLocalOnly?: boolean }
   ): Promise<LoginServerResult> {
     authTransitionCount++;
     const cleanUsername = String(username || '').normalize('NFC').trim();
     const deviceId = getDeviceId();
     const deviceLabel = getDeviceLabel();
     const forceLogoutOtherDevice = Boolean(options?.forceLogoutOtherDevice);
+    const preferLocalOnly = Boolean(options?.preferLocalOnly);
 
     try {
       await awaitPendingLogout(1800);
@@ -3408,7 +3425,7 @@ export const SyncService = {
           !prevUnified.session.sessionToken.startsWith('static-') &&
           !prevUnified.session.sessionToken.startsWith('cloud.')
         ) {
-          await fetch('/api/auth/logout', {
+          void fetch('/api/auth/logout', {
             method: 'POST',
             keepalive: true,
             cache: 'no-store',
@@ -3424,12 +3441,100 @@ export const SyncService = {
 
       clearBrowserAuthCookiesAndArtifacts(cleanUsername);
 
-      // Đảm bảo IndexedDB cục bộ và phiên Google Cloud trên trình duyệt Chrome đã sẵn sàng trước khi xác thực
+      // Đảm bảo IndexedDB cục bộ đã sẵn sàng trước khi xác thực
       await StorageService.init();
-      await FirestoreSyncService.ensureReadyForAuth(5000);
 
-      // Ưu tiên Cloud Firestore nếu thiết bị có phiên Google Đám mây hợp lệ; nếu lỗi tự động chuyển tiếp xuống /api/auth/login
-      if (FirestoreSyncService.canAttemptCloudAuth()) {
+      // Đường đi nhanh ưu tiên cục bộ (dự phòng khi Cloud/Spark gián đoạn hoặc người dùng chọn đăng nhập cục bộ):
+      // Nếu tài khoản đã tồn tại trong IndexedDB cục bộ, xác thực tức thì mà không chờ mạng hay Firebase!
+      if (preferLocalOnly) {
+        const localUsersFast = StorageService.getUsers();
+        const fastMatched = findMatchingUser(localUsersFast, cleanUsername);
+        if (fastMatched) {
+          if (!fastMatched.isActive) {
+            return {
+              success: false,
+              message: 'Tài khoản này hiện đang bị khóa hoặc ngừng kích hoạt. Vui lòng liên hệ Admin.'
+            };
+          }
+          if (!isPasswordMatch(fastMatched.password, password)) {
+            return {
+              success: false,
+              message: 'Mật khẩu đăng nhập không chính xác. Vui lòng kiểm tra lại.'
+            };
+          }
+          const nowMs = Date.now();
+          const userKey = normUserKey(fastMatched.username);
+          const staticMap = getStaticSessionsMap();
+          const prevStatic = staticMap[userKey];
+          if (
+            prevStatic &&
+            prevStatic.deviceId !== deviceId &&
+            !revokedLocalTokens.has(prevStatic.sessionToken) &&
+            isSessionHeartbeatFresh(nowMs, prevStatic.lastSeenAt, STATIC_TTL_MS) &&
+            !forceLogoutOtherDevice
+          ) {
+            return {
+              success: false,
+              conflict: true,
+              activeSession: prevStatic,
+              message: `Tài khoản "${fastMatched.username}" hiện đang đăng nhập trên ${prevStatic.deviceLabel || 'thiết bị khác'}. Vui lòng nhấn "Đăng xuất thiết bị kia & Đăng nhập tại đây" để tiếp tục.`
+            };
+          }
+          const issuedAtMs = Math.max(
+            nowMs,
+            (Number(fastMatched.sessionRevokedAt) || 0) + 2,
+            (Number(prevStatic?.issuedAtMs) || 0) + 2
+          );
+          const nowIso = new Date(issuedAtMs).toISOString();
+          const staticSession: ActiveUserSession = {
+            userId: fastMatched.id,
+            username: fastMatched.username,
+            userKey,
+            sessionToken: `static-${issuedAtMs}-${Math.random().toString(36).slice(2, 10)}`,
+            issuedAtMs,
+            deviceId,
+            deviceLabel,
+            loginAt: nowIso,
+            lastSeenAt: nowMs
+          };
+          saveStaticSessionEntry(userKey, staticSession);
+          pendingInvalidation = null;
+          clearPersistedKickNotice();
+          saveStoredUnifiedSession({
+            user: fastMatched,
+            session: staticSession
+          });
+          try {
+            authChannel?.postMessage({
+              type: 'auth:session_replaced',
+              userKey,
+              activeSessionToken: staticSession.sessionToken,
+              issuedAtMs,
+              deviceLabel,
+              loginAt: nowIso
+            });
+          } catch {
+            // ignore
+          }
+          return {
+            success: true,
+            message: 'Đăng nhập cục bộ thành công! Toàn bộ dữ liệu lưu trên máy đã sẵn sàng.',
+            user: fastMatched,
+            replacedSession: prevStatic && prevStatic.deviceId !== deviceId ? prevStatic : undefined
+          };
+        }
+      }
+
+      if (!preferLocalOnly && !FirestoreSyncService.isQuotaExhausted()) {
+        await FirestoreSyncService.ensureReadyForAuth(1800);
+      }
+
+      // Ưu tiên Cloud Firestore nếu thiết bị có phiên Google Đám mây hợp lệ và Cloud không bị giới hạn; nếu lỗi tự động chuyển tiếp xuống /api/auth/login
+      if (
+        !preferLocalOnly &&
+        !FirestoreSyncService.isQuotaExhausted() &&
+        FirestoreSyncService.canAttemptCloudAuth()
+      ) {
         try {
           let cloudRes = await FirestoreSyncService.loginWithCloud(
             cleanUsername,
@@ -3517,6 +3622,7 @@ export const SyncService = {
           users?: User[];
         }>('/api/auth/login', {
           method: 'POST',
+          timeoutMs: 4000,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             username: cleanUsername,
@@ -3528,16 +3634,7 @@ export const SyncService = {
           })
         });
 
-      let res;
-      try {
-        res = await attemptLogin(forceLogoutOtherDevice);
-      } catch (firstErr) {
-        if (firstErr instanceof ApiRouteMissingError) {
-          throw firstErr;
-        }
-        await new Promise((r) => setTimeout(r, 450));
-        res = await attemptLogin(forceLogoutOtherDevice);
-      }
+      let res = await attemptLogin(forceLogoutOtherDevice);
 
       if (
         res.conflict &&
@@ -3714,9 +3811,11 @@ export const SyncService = {
 
     try {
       await StorageService.init();
-      await FirestoreSyncService.ensureReadyForAuth(5000);
+      if (!FirestoreSyncService.isQuotaExhausted()) {
+        await FirestoreSyncService.ensureReadyForAuth(1800);
+      }
 
-      if (FirestoreSyncService.canAttemptCloudAuth()) {
+      if (!FirestoreSyncService.isQuotaExhausted() && FirestoreSyncService.canAttemptCloudAuth()) {
         const cloudRes = await FirestoreSyncService.requestLogoutOtherDeviceWithCloud(
           username,
           password,
@@ -3745,6 +3844,7 @@ export const SyncService = {
         users?: User[];
       }>('/api/auth/force-logout', {
         method: 'POST',
+        timeoutMs: 4000,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username,

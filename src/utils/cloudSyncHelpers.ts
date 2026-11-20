@@ -1058,6 +1058,9 @@ export function isRetryableCloudReadError(err: unknown): boolean {
   if (isTransientResourceExhaustedError(err)) {
     return true;
   }
+  if (isFirestoreBillingOrPlanError(err) || isFirestoreQuotaExceededError(err)) {
+    return false;
+  }
   const code = String((err as any)?.code || '').toLowerCase();
   const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
   if (
@@ -1314,6 +1317,9 @@ export function isPayloadSizeExceededError(err: unknown): boolean {
 export const DEFAULT_FIRESTORE_QUOTA_MESSAGE =
   'Cloud Firestore báo vượt hạn mức đọc/ghi (hoặc cơ sở dữ liệu vẫn đang ở chế độ Free tier). Hệ thống đang tạm sử dụng lưu trữ cục bộ; nếu bạn đã nâng cấp gói Blaze, hãy kiểm tra mục nâng cấp riêng cho database Firestore trên Firebase Console rồi thử đồng bộ lại.';
 
+export const DEFAULT_FIRESTORE_BILLING_DISABLED_MESSAGE =
+  'Cloud Firestore đang tạm dừng do dự án Firebase vừa chuyển từ gói Blaze về gói miễn phí Spark (cơ sở dữ liệu định danh hoặc dịch vụ Cloud cần tài khoản thanh toán Blaze). Dữ liệu cục bộ trên thiết bị vẫn an toàn và bạn vẫn làm việc bình thường ở chế độ cục bộ.';
+
 export function extractRawFirestoreErrorMessage(err: unknown): string {
   if (!err) return '';
   let raw = err instanceof Error ? err.message : String(err);
@@ -1333,8 +1339,40 @@ export function extractRawFirestoreErrorMessage(err: unknown): string {
   return raw.replace(/\s+/g, ' ').trim();
 }
 
+export function isFirestoreBillingOrPlanError(err: unknown): boolean {
+  if (!err) return false;
+  const code = String((err as any)?.code || '').toLowerCase();
+  const rawMessage = extractRawFirestoreErrorMessage(err);
+  const lower = rawMessage.toLowerCase();
+  if (!lower && !code) return false;
+  return (
+    code === 'billing-not-enabled' ||
+    code === 'auth/billing-not-enabled' ||
+    lower.includes('billing must be enabled') ||
+    lower.includes('billing_disabled') ||
+    lower.includes('billing not enabled') ||
+    lower.includes('requires billing') ||
+    lower.includes('billing account is closed') ||
+    lower.includes('billing account is disabled') ||
+    lower.includes('billing account not found') ||
+    lower.includes('requires the blaze plan') ||
+    lower.includes('upgrade to the blaze plan') ||
+    lower.includes('not available on the spark plan') ||
+    lower.includes('spark plan') ||
+    lower.includes('service_disabled') ||
+    lower.includes('cloud firestore api has not been used') ||
+    lower.includes('firestore.googleapis.com') && lower.includes('disabled') ||
+    (lower.includes('database') &&
+      (lower.includes('does not exist') ||
+        lower.includes('is disabled') ||
+        lower.includes('has been disabled') ||
+        lower.includes('not found')))
+  );
+}
+
 export function isTransientResourceExhaustedError(err: unknown): boolean {
   if (!err) return false;
+  if (isFirestoreBillingOrPlanError(err)) return false;
   const raw = extractRawFirestoreErrorMessage(err);
   const lower = raw.toLowerCase();
   // Nếu Google nêu rõ hết hạn mức ngày / free tier thì là quota cứng, không phải quá tải tốc độ tạm thời
@@ -1380,8 +1418,17 @@ export function isFirestoreQuotaExceededError(err: unknown): boolean {
   );
 }
 
+export function isFirestoreCloudRestrictedError(err: unknown): boolean {
+  return isFirestoreQuotaExceededError(err) || isFirestoreBillingOrPlanError(err);
+}
+
 export function formatFirestoreQuotaMessage(err?: unknown): string {
   const raw = extractRawFirestoreErrorMessage(err);
+  if (isFirestoreBillingOrPlanError(err)) {
+    if (!raw) return DEFAULT_FIRESTORE_BILLING_DISABLED_MESSAGE;
+    const clipped = raw.length > 220 ? `${raw.slice(0, 217)}...` : raw;
+    return `${DEFAULT_FIRESTORE_BILLING_DISABLED_MESSAGE} (Chi tiết từ Google: ${clipped})`;
+  }
   if (!raw || raw === DEFAULT_FIRESTORE_QUOTA_MESSAGE) {
     return DEFAULT_FIRESTORE_QUOTA_MESSAGE;
   }

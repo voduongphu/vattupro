@@ -88,7 +88,8 @@ interface AuthContextType {
   login: (
     username: string,
     pass: string,
-    forceLogoutOtherDevice?: boolean
+    forceLogoutOtherDevice?: boolean,
+    preferLocalOnly?: boolean
   ) => Promise<LoginActionResult>;
   requestLogoutOtherDevice: (
     username: string,
@@ -319,13 +320,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (
     username: string,
     pass: string,
-    forceLogoutOtherDevice = false
+    forceLogoutOtherDevice = false,
+    preferLocalOnly = false
   ): Promise<LoginActionResult> => {
     clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
     const cleanUser = username.normalize('NFC').trim();
     const res = await SyncService.loginWithServer(cleanUser, pass, {
-      forceLogoutOtherDevice
+      forceLogoutOtherDevice,
+      preferLocalOnly
     });
     const latestUsers = StorageService.getUsers();
     setUsers(latestUsers);

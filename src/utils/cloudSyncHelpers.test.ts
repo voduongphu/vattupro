@@ -40,6 +40,8 @@ import {
   isPayloadSizeExceededError,
   isTransientResourceExhaustedError,
   isFirestoreQuotaExceededError,
+  isFirestoreBillingOrPlanError,
+  isFirestoreCloudRestrictedError,
   formatFirestoreQuotaMessage,
   evaluatePreSyncCheck,
   resolveConvergedCheckpointDigests,
@@ -1229,6 +1231,42 @@ describe('cloudSyncHelpers', () => {
     assert.equal(isFirestoreQuotaExceededError(wrappedJsonErr), true);
     const wrappedMsg = formatFirestoreQuotaMessage(wrappedJsonErr);
     assert.ok(wrappedMsg.includes('Quota limit exceeded for project divine-particle-2zbz0'));
+  });
+
+  it('detects Blaze-to-Spark billing/plan-disabled errors, skips retries, and formats clear Vietnamese local-safe guidance', () => {
+    const billingErr = Object.assign(
+      new Error('PERMISSION_DENIED: Billing must be enabled for activation of service firestore.googleapis.com'),
+      { code: 'permission-denied' }
+    );
+    assert.equal(isFirestoreBillingOrPlanError(billingErr), true);
+    assert.equal(isFirestoreCloudRestrictedError(billingErr), true);
+    assert.equal(isTransientResourceExhaustedError(billingErr), false);
+    assert.equal(isRetryableCloudReadError(billingErr), false);
+
+    const billingMsg = formatFirestoreQuotaMessage(billingErr);
+    assert.ok(billingMsg.includes('Spark'));
+    assert.ok(billingMsg.includes('Blaze'));
+    assert.ok(billingMsg.includes('cục bộ'));
+    assert.ok(billingMsg.includes('Billing must be enabled'));
+
+    const namedDbDisabledErr = Object.assign(
+      new Error('Database ai-studio-test does not exist or is disabled on the Spark plan.'),
+      { code: 'failed-precondition' }
+    );
+    assert.equal(isFirestoreBillingOrPlanError(namedDbDisabledErr), true);
+    assert.equal(isFirestoreCloudRestrictedError(namedDbDisabledErr), true);
+    assert.equal(isRetryableCloudReadError(namedDbDisabledErr), false);
+
+    const authBillingErr = Object.assign(new Error('Billing not enabled'), {
+      code: 'auth/billing-not-enabled'
+    });
+    assert.equal(isFirestoreBillingOrPlanError(authBillingErr), true);
+    assert.equal(isRetryableCloudReadError(authBillingErr), false);
+
+    const normalPermErr = Object.assign(new Error('Missing or insufficient permissions.'), {
+      code: 'permission-denied'
+    });
+    assert.equal(isFirestoreBillingOrPlanError(normalPermErr), false);
   });
 });
 

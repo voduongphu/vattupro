@@ -26,6 +26,8 @@ import firebaseConfig from '../../firebase-applet-config.json';
 import {
   DEFAULT_FIRESTORE_QUOTA_MESSAGE,
   isFirestoreQuotaExceededError,
+  isFirestoreBillingOrPlanError,
+  isFirestoreCloudRestrictedError,
   isTransientResourceExhaustedError,
   formatFirestoreQuotaMessage
 } from '../utils/cloudSyncHelpers';
@@ -283,10 +285,15 @@ let firestoreCircuitOpenUntilMs = 0;
 let firestoreQuotaExhausted = false;
 let lastFirestoreQuotaMessage = FIRESTORE_QUOTA_EXCEEDED_MESSAGE;
 
-export { isTransientResourceExhaustedError, formatFirestoreQuotaMessage };
+export {
+  isTransientResourceExhaustedError,
+  isFirestoreBillingOrPlanError,
+  isFirestoreCloudRestrictedError,
+  formatFirestoreQuotaMessage
+};
 
 export function isQuotaExceededError(error: unknown): boolean {
-  return isFirestoreQuotaExceededError(error);
+  return isFirestoreCloudRestrictedError(error);
 }
 
 export function getLastFirestoreQuotaMessage(): string {

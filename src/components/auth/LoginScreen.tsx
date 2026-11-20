@@ -18,6 +18,10 @@ import {
   Clock,
   Cloud,
   RefreshCw,
+  KeyRound,
+  Eye,
+  EyeOff,
+  HardDrive,
   X
 } from 'lucide-react';
 
@@ -62,6 +66,8 @@ const GoogleLogoIcon: React.FC<{ className?: string }> = ({ className = 'w-5 h-5
 export const LoginScreen: React.FC = () => {
   const {
     loginWithGoogle,
+    login,
+    requestLogoutOtherDevice,
     requestLogoutOtherDeviceWithGoogle,
     cloudState,
     sessionKickNotice,
@@ -72,12 +78,26 @@ export const LoginScreen: React.FC = () => {
   } = useAuth();
   const { t } = useLanguage();
 
+  const [authMode, setAuthMode] = useState<'google' | 'local'>('google');
+  const [localUsername, setLocalUsername] = useState('');
+  const [localPassword, setLocalPassword] = useState('');
+  const [showLocalPassword, setShowLocalPassword] = useState(false);
+  const [conflictOrigin, setConflictOrigin] = useState<'google' | 'local'>('google');
+
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [conflictSession, setConflictSession] = useState<ActiveUserSession | null>(null);
   const [conflictMessage, setConflictMessage] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isRequestingRemoteLogout, setIsRequestingRemoteLogout] = useState(false);
+
+  const switchAuthMode = (nextMode: 'google' | 'local') => {
+    setAuthMode(nextMode);
+    setErrorMessage('');
+    setSuccessMessage('');
+    setConflictSession(null);
+    setConflictMessage('');
+  };
 
   const handleGoogleSignIn = async (
     forceLogoutOtherDevice = false,
@@ -105,6 +125,47 @@ export const LoginScreen: React.FC = () => {
       } else if (res.redirected) {
         setSuccessMessage(res.message || 'Đang chuyển hướng sang trang đăng nhập Google...');
       } else if (res.conflict) {
+        setConflictOrigin('google');
+        setConflictSession(res.activeSession || null);
+        setConflictMessage(res.message);
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handleLocalSignIn = async (
+    e?: React.FormEvent,
+    forceLogoutOtherDevice = false
+  ) => {
+    if (e) e.preventDefault();
+    setErrorMessage('');
+    setSuccessMessage('');
+    const cleanUser = localUsername.trim();
+    if (!cleanUser) {
+      setErrorMessage('Vui lòng nhập tên đăng nhập hoặc địa chỉ email.');
+      return;
+    }
+    if (!localPassword) {
+      setErrorMessage('Vui lòng nhập mật khẩu đăng nhập.');
+      return;
+    }
+    if (!forceLogoutOtherDevice) {
+      setConflictSession(null);
+      setConflictMessage('');
+    }
+    clearSessionKickNotice();
+    setIsAuthenticating(true);
+    try {
+      const res = await login(cleanUser, localPassword, forceLogoutOtherDevice, true);
+      if (res.success) {
+        setConflictSession(null);
+        setConflictMessage('');
+        setSuccessMessage(res.message || 'Đăng nhập cục bộ thành công! Đang vào ứng dụng...');
+      } else if (res.conflict) {
+        setConflictOrigin('local');
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);
       } else {
@@ -118,7 +179,11 @@ export const LoginScreen: React.FC = () => {
   const handleForceLogoutAndContinue = async () => {
     setIsRequestingRemoteLogout(true);
     try {
-      await handleGoogleSignIn(true, false, true);
+      if (conflictOrigin === 'local') {
+        await handleLocalSignIn(undefined, true);
+      } else {
+        await handleGoogleSignIn(true, false, true);
+      }
     } finally {
       setIsRequestingRemoteLogout(false);
     }
@@ -130,7 +195,10 @@ export const LoginScreen: React.FC = () => {
     clearSessionKickNotice();
     setIsRequestingRemoteLogout(true);
     try {
-      const res = await requestLogoutOtherDeviceWithGoogle();
+      const res =
+        conflictOrigin === 'local'
+          ? await requestLogoutOtherDevice(localUsername.trim(), localPassword)
+          : await requestLogoutOtherDeviceWithGoogle();
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
@@ -145,6 +213,9 @@ export const LoginScreen: React.FC = () => {
 
   const activeGoogleEmail = (cloudState.cloudEmail || '').trim();
   const isBusy = isAuthenticating || isRequestingRemoteLogout;
+  const isCloudNoticeVisible =
+    Boolean(cloudState.quotaExceeded) ||
+    (cloudState.status === 'error' && Boolean(cloudState.errorMessage));
 
   return (
     <div className="min-h-dvh w-full bg-slate-950 overflow-x-auto overflow-y-auto relative font-sans">
@@ -278,11 +349,51 @@ export const LoginScreen: React.FC = () => {
                 </div>
               )}
 
+              {/* Thông báo khi Cloud Firestore đang tạm dừng (VD: chuyển từ Blaze về gói Spark) */}
+              {isCloudNoticeVisible && (
+                <div className="p-3.5 bg-amber-950/75 border border-amber-700/80 rounded-2xl text-amber-100 text-xs space-y-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                    <div className="leading-relaxed">
+                      <div className="font-bold text-amber-300 mb-0.5">
+                        Cloud Firestore đang tạm dừng — Vẫn vào ứng dụng bình thường
+                      </div>
+                      <p className="text-amber-100/90">
+                        {cloudState.errorMessage ||
+                          'Kết nối Cloud Firestore đang tạm gián đoạn (gói Spark hoặc hết hạn mức). Toàn bộ dữ liệu cục bộ trên thiết bị vẫn nguyên vẹn.'}
+                      </p>
+                    </div>
+                  </div>
+                  {authMode === 'google' && (
+                    <button
+                      type="button"
+                      onClick={() => switchAuthMode('local')}
+                      className="w-full min-h-[38px] px-3 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-200 font-bold text-xs rounded-xl transition flex items-center justify-center gap-2"
+                    >
+                      <HardDrive className="w-3.5 h-3.5 shrink-0" />
+                      <span>Chuyển sang đăng nhập cục bộ ngay</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Thông báo lỗi */}
               {errorMessage && (
-                <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs flex items-start gap-2.5">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
-                  <span className="font-medium leading-relaxed">{errorMessage}</span>
+                <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs space-y-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                    <span className="font-medium leading-relaxed">{errorMessage}</span>
+                  </div>
+                  {authMode === 'google' && (
+                    <button
+                      type="button"
+                      onClick={() => switchAuthMode('local')}
+                      className="w-full min-h-[38px] px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-rose-700/70 text-rose-100 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-2"
+                    >
+                      <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                      <span>Dùng tài khoản cục bộ để vào ứng dụng ngay</span>
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -294,81 +405,198 @@ export const LoginScreen: React.FC = () => {
                 </div>
               )}
 
-              {/* Khối nút Đăng Nhập Google Chính */}
-              <div className="p-5 sm:p-6 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-4 shadow-inner">
-                {activeGoogleEmail ? (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/60 text-xs text-emerald-200">
-                      <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[11px] text-emerald-300/80">
-                          {activeGoogleEmail}
+              {/* Bộ chuyển phương thức đăng nhập: Google (Chính) / Cục bộ (Dự phòng khi Spark/Cloud gián đoạn) */}
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950 border border-slate-800 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => switchAuthMode('google')}
+                  disabled={isBusy}
+                  className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 ${
+                    authMode === 'google'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                  }`}
+                >
+                  <GoogleLogoIcon className="w-4 h-4 shrink-0" />
+                  <span>Google Cloud</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchAuthMode('local')}
+                  disabled={isBusy}
+                  className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 ${
+                    authMode === 'local'
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                  }`}
+                >
+                  <KeyRound className="w-4 h-4 shrink-0" />
+                  <span>Tài khoản cục bộ</span>
+                </button>
+              </div>
+
+              {authMode === 'google' ? (
+                /* Khối nút Đăng Nhập Google Chính */
+                <div className="p-5 sm:p-6 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-4 shadow-inner">
+                  {activeGoogleEmail ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/60 text-xs text-emerald-200">
+                        <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[11px] text-emerald-300/80">
+                            {activeGoogleEmail}
+                          </div>
+                          <div className="font-bold text-white truncate">{activeGoogleEmail}</div>
                         </div>
-                        <div className="font-bold text-white truncate">{activeGoogleEmail}</div>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleGoogleSignIn(false, false, true)}
+                        disabled={isBusy}
+                        className="w-full min-h-[52px] py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-bold text-sm rounded-xl shadow-lg shadow-blue-950/40 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
+                      >
+                        {isAuthenticating && !isRequestingRemoteLogout ? (
+                          <>
+                            <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                            <span>{t('syncing')}</span>
+                          </>
+                        ) : (
+                          <>
+                            <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                            <span className="truncate">Google: {activeGoogleEmail}</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleGoogleSignIn(false, true, false)}
+                        disabled={isBusy}
+                        className="w-full min-h-[44px] py-2.5 px-4 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
+                      >
+                        <GoogleLogoIcon className="w-4 h-4 shrink-0" />
+                        <span>{t('switchGoogleAccountBtn')}</span>
+                      </button>
                     </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleGoogleSignIn(false, false, true)}
-                      disabled={isBusy}
-                      className="w-full min-h-[52px] py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-bold text-sm rounded-xl shadow-lg shadow-blue-950/40 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
-                    >
-                      {isAuthenticating && !isRequestingRemoteLogout ? (
-                        <>
-                          <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-                          <span>{t('syncing')}</span>
-                        </>
-                      ) : (
-                        <>
-                          <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                          <span className="truncate">Google: {activeGoogleEmail}</span>
-                        </>
-                      )}
-                    </button>
-
+                  ) : (
                     <button
                       type="button"
                       onClick={() => handleGoogleSignIn(false, true, false)}
                       disabled={isBusy}
-                      className="w-full min-h-[44px] py-2.5 px-4 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
+                      className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
                     >
-                      <GoogleLogoIcon className="w-4 h-4 shrink-0" />
-                      <span>{t('switchGoogleAccountBtn')}</span>
+                      {isAuthenticating && !isRequestingRemoteLogout ? (
+                        <>
+                          <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                          <span>{t('openingGoogleAuth')}</span>
+                        </>
+                      ) : (
+                        <>
+                          <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                          <span>{t('loginWithGoogle')}</span>
+                        </>
+                      )}
                     </button>
+                  )}
+
+                  <div className="pt-2 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400 leading-relaxed">
+                    <div className="flex items-start gap-2">
+                      <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <span>{t('adminDefaultNotice')}</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <Cloud className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                      <span>{t('staffNotice')}</span>
+                    </div>
                   </div>
-                ) : (
+                </div>
+              ) : (
+                /* Khối Đăng Nhập Cục Bộ Dự Phòng (hoạt động tức thì kể cả khi Firebase về Spark hoặc mất mạng) */
+                <form
+                  onSubmit={(e) => handleLocalSignIn(e, false)}
+                  className="p-5 sm:p-6 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-4 shadow-inner"
+                >
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="local-login-username"
+                      className="block text-xs font-semibold text-slate-300"
+                    >
+                      Tên đăng nhập hoặc Email
+                    </label>
+                    <input
+                      id="local-login-username"
+                      type="text"
+                      autoComplete="username"
+                      value={localUsername}
+                      onChange={(e) => setLocalUsername(e.target.value)}
+                      placeholder="VD: Võ Dương Phú hoặc email đã đăng ký"
+                      disabled={isBusy}
+                      className="w-full min-h-[44px] px-3.5 py-2.5 bg-slate-900 border border-slate-700 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/25 rounded-xl text-sm text-white placeholder-slate-500 outline-none transition"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="local-login-password"
+                      className="block text-xs font-semibold text-slate-300"
+                    >
+                      Mật khẩu
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="local-login-password"
+                        type={showLocalPassword ? 'text' : 'password'}
+                        autoComplete="current-password"
+                        value={localPassword}
+                        onChange={(e) => setLocalPassword(e.target.value)}
+                        placeholder="Nhập mật khẩu tài khoản..."
+                        disabled={isBusy}
+                        className="w-full min-h-[44px] pl-3.5 pr-11 py-2.5 bg-slate-900 border border-slate-700 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/25 rounded-xl text-sm text-white placeholder-slate-500 outline-none transition"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowLocalPassword((prev) => !prev)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-white rounded-lg transition"
+                        title={showLocalPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                      >
+                        {showLocalPassword ? (
+                          <EyeOff className="w-4 h-4" />
+                        ) : (
+                          <Eye className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
                   <button
-                    type="button"
-                    onClick={() => handleGoogleSignIn(false, true, false)}
+                    type="submit"
                     disabled={isBusy}
-                    className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
+                    className="w-full min-h-[50px] py-3 px-5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm rounded-xl shadow-lg shadow-emerald-950/50 transition active:scale-[0.99] flex items-center justify-center gap-2.5 disabled:opacity-70"
                   >
                     {isAuthenticating && !isRequestingRemoteLogout ? (
                       <>
-                        <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-                        <span>{t('openingGoogleAuth')}</span>
+                        <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                        <span>Đang xác thực cục bộ...</span>
                       </>
                     ) : (
                       <>
-                        <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                        <span>{t('loginWithGoogle')}</span>
+                        <HardDrive className="w-4 h-4 shrink-0" />
+                        <span>Đăng nhập cục bộ ngay</span>
                       </>
                     )}
                   </button>
-                )}
 
-                <div className="pt-2 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400 leading-relaxed">
-                  <div className="flex items-start gap-2">
-                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                    <span>{t('adminDefaultNotice')}</span>
+                  <div className="pt-2 border-t border-slate-800/80 space-y-1.5 text-[11px] text-slate-400 leading-relaxed">
+                    <div className="flex items-start gap-2">
+                      <HardDrive className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <span>
+                        Hoạt động trực tiếp trên dữ liệu cục bộ lưu trong trình duyệt (IndexedDB), không bị chặn khi chuyển về gói miễn phí Spark hoặc khi Cloud Firestore tạm dừng.
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-start gap-2">
-                    <Cloud className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-                    <span>{t('staffNotice')}</span>
-                  </div>
-                </div>
-              </div>
+                </form>
+              )}
 
               <div className="text-center text-xs text-slate-500">
                 {t('singleDeviceNotice')}

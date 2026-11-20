@@ -7,6 +7,10 @@ import {
   AlertCircle,
   CheckCircle2,
   Cloud,
+  KeyRound,
+  HardDrive,
+  Eye,
+  EyeOff,
   LogOut
 } from 'lucide-react';
 import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
@@ -40,9 +44,17 @@ const GoogleLogoIcon: React.FC<{ className?: string }> = ({ className = 'w-5 h-5
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   const {
     loginWithGoogle,
+    login,
+    requestLogoutOtherDevice,
     requestLogoutOtherDeviceWithGoogle,
     cloudState
   } = useAuth();
+
+  const [authMode, setAuthMode] = useState<'google' | 'local'>('google');
+  const [localUsername, setLocalUsername] = useState('');
+  const [localPassword, setLocalPassword] = useState('');
+  const [showLocalPassword, setShowLocalPassword] = useState(false);
+  const [conflictOrigin, setConflictOrigin] = useState<'google' | 'local'>('google');
 
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -52,6 +64,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   const [isForcingLogout, setIsForcingLogout] = useState(false);
 
   if (!isOpen) return null;
+
+  const switchAuthMode = (nextMode: 'google' | 'local') => {
+    setAuthMode(nextMode);
+    setErrorMessage('');
+    setSuccessMessage('');
+    setConflictSession(null);
+    setConflictMessage('');
+  };
 
   const handleGoogleSignIn = async (
     forceLogoutOtherDevice = false,
@@ -82,6 +102,50 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
       } else if (res.redirected) {
         setSuccessMessage(res.message || 'Đang chuyển hướng sang trang đăng nhập Google...');
       } else if (res.conflict) {
+        setConflictOrigin('google');
+        setConflictSession(res.activeSession || null);
+        setConflictMessage(res.message);
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleLocalSignIn = async (
+    e?: React.FormEvent,
+    forceLogoutOtherDevice = false
+  ) => {
+    if (e) e.preventDefault();
+    setErrorMessage('');
+    setSuccessMessage('');
+    const cleanUser = localUsername.trim();
+    if (!cleanUser) {
+      setErrorMessage('Vui lòng nhập tên đăng nhập hoặc email.');
+      return;
+    }
+    if (!localPassword) {
+      setErrorMessage('Vui lòng nhập mật khẩu.');
+      return;
+    }
+    if (!forceLogoutOtherDevice) {
+      setConflictSession(null);
+      setConflictMessage('');
+    }
+    setIsSubmitting(true);
+    try {
+      const res = await login(cleanUser, localPassword, forceLogoutOtherDevice, true);
+      if (res.success) {
+        setConflictSession(null);
+        setConflictMessage('');
+        setSuccessMessage(res.message || 'Đăng nhập cục bộ thành công!');
+        setTimeout(() => {
+          onClose();
+          setSuccessMessage('');
+        }, 400);
+      } else if (res.conflict) {
+        setConflictOrigin('local');
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);
       } else {
@@ -95,7 +159,11 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   const handleForceLogoutAndLogin = async () => {
     setIsForcingLogout(true);
     try {
-      await handleGoogleSignIn(true, false, true);
+      if (conflictOrigin === 'local') {
+        await handleLocalSignIn(undefined, true);
+      } else {
+        await handleGoogleSignIn(true, false, true);
+      }
     } finally {
       setIsForcingLogout(false);
     }
@@ -106,7 +174,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
     setSuccessMessage('');
     setIsForcingLogout(true);
     try {
-      const res = await requestLogoutOtherDeviceWithGoogle();
+      const res =
+        conflictOrigin === 'local'
+          ? await requestLogoutOtherDevice(localUsername.trim(), localPassword)
+          : await requestLogoutOtherDeviceWithGoogle();
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
@@ -191,49 +262,127 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
             </div>
           )}
 
-          <div className="space-y-2.5">
-            {activeGoogleEmail ? (
-              <>
-                <div className="px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center gap-2">
-                  <Cloud className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span className="truncate">Tài khoản hiện tại: {activeGoogleEmail}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleGoogleSignIn(false, false, true)}
-                  disabled={isBusy}
-                  className="w-full min-h-[46px] py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-xl shadow-md shadow-blue-500/20 transition flex items-center justify-center gap-2.5 disabled:opacity-70"
-                >
-                  <GoogleLogoIcon className="w-4 h-4 bg-white rounded-full p-0.5 shrink-0" />
-                  <span className="truncate">
-                    {isSubmitting && !isForcingLogout ? 'Đang xác thực...' : `Tiếp tục với ${activeGoogleEmail}`}
-                  </span>
-                </button>
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
+            <button
+              type="button"
+              onClick={() => switchAuthMode('google')}
+              disabled={isBusy}
+              className={`min-h-[36px] px-2.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                authMode === 'google'
+                  ? 'bg-white text-blue-700 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <GoogleLogoIcon className="w-3.5 h-3.5 shrink-0" />
+              <span>Google Cloud</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => switchAuthMode('local')}
+              disabled={isBusy}
+              className={`min-h-[36px] px-2.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                authMode === 'local'
+                  ? 'bg-white text-emerald-700 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <KeyRound className="w-3.5 h-3.5 shrink-0" />
+              <span>Tài khoản cục bộ</span>
+            </button>
+          </div>
 
+          {authMode === 'google' ? (
+            <div className="space-y-2.5">
+              {activeGoogleEmail ? (
+                <>
+                  <div className="px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center gap-2">
+                    <Cloud className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span className="truncate">Tài khoản hiện tại: {activeGoogleEmail}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSignIn(false, false, true)}
+                    disabled={isBusy}
+                    className="w-full min-h-[46px] py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-xl shadow-md shadow-blue-500/20 transition flex items-center justify-center gap-2.5 disabled:opacity-70"
+                  >
+                    <GoogleLogoIcon className="w-4 h-4 bg-white rounded-full p-0.5 shrink-0" />
+                    <span className="truncate">
+                      {isSubmitting && !isForcingLogout ? 'Đang xác thực...' : `Tiếp tục với ${activeGoogleEmail}`}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSignIn(false, true, false)}
+                    disabled={isBusy}
+                    className="w-full min-h-[42px] py-2 px-4 bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-70"
+                  >
+                    <GoogleLogoIcon className="w-4 h-4 shrink-0" />
+                    <span>Chọn tài khoản Google khác</span>
+                  </button>
+                </>
+              ) : (
                 <button
                   type="button"
                   onClick={() => handleGoogleSignIn(false, true, false)}
                   disabled={isBusy}
-                  className="w-full min-h-[42px] py-2 px-4 bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-70"
+                  className="w-full min-h-[48px] py-3 px-4 bg-white hover:bg-slate-50 border-2 border-slate-200 hover:border-blue-400 text-slate-900 font-bold text-sm rounded-xl shadow-sm transition flex items-center justify-center gap-3 disabled:opacity-70"
                 >
-                  <GoogleLogoIcon className="w-4 h-4 shrink-0" />
-                  <span>Chọn tài khoản Google khác</span>
+                  <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                  <span>
+                    {isSubmitting && !isForcingLogout ? 'Đang mở xác thực Google...' : 'Đăng nhập bằng tài khoản Google'}
+                  </span>
                 </button>
-              </>
-            ) : (
+              )}
+            </div>
+          ) : (
+            <form onSubmit={(e) => handleLocalSignIn(e, false)} className="space-y-3">
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Tên đăng nhập hoặc Email
+                </label>
+                <input
+                  type="text"
+                  autoComplete="username"
+                  value={localUsername}
+                  onChange={(e) => setLocalUsername(e.target.value)}
+                  placeholder="VD: Võ Dương Phú hoặc email..."
+                  disabled={isBusy}
+                  className="w-full min-h-[42px] px-3 py-2 bg-slate-50 border border-slate-300 focus:border-emerald-500 rounded-xl text-sm text-slate-900 outline-none"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-slate-700">Mật khẩu</label>
+                <div className="relative">
+                  <input
+                    type={showLocalPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={localPassword}
+                    onChange={(e) => setLocalPassword(e.target.value)}
+                    placeholder="Nhập mật khẩu..."
+                    disabled={isBusy}
+                    className="w-full min-h-[42px] pl-3 pr-10 py-2 bg-slate-50 border border-slate-300 focus:border-emerald-500 rounded-xl text-sm text-slate-900 outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLocalPassword((prev) => !prev)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-500 hover:text-slate-800"
+                    title={showLocalPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  >
+                    {showLocalPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
               <button
-                type="button"
-                onClick={() => handleGoogleSignIn(false, true, false)}
+                type="submit"
                 disabled={isBusy}
-                className="w-full min-h-[48px] py-3 px-4 bg-white hover:bg-slate-50 border-2 border-slate-200 hover:border-blue-400 text-slate-900 font-bold text-sm rounded-xl shadow-sm transition flex items-center justify-center gap-3 disabled:opacity-70"
+                className="w-full min-h-[44px] py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-xl shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-70"
               >
-                <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                <span>
-                  {isSubmitting && !isForcingLogout ? 'Đang mở xác thực Google...' : 'Đăng nhập bằng tài khoản Google'}
-                </span>
+                <HardDrive className="w-4 h-4 shrink-0" />
+                <span>{isSubmitting && !isForcingLogout ? 'Đang xác thực...' : 'Đăng nhập cục bộ ngay'}</span>
               </button>
-            )}
-          </div>
+            </form>
+          )}
 
           <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2">
             <button

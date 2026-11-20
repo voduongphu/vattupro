@@ -160,6 +160,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
             {(() => {
               const busy = isSyncing || isConnectingCloud || cloudState.status === 'connecting';
               const quotaExceeded = Boolean(cloudState.quotaExceeded);
+              const isSparkPaused = Boolean(
+                quotaExceeded &&
+                  cloudState.errorMessage &&
+                  /spark|blaze|thanh toán|billing/i.test(cloudState.errorMessage)
+              );
               const hasError = cloudState.status === 'error';
               const connected = cloudState.status === 'connected' && !hasError;
 
@@ -199,7 +204,13 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                     <CloudUpload className="w-4 h-4 text-blue-400 shrink-0" />
                   )}
                   <span className="hidden sm:inline">
-                    {busy ? t('syncing') : quotaExceeded ? t('cloudQuotaExceededShort') : t('cloudSync')}
+                    {busy
+                      ? t('syncing')
+                      : isSparkPaused
+                        ? 'Cloud tạm dừng (Spark)'
+                        : quotaExceeded
+                          ? t('cloudQuotaExceededShort')
+                          : t('cloudSync')}
                   </span>
                 </button>
               );
@@ -354,7 +365,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                 )}
                 <span className="leading-relaxed break-words">
                   <strong className="mr-1.5">
-                    {cloudState.quotaExceeded ? t('cloudQuotaExceeded') + ':' : 'Lỗi Cloud Firestore:'}
+                    {cloudState.quotaExceeded
+                      ? /spark|blaze|thanh toán|billing/i.test(cloudState.errorMessage)
+                        ? 'Cloud Firestore tạm dừng (Gói Spark):'
+                        : `${t('cloudQuotaExceeded')}:`
+                      : 'Lỗi Cloud Firestore:'}
                   </strong>
                   {cloudState.errorMessage}
                 </span>
