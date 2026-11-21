@@ -1,57 +1,33 @@
 import React, { useEffect } from 'react';
-import { computeStickyHeaderOffset, resolveOpaqueHeaderBg } from '../../utils/stickyTableHeader';
+import { computeFixedHeaderLayout, resolveOpaqueHeaderBg } from '../../utils/stickyTableHeader';
 
 const EXCLUDED_TABLE_SELECTOR = '.vtp-voucher-table, [data-no-sticky-header="true"]';
+const SPACER_ATTR = 'data-vtp-sticky-spacer';
 
-interface TableStickyMeasurement {
+interface FixedPinRecord {
   thead: HTMLTableSectionElement;
+  headerRow: HTMLTableRowElement;
   cells: HTMLTableCellElement[];
-  cellBgs: string[];
-  offset: number;
-  isStuck: boolean;
+  spacerRow: HTMLTableRowElement;
+  theadHeight: number;
+  tableWidth: number;
+  xWrapper: HTMLElement;
 }
 
-function isScrollableOverflow(value: string): boolean {
-  return value === 'auto' || value === 'scroll';
-}
-
-function isStickyClipOverflow(value: string): boolean {
-  return value === 'auto' || value === 'scroll' || value === 'hidden';
-}
-
-function findAncestorInfo(table: HTMLTableElement): {
+interface AncestorScan {
   inFixedOverlay: boolean;
+  /** Vertically scrollable ancestors (scrollHeight > clientHeight), innermost first */
   verticalScrollAncestors: HTMLElement[];
-  cssStickyContainer: HTMLElement | null;
-} {
-  let inFixedOverlay = false;
-  const verticalScrollAncestors: HTMLElement[] = [];
-  let cssStickyContainer: HTMLElement | null = null;
+  /** Non-scrolling overflow-hidden / overflow-x-auto ancestors between table and its scroll container */
+  blockingAncestors: HTMLElement[];
+  /** Nearest horizontal scroll wrapper (`overflow-x: auto | scroll`, or previously clipped by us) */
+  xWrapper: HTMLElement | null;
+  /** Whether table sits inside an inner max-height vertical scrollbox (e.g. max-h-96) */
+  hasInnerVerticalBox: boolean;
+}
 
-  let el: HTMLElement | null = table.parentElement;
-  while (el && el !== document.body && el !== document.documentElement) {
-    const style = window.getComputedStyle(el);
-
-    if (!cssStickyContainer && isStickyClipOverflow(style.overflowY)) {
-      cssStickyContainer = el;
-    }
-
-    if (
-      isScrollableOverflow(style.overflowY) &&
-      el.scrollHeight - el.clientHeight > 2
-    ) {
-      verticalScrollAncestors.push(el);
-    }
-
-    if (style.position === 'fixed') {
-      inFixedOverlay = true;
-      break;
-    }
-
-    el = el.parentElement;
-  }
-
-  return { inFixedOverlay, verticalScrollAncestors, cssStickyContainer };
+function isScrollableValue(val: string): boolean {
+  return val === 'auto' || val === 'scroll';
 }
 
 function getMainNavbarBottom(): number {
@@ -62,206 +38,557 @@ function getMainNavbarBottom(): number {
     return 0;
   }
   const rect = header.getBoundingClientRect();
-  return Math.max(0, rect.bottom);
+  return Math.max(0, Math.round(rect.bottom * 100) / 100);
 }
 
 /**
- * Globally pins every data table's <thead> flush underneath the main Navbar (on main tabs)
- * or flush underneath the modal's main header bar (inside modals) while preserving native
- * horizontal scrolling and sticky-right action columns.
+ * Checks if any ancestor creates a containing block for `position: fixed`
+ * (e.g. via CSS transform/filter/perspective) and returns its viewport origin.
+ */
+function getFixedContainingBlockOrigin(el: HTMLElement): { top: number; left: number } {
+  let node: HTMLElement | null = el.parentElement;
+  while (node && node !== document.body && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    const hasTransform = style.transform && style.transform !== 'none';
+    const hasPerspective = style.perspective && style.perspective !== 'none';
+    const hasFilter = style.filter && style.filter !== 'none';
+    const hasWillChange =
+      style.willChange &&
+      (style.willChange.includes('transform') || style.willChange.includes('filter'));
+
+    if (hasTransform || hasPerspective || hasFilter || hasWillChange) {
+      const rect = node.getBoundingClientRect();
+      return { top: rect.top, left: rect.left };
+    }
+    node = node.parentElement;
+  }
+  return { top: 0, left: 0 };
+}
+
+function scanTableAncestors(table: HTMLTableElement): AncestorScan {
+  let inFixedOverlay = false;
+  const verticalScrollAncestors: HTMLElement[] = [];
+  const blockingAncestors: HTMLElement[] = [];
+  let xWrapper: HTMLElement | null = null;
+
+  let el: HTMLElement | null = table.parentElement;
+  while (el && el !== document.body && el !== document.documentElement) {
+    const style = window.getComputedStyle(el);
+
+    const isExplicitXWrapper =
+      el.classList.contains('overflow-x-auto') ||
+      el.classList.contains('vtp-sticky-clip-x') ||
+      isScrollableValue(style.overflowX);
+
+    if (!xWrapper && isExplicitXWrapper) {
+      xWrapper = el;
+    }
+
+    const isVerticallyScrollable =
+      isScrollableValue(style.overflowY) &&
+      !el.classList.contains('vtp-sticky-clip-x') &&
+      el.scrollHeight - el.clientHeight > 2;
+
+    if (isVerticallyScrollable) {
+      verticalScrollAncestors.push(el);
+    } else if (
+      verticalScrollAncestors.length === 0 &&
+      (style.overflowX === 'hidden' ||
+        style.overflowY === 'hidden' ||
+        isScrollableValue(style.overflowX) ||
+        isScrollableValue(style.overflowY) ||
+        el.classList.contains('vtp-sticky-clip-ancestor') ||
+        el.classList.contains('vtp-sticky-clip-x'))
+    ) {
+      blockingAncestors.push(el);
+    }
+
+    if (style.position === 'fixed') {
+      inFixedOverlay = true;
+      break;
+    }
+
+    el = el.parentElement;
+  }
+
+  // An inner vertical scrollbox is a vertical scroller that is also the table's direct xWrapper
+  // or has an explicit max-height (e.g. max-h-96, max-h-[58dvh], max-h-80)
+  const firstScroller = verticalScrollAncestors[0];
+  const hasInnerVerticalBox = Boolean(
+    firstScroller &&
+      (firstScroller === xWrapper ||
+        (window.getComputedStyle(firstScroller).maxHeight !== 'none' &&
+          !firstScroller.classList.contains('flex-1')))
+  );
+
+  return {
+    inFixedOverlay,
+    verticalScrollAncestors,
+    blockingAncestors,
+    xWrapper,
+    hasInnerVerticalBox
+  };
+}
+
+/**
+ * Zero-jitter, compositor-thread sticky table headers across all main tabs and modals:
+ *
+ * - Tier 1 (Native CSS `position: sticky`): Used whenever a table fits horizontally
+ *   (or sits inside an inner `max-h-*` scrollbox). Converts non-scrolling ancestor
+ *   `overflow: hidden` / `overflow-x: auto` wrappers to `overflow: clip` so native
+ *   CSS `position: sticky` runs 100% on the browser compositor thread with ZERO scroll jitter.
+ *
+ * - Tier 2 (Compositor-thread `position: fixed`): Automatically used ONLY when a table
+ *   genuinely overflows horizontally (`scrollWidth > clientWidth`) without an inner vertical
+ *   scrollbox (e.g. wide Create/Edit Inbound form on desktop or narrow viewports). Locks
+ *   the real `<thead>` row at a constant viewport `top` with `clip-path` horizontal clipping
+ *   so vertical mouse-wheel scrolling has ZERO bounce/jitter while preserving all interactive
+ *   React controls, horizontal scrolling, and right-pinned `Xóa` columns.
  */
 export const StickyTableHeadersController: React.FC = () => {
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
-    const cachedCellBg = new WeakMap<HTMLTableCellElement, { className: string; bg: string }>();
-    const trackedCells = new Set<HTMLTableCellElement>();
-    const trackedTheads = new Set<HTMLTableSectionElement>();
+    const cachedCellBg = new WeakMap<HTMLTableCellElement, { key: string; bg: string }>();
+    const activeFixedPins = new Map<HTMLTableElement, FixedPinRecord>();
+    const trackedNativeTheads = new Set<HTMLTableSectionElement>();
+    const trackedClipAncestors = new Set<HTMLElement>();
+    const observedElements = new WeakSet<Element>();
+    let isMutatingDom = false;
 
-    const getOpaqueCellBg = (
+    const getHeaderRows = (thead: HTMLTableSectionElement): HTMLTableRowElement[] =>
+      Array.from(thead.rows).filter((r) => !r.hasAttribute(SPACER_ATTR));
+
+    const getHeaderCells = (row: HTMLTableRowElement): HTMLTableCellElement[] =>
+      Array.from(row.cells);
+
+    const resolveCellOpaqueBg = (
       cell: HTMLTableCellElement,
-      thead: HTMLTableSectionElement,
-      theadBg: string
+      thead: HTMLTableSectionElement
     ): string => {
-      const key = `${thead.className.replace(/\bvtp-thead-stuck\b/g, '').trim()}|${cell.className}`;
+      const cleanTheadClass = thead.className
+        .replace(/\b(vtp-thead-native-sticky|vtp-thead-stuck)\b/g, '')
+        .trim();
+      const key = `${cleanTheadClass}|${cell.className}`;
       const existing = cachedCellBg.get(cell);
-      if (existing && existing.className === key) {
+      if (existing && existing.key === key) {
         return existing.bg;
       }
 
+      // Read natural computed colors without our sticky background override
+      const hadNative = thead.classList.contains('vtp-thead-native-sticky');
+      const parentRow = cell.parentElement;
+      const hadFixed = Boolean(parentRow?.classList.contains('vtp-thead-fixed-row'));
+      if (hadNative) thead.classList.remove('vtp-thead-native-sticky');
+      if (hadFixed && parentRow) parentRow.classList.remove('vtp-thead-fixed-row');
+
       const thBg = window.getComputedStyle(cell).backgroundColor;
+      const theadBg = window.getComputedStyle(thead).backgroundColor;
+
+      if (hadNative) thead.classList.add('vtp-thead-native-sticky');
+      if (hadFixed && parentRow) parentRow.classList.add('vtp-thead-fixed-row');
+
       const resolved = resolveOpaqueHeaderBg(thBg, theadBg, '#f1f5f9');
-      cachedCellBg.set(cell, { className: key, bg: resolved });
+      cachedCellBg.set(cell, { key, bg: resolved });
       return resolved;
     };
 
-    const updateAllTables = () => {
-      const tables = document.querySelectorAll<HTMLTableElement>('table');
-      if (tables.length === 0) return;
+    const unpinFixedTable = (table: HTMLTableElement) => {
+      const pin = activeFixedPins.get(table);
+      if (!pin) return;
 
-      const navbarBottom = getMainNavbarBottom();
-      const measurements: TableStickyMeasurement[] = [];
+      isMutatingDom = true;
+      try {
+        pin.spacerRow.remove();
+        pin.headerRow.classList.remove('vtp-thead-fixed-row');
+        pin.headerRow.style.top = '';
+        pin.headerRow.style.left = '';
+        pin.headerRow.style.width = '';
+        pin.headerRow.style.clipPath = '';
+        pin.thead.classList.remove('vtp-thead-stuck');
 
-      // Phase 1: Batch DOM reads to avoid layout thrashing
-      tables.forEach((table) => {
-        if (table.matches(EXCLUDED_TABLE_SELECTOR)) return;
-        if (table.closest('.vtp-print-portal')) return;
-
-        const thead = table.tHead;
-        if (!thead) return;
-
-        const cells = Array.from(
-          thead.querySelectorAll<HTMLTableCellElement>('th, td')
-        );
-        if (cells.length === 0) return;
-
-        const tableRect = table.getBoundingClientRect();
-        const theadRect = thead.getBoundingClientRect();
-        if (tableRect.height <= 0 || theadRect.height <= 0) {
-          measurements.push({ thead, cells, cellBgs: [], offset: 0, isStuck: false });
-          return;
+        for (const cell of pin.cells) {
+          cell.style.width = '';
+          cell.style.minWidth = '';
+          cell.style.maxWidth = '';
+          cell.style.boxSizing = '';
+          cell.style.transform = '';
         }
+        activeFixedPins.delete(table);
+      } finally {
+        isMutatingDom = false;
+      }
+    };
 
-        const tfootHeight = table.tFoot ? table.tFoot.getBoundingClientRect().height : 0;
-        const { inFixedOverlay, verticalScrollAncestors, cssStickyContainer } =
-          findAncestorInfo(table);
+    const clearNativeSticky = (
+      thead: HTMLTableSectionElement,
+      blockingAncestors: HTMLElement[]
+    ) => {
+      if (thead.classList.contains('vtp-thead-native-sticky')) {
+        thead.classList.remove('vtp-thead-native-sticky', 'vtp-thead-stuck');
+        thead.style.removeProperty('--vtp-sticky-top');
+      }
+      for (const el of blockingAncestors) {
+        el.classList.remove('vtp-sticky-clip-ancestor', 'vtp-sticky-clip-x');
+        trackedClipAncestors.delete(el);
+      }
+    };
 
-        const theadStyle = window.getComputedStyle(thead);
-        const isNativeStickyActive =
-          theadStyle.position === 'sticky' &&
-          verticalScrollAncestors.length > 0 &&
-          cssStickyContainer === verticalScrollAncestors[0];
-
-        let effectiveStickyTop: number;
-        let nativeStickyTop: number | undefined;
-        let maxContainerBottom: number | undefined;
-
-        if (verticalScrollAncestors.length > 0) {
-          const ancestorRects = verticalScrollAncestors.map((el) =>
-            el.getBoundingClientRect()
-          );
-
-          // Pin flush below the lowest (most constraining) scrollable ancestor's top edge
-          effectiveStickyTop = Math.max(...ancestorRects.map((r) => r.top));
-          if (!inFixedOverlay) {
-            effectiveStickyTop = Math.max(effectiveStickyTop, navbarBottom);
-          }
-
-          maxContainerBottom = Math.min(...ancestorRects.map((r) => r.bottom));
-
-          if (isNativeStickyActive) {
-            nativeStickyTop = Math.max(tableRect.top, ancestorRects[0].top);
-          }
-        } else if (inFixedOverlay) {
-          // Inside a modal that is not currently overflowing vertically -> no stick needed
-          measurements.push({ thead, cells, cellBgs: [], offset: 0, isStuck: false });
-          return;
-        } else {
-          // Main page tab scrolling inside window -> pin flush below main Navbar
-          effectiveStickyTop = navbarBottom;
-        }
-
-        const { offset, isStuck } = computeStickyHeaderOffset({
-          tableTop: tableRect.top,
-          tableBottom: tableRect.bottom,
-          theadHeight: theadRect.height,
-          tfootHeight,
-          effectiveStickyTop,
-          nativeStickyTop,
-          maxContainerBottom
-        });
-
-        // Pre-warm opaque background cache while unstuck (or reuse cached values)
-        const theadBg = theadStyle.backgroundColor;
-        const cellBgs = isStuck
-          ? cells.map((cell) => getOpaqueCellBg(cell, thead, theadBg))
-          : [];
-
-        measurements.push({ thead, cells, cellBgs, offset, isStuck });
-      });
-
-      // Phase 2: Batch DOM writes (skipping no-op mutations)
-      for (const { thead, cells, cellBgs, offset, isStuck } of measurements) {
-        if (isStuck) {
-          trackedTheads.add(thead);
-          const nextTransform = offset > 0 ? `translate3d(0, ${offset}px, 0)` : '';
-          for (let i = 0; i < cells.length; i++) {
-            const cell = cells[i];
-            const bg = cellBgs[i];
-            if (bg && cell.style.getPropertyValue('--vtp-th-bg') !== bg) {
-              cell.style.setProperty('--vtp-th-bg', bg);
-            }
-            if (cell.style.transform !== nextTransform) {
-              cell.style.transform = nextTransform;
-            }
-            trackedCells.add(cell);
-          }
-          if (!thead.classList.contains('vtp-thead-stuck')) {
-            thead.classList.add('vtp-thead-stuck');
-          }
-        } else {
-          if (thead.classList.contains('vtp-thead-stuck')) {
-            thead.classList.remove('vtp-thead-stuck');
-          }
-          for (const cell of cells) {
-            if (cell.style.transform) {
-              cell.style.transform = '';
-            }
-          }
+    const ensureCellBackgrounds = (
+      thead: HTMLTableSectionElement,
+      cells: HTMLTableCellElement[]
+    ) => {
+      for (const cell of cells) {
+        const bg = resolveCellOpaqueBg(cell, thead);
+        if (cell.style.getPropertyValue('--vtp-th-bg') !== bg) {
+          cell.style.setProperty('--vtp-th-bg', bg);
         }
       }
     };
 
-    let rafId: number | null = null;
-    const scheduleUpdate = () => {
-      if (rafId !== null) return;
-      rafId = window.requestAnimationFrame(() => {
-        rafId = null;
-        updateAllTables();
+    const applyFixedPin = (
+      table: HTMLTableElement,
+      thead: HTMLTableSectionElement,
+      headerRow: HTMLTableRowElement,
+      xWrapper: HTMLElement,
+      effectiveStickyTop: number
+    ) => {
+      const cells = getHeaderCells(headerRow);
+      if (cells.length === 0) return;
+
+      const tfootHeight = table.tFoot ? table.tFoot.getBoundingClientRect().height : 0;
+      const existingPin = activeFixedPins.get(table);
+      const tableRect = table.getBoundingClientRect();
+      const wrapperRect = xWrapper.getBoundingClientRect();
+
+      const theadHeight = existingPin
+        ? existingPin.theadHeight
+        : headerRow.getBoundingClientRect().height;
+      const tableWidth = existingPin ? existingPin.tableWidth : tableRect.width;
+
+      const fixedOrigin = getFixedContainingBlockOrigin(headerRow);
+      const layout = computeFixedHeaderLayout({
+        tableTop: tableRect.top,
+        tableBottom: tableRect.bottom,
+        tableWidth,
+        theadHeight,
+        tfootHeight,
+        wrapperLeft: wrapperRect.left,
+        wrapperClientWidth: xWrapper.clientWidth,
+        wrapperScrollLeft: xWrapper.scrollLeft,
+        effectiveStickyTop,
+        fixedOriginTop: fixedOrigin.top,
+        fixedOriginLeft: fixedOrigin.left
+      });
+
+      if (!layout.shouldPin) {
+        if (existingPin) {
+          unpinFixedTable(table);
+        }
+        return;
+      }
+
+      isMutatingDom = true;
+      try {
+        let pin = existingPin;
+        if (!pin) {
+          // Measure column widths once before promoting row to position: fixed
+          const colWidths = cells.map((c) => c.getBoundingClientRect().width);
+          ensureCellBackgrounds(thead, cells);
+
+          const spacerRow = document.createElement('tr');
+          spacerRow.setAttribute(SPACER_ATTR, 'true');
+          spacerRow.setAttribute('aria-hidden', 'true');
+          const spacerCell = document.createElement('th');
+          spacerCell.colSpan = Math.max(1, cells.length);
+          spacerCell.style.height = `${theadHeight}px`;
+          spacerCell.style.padding = '0';
+          spacerCell.style.border = '0';
+          spacerCell.style.visibility = 'hidden';
+          spacerCell.style.pointerEvents = 'none';
+          spacerRow.appendChild(spacerCell);
+          thead.appendChild(spacerRow);
+
+          for (let i = 0; i < cells.length; i++) {
+            const w = `${Math.round(colWidths[i] * 100) / 100}px`;
+            cells[i].style.width = w;
+            cells[i].style.minWidth = w;
+            cells[i].style.maxWidth = w;
+            cells[i].style.boxSizing = 'border-box';
+          }
+
+          headerRow.classList.add('vtp-thead-fixed-row');
+          thead.classList.add('vtp-thead-stuck');
+
+          pin = {
+            thead,
+            headerRow,
+            cells,
+            spacerRow,
+            theadHeight,
+            tableWidth,
+            xWrapper
+          };
+          activeFixedPins.set(table, pin);
+        }
+
+        const nextTop = `${layout.top}px`;
+        const nextLeft = `${layout.left}px`;
+        const nextWidth = `${layout.width}px`;
+        const nextClip = `inset(0px ${layout.clipRight}px -14px ${layout.clipLeft}px)`;
+
+        if (pin.headerRow.style.top !== nextTop) {
+          pin.headerRow.style.top = nextTop;
+        }
+        if (pin.headerRow.style.left !== nextLeft) {
+          pin.headerRow.style.left = nextLeft;
+        }
+        if (pin.headerRow.style.width !== nextWidth) {
+          pin.headerRow.style.width = nextWidth;
+        }
+        if (pin.headerRow.style.clipPath !== nextClip) {
+          pin.headerRow.style.clipPath = nextClip;
+        }
+
+        for (const cell of pin.cells) {
+          if (cell.classList.contains('sticky')) {
+            const nextTransform =
+              layout.stickyRightShift < -0.25
+                ? `translate3d(${layout.stickyRightShift}px, 0, 0)`
+                : '';
+            if (cell.style.transform !== nextTransform) {
+              cell.style.transform = nextTransform;
+            }
+          }
+        }
+      } finally {
+        isMutatingDom = false;
+      }
+    };
+
+    const syncTable = (
+      table: HTMLTableElement,
+      navbarBottom: number,
+      forceRemeasureFixed: boolean
+    ) => {
+      if (table.matches(EXCLUDED_TABLE_SELECTOR) || table.closest('.vtp-print-portal')) {
+        unpinFixedTable(table);
+        return;
+      }
+
+      const thead = table.tHead;
+      if (!thead) return;
+
+      const headerRows = getHeaderRows(thead);
+      if (headerRows.length === 0) return;
+
+      const allHeaderCells = headerRows.flatMap(getHeaderCells);
+      if (allHeaderCells.length === 0) return;
+
+      if (forceRemeasureFixed && activeFixedPins.has(table)) {
+        unpinFixedTable(table);
+      }
+
+      const {
+        inFixedOverlay,
+        verticalScrollAncestors,
+        blockingAncestors,
+        xWrapper,
+        hasInnerVerticalBox
+      } = scanTableAncestors(table);
+
+      // Observe table and wrapper for width changes (window resize / sidebar toggle / data changes)
+      if (resizeObserver) {
+        if (!observedElements.has(table)) {
+          resizeObserver.observe(table);
+          observedElements.add(table);
+        }
+        if (xWrapper && !observedElements.has(xWrapper)) {
+          resizeObserver.observe(xWrapper);
+          observedElements.add(xWrapper);
+        }
+      }
+
+      // Case 1: Table is inside an inner `max-h-*` vertical scrollbox (e.g. Detail Modals, Stock Picker, Excel Preview)
+      // Native CSS `position: sticky; top: 0` handles BOTH vertical sticky & horizontal scroll natively!
+      if (hasInnerVerticalBox && verticalScrollAncestors.length > 0) {
+        unpinFixedTable(table);
+        ensureCellBackgrounds(thead, allHeaderCells);
+        thead.style.setProperty('--vtp-sticky-top', '0px');
+        thead.classList.add('vtp-thead-native-sticky');
+        trackedNativeTheads.add(thead);
+
+        const innerRect = verticalScrollAncestors[0].getBoundingClientRect();
+        const tableRect = table.getBoundingClientRect();
+        const isStuck = tableRect.top < innerRect.top - 0.5;
+        thead.classList.toggle('vtp-thead-stuck', isStuck);
+        return;
+      }
+
+      // Check whether the table currently needs horizontal scrolling
+      const hasHorizontalOverflow = Boolean(
+        xWrapper && table.offsetWidth > xWrapper.clientWidth + 1
+      );
+
+      // Case 2: Table fits horizontally -> Tier 1: 100% Native CSS `position: sticky` (ZERO jitter!)
+      if (!hasHorizontalOverflow) {
+        unpinFixedTable(table);
+
+        // Inside a modal: stick flush at 0px below modal header (top of modal's overflow-y-auto body)
+        // On main tabs: stick flush below the live main Navbar (`navbarBottom`)
+        const stickyTopValue = inFixedOverlay ? 0 : navbarBottom;
+
+        // Convert blocking `overflow: hidden` / `overflow-x: auto` ancestors to `overflow: clip`
+        for (const el of blockingAncestors) {
+          if (el === xWrapper) {
+            el.classList.add('vtp-sticky-clip-x');
+          } else {
+            el.classList.add('vtp-sticky-clip-ancestor');
+          }
+          trackedClipAncestors.add(el);
+        }
+
+        ensureCellBackgrounds(thead, allHeaderCells);
+        const topCss = `${stickyTopValue}px`;
+        if (thead.style.getPropertyValue('--vtp-sticky-top') !== topCss) {
+          thead.style.setProperty('--vtp-sticky-top', topCss);
+        }
+        if (!thead.classList.contains('vtp-thead-native-sticky')) {
+          thead.classList.add('vtp-thead-native-sticky');
+        }
+        trackedNativeTheads.add(thead);
+
+        // Toggle shadow class purely visually when stuck
+        const tableRect = table.getBoundingClientRect();
+        const scrollBoundaryTop =
+          verticalScrollAncestors.length > 0
+            ? Math.max(...verticalScrollAncestors.map((a) => a.getBoundingClientRect().top))
+            : stickyTopValue;
+        const isStuck =
+          tableRect.top < scrollBoundaryTop - 0.5 &&
+          tableRect.bottom > scrollBoundaryTop + 1;
+        thead.classList.toggle('vtp-thead-stuck', isStuck);
+        return;
+      }
+
+      // Case 3: Table genuinely overflows horizontally (`scrollWidth > clientWidth`) without an inner max-h box
+      // Tier 2: Compositor-thread `position: fixed` pinning with horizontal clip-path & sticky-right support
+      clearNativeSticky(thead, blockingAncestors);
+
+      if (!xWrapper || headerRows.length !== 1) {
+        unpinFixedTable(table);
+        return;
+      }
+
+      let effectiveStickyTop: number;
+      if (verticalScrollAncestors.length > 0) {
+        effectiveStickyTop = Math.max(
+          ...verticalScrollAncestors.map((el) => el.getBoundingClientRect().top)
+        );
+        if (!inFixedOverlay) {
+          effectiveStickyTop = Math.max(effectiveStickyTop, navbarBottom);
+        }
+      } else if (inFixedOverlay) {
+        // Modal is not vertically scrollable
+        unpinFixedTable(table);
+        return;
+      } else {
+        effectiveStickyTop = navbarBottom;
+      }
+
+      applyFixedPin(table, thead, headerRows[0], xWrapper, effectiveStickyTop);
+    };
+
+    const syncAllTables = (forceRemeasureFixed = false) => {
+      if (isMutatingDom) return;
+
+      // Clean up any pins whose table was unmounted from DOM
+      for (const table of Array.from(activeFixedPins.keys())) {
+        if (!table.isConnected) {
+          unpinFixedTable(table);
+        }
+      }
+
+      const navbarBottom = getMainNavbarBottom();
+      const tables = document.querySelectorAll<HTMLTableElement>('table');
+      tables.forEach((table) => {
+        syncTable(table, navbarBottom, forceRemeasureFixed);
       });
     };
 
-    // Run synchronously on scroll for zero-lag tracking across window and modal scrollers
-    const handleScroll = () => {
-      updateAllTables();
+    let rafId: number | null = null;
+    let pendingRemeasure = false;
+    const scheduleSync = (remeasureFixed = false) => {
+      if (remeasureFixed) pendingRemeasure = true;
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        const shouldRemeasure = pendingRemeasure;
+        pendingRemeasure = false;
+        syncAllTables(shouldRemeasure);
+      });
     };
 
-    document.addEventListener('scroll', handleScroll, { capture: true, passive: true });
-    window.addEventListener('resize', scheduleUpdate, { passive: true });
+    // On scroll: update Tier 2 fixed pins & Tier 1 shadow state immediately
+    const handleScroll = () => {
+      syncAllTables(false);
+    };
 
-    const mutationObserver = new MutationObserver(() => {
-      scheduleUpdate();
+    const handleResize = () => {
+      scheduleSync(true);
+    };
+
+    const resizeObserver: ResizeObserver | null =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            scheduleSync(true);
+          })
+        : null;
+
+    const headerEl = document.querySelector<HTMLElement>('header');
+    if (headerEl && resizeObserver) {
+      resizeObserver.observe(headerEl);
+      observedElements.add(headerEl);
+    }
+
+    const mutationObserver = new MutationObserver((mutations) => {
+      if (isMutatingDom) return;
+      // Ignore pure spacer mutations
+      const hasRelevantMutation = mutations.some((m) => {
+        const targetEl = m.target as HTMLElement | null;
+        return !targetEl?.hasAttribute?.(SPACER_ATTR);
+      });
+      if (hasRelevantMutation) {
+        scheduleSync(true);
+      }
     });
     mutationObserver.observe(document.body, {
       childList: true,
       subtree: true
     });
 
-    let headerResizeObserver: ResizeObserver | null = null;
-    const headerEl = document.querySelector<HTMLElement>('header');
-    if (headerEl && typeof ResizeObserver !== 'undefined') {
-      headerResizeObserver = new ResizeObserver(() => {
-        scheduleUpdate();
-      });
-      headerResizeObserver.observe(headerEl);
-    }
+    document.addEventListener('scroll', handleScroll, { capture: true, passive: true });
+    window.addEventListener('resize', handleResize, { passive: true });
 
-    scheduleUpdate();
+    scheduleSync(false);
 
     return () => {
       document.removeEventListener('scroll', handleScroll, true);
-      window.removeEventListener('resize', scheduleUpdate);
+      window.removeEventListener('resize', handleResize);
       mutationObserver.disconnect();
-      headerResizeObserver?.disconnect();
+      resizeObserver?.disconnect();
       if (rafId !== null) {
         window.cancelAnimationFrame(rafId);
       }
-      trackedTheads.forEach((thead) => {
-        thead.classList.remove('vtp-thead-stuck');
+      for (const table of Array.from(activeFixedPins.keys())) {
+        unpinFixedTable(table);
+      }
+      trackedNativeTheads.forEach((thead) => {
+        thead.classList.remove('vtp-thead-native-sticky', 'vtp-thead-stuck');
+        thead.style.removeProperty('--vtp-sticky-top');
       });
-      trackedCells.forEach((cell) => {
-        cell.style.transform = '';
-        cell.style.removeProperty('--vtp-th-bg');
+      trackedClipAncestors.forEach((el) => {
+        el.classList.remove('vtp-sticky-clip-ancestor', 'vtp-sticky-clip-x');
       });
     };
   }, []);

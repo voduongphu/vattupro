@@ -9,30 +9,128 @@ export interface StickyHeaderOffsetInput {
   tfootHeight?: number;
   /** Viewport Y coordinate where the sticky header should pin (e.g. Navbar bottom or modal scroll body top) */
   effectiveStickyTop: number;
-  /**
-   * When the browser's native CSS `position: sticky; top: 0` is already active against
-   * an inner vertical scroll container, pass `Math.max(tableTop, innerScrollerTop)` here
-   * so JS only adds the extra offset needed if an outer scroll container pushes the inner box
-   * above `effectiveStickyTop`. Omit when native CSS sticky is not active.
-   */
+  /** Optional native CSS sticky position when an inner vertical scroller handles sticky */
   nativeStickyTop?: number;
-  /** Optional lower viewport clamp (e.g. inner vertical scroll container bottom) */
+  /** Optional lower viewport clamp */
   maxContainerBottom?: number;
 }
 
 export interface StickyHeaderOffsetResult {
-  /** Vertical translateY offset in px to apply to header cells */
   offset: number;
-  /** Whether the header is visually pinned/stuck (either via transform or native CSS sticky) */
   isStuck: boolean;
+}
+
+export interface FixedHeaderLayoutInput {
+  tableTop: number;
+  tableBottom: number;
+  tableWidth: number;
+  theadHeight: number;
+  tfootHeight?: number;
+  wrapperLeft: number;
+  wrapperClientWidth: number;
+  wrapperScrollLeft: number;
+  effectiveStickyTop: number;
+  /** Top offset of containing block if an ancestor creates a fixed containing block (usually 0) */
+  fixedOriginTop?: number;
+  /** Left offset of containing block if an ancestor creates a fixed containing block (usually 0) */
+  fixedOriginLeft?: number;
+}
+
+export interface FixedHeaderLayoutResult {
+  shouldPin: boolean;
+  top: number;
+  left: number;
+  width: number;
+  clipLeft: number;
+  clipRight: number;
+  /** Negative translateX offset (<= 0) to keep a right-pinned sticky column flush to wrapper right edge */
+  stickyRightShift: number;
 }
 
 const STICKY_EPSILON = 0.5;
 
 /**
- * Computes the clamped vertical translation offset required to keep a table's <thead>
- * pinned flush below the active sticky boundary (main Navbar or modal header bar)
- * without overflowing past the bottom of the table or overlapping <tfoot>.
+ * Computes whether a horizontally scrollable table header should be pinned with
+ * compositor-thread `position: fixed`, along with exact viewport coordinates,
+ * horizontal clip-path bounds, and sticky-right column alignment.
+ */
+export function computeFixedHeaderLayout(
+  input: FixedHeaderLayoutInput
+): FixedHeaderLayoutResult {
+  const {
+    tableTop,
+    tableBottom,
+    tableWidth,
+    theadHeight,
+    tfootHeight = 0,
+    wrapperLeft,
+    wrapperClientWidth,
+    wrapperScrollLeft,
+    effectiveStickyTop,
+    fixedOriginTop = 0,
+    fixedOriginLeft = 0
+  } = input;
+
+  const empty: FixedHeaderLayoutResult = {
+    shouldPin: false,
+    top: 0,
+    left: 0,
+    width: 0,
+    clipLeft: 0,
+    clipRight: 0,
+    stickyRightShift: 0
+  };
+
+  if (
+    !Number.isFinite(tableTop) ||
+    !Number.isFinite(tableBottom) ||
+    !Number.isFinite(tableWidth) ||
+    !Number.isFinite(theadHeight) ||
+    !Number.isFinite(wrapperLeft) ||
+    !Number.isFinite(wrapperClientWidth) ||
+    !Number.isFinite(effectiveStickyTop) ||
+    theadHeight <= 0 ||
+    tableWidth <= 0 ||
+    wrapperClientWidth <= 0
+  ) {
+    return empty;
+  }
+
+  const effectiveBottom = tableBottom - Math.max(0, tfootHeight);
+  // Table must be taller than just its header + footer to warrant pinning
+  if (effectiveBottom - tableTop <= theadHeight + 1) {
+    return empty;
+  }
+
+  const shouldPin =
+    tableTop < effectiveStickyTop - STICKY_EPSILON &&
+    effectiveBottom > effectiveStickyTop + STICKY_EPSILON;
+
+  if (!shouldPin) {
+    return empty;
+  }
+
+  const maxTop = effectiveBottom - theadHeight;
+  const viewportTop = Math.min(effectiveStickyTop, maxTop);
+  const clampedScrollLeft = Math.max(0, wrapperScrollLeft);
+  const maxScrollLeft = Math.max(0, tableWidth - wrapperClientWidth);
+  const clipLeft = clampedScrollLeft;
+  const clipRight = Math.max(0, maxScrollLeft - clampedScrollLeft);
+  const stickyRightShift = -clipRight;
+
+  return {
+    shouldPin: true,
+    top: Math.round((viewportTop - fixedOriginTop) * 100) / 100,
+    left: Math.round((wrapperLeft - clampedScrollLeft - fixedOriginLeft) * 100) / 100,
+    width: Math.round(tableWidth * 100) / 100,
+    clipLeft: Math.round(clipLeft * 100) / 100,
+    clipRight: Math.round(clipRight * 100) / 100,
+    stickyRightShift: Math.round(stickyRightShift * 100) / 100
+  };
+}
+
+/**
+ * Legacy/utility clamped vertical offset helper (used for computing stuck state & bounds).
  */
 export function computeStickyHeaderOffset(
   input: StickyHeaderOffsetInput
@@ -72,7 +170,6 @@ export function computeStickyHeaderOffset(
       ? Math.min(tableBottom - Math.max(0, tfootHeight), maxContainerBottom)
       : tableBottom - Math.max(0, tfootHeight);
 
-  // Never let the header push past the bottom of the table body
   const maxOffset = Math.max(0, effectiveBottom - theadHeight - baseTop);
   const rawOffset = effectiveStickyTop - baseTop;
 
@@ -103,7 +200,6 @@ function parseColorString(color: string | null | undefined): ParsedRgba | null {
     return { r: 0, g: 0, b: 0, a: 0 };
   }
 
-  // Matches rgb(r, g, b), rgba(r, g, b, a), rgb(r g b / a)
   const rgbMatch = trimmed.match(
     /^rgba?\(\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*[,\s]\s*([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/
   );
@@ -122,7 +218,6 @@ function parseColorString(color: string | null | undefined): ParsedRgba | null {
     }
   }
 
-  // Matches modern CSS Color 4: color(srgb r g b / a)
   const srgbMatch = trimmed.match(
     /^color\(\s*srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+%?))?\s*\)$/
   );
@@ -144,7 +239,10 @@ function parseColorString(color: string | null | undefined): ParsedRgba | null {
   return null;
 }
 
-function compositeOver(fg: ParsedRgba, bg: { r: number; g: number; b: number }): { r: number; g: number; b: number } {
+function compositeOver(
+  fg: ParsedRgba,
+  bg: { r: number; g: number; b: number }
+): { r: number; g: number; b: number } {
   const alpha = fg.a;
   return {
     r: Math.round(fg.r * alpha + bg.r * (1 - alpha)),
@@ -156,8 +254,6 @@ function compositeOver(fg: ParsedRgba, bg: { r: number; g: number; b: number }):
 /**
  * Resolves a solid opaque RGB color string for a stuck <th> cell by compositing
  * the cell's computed background over its <thead> background and a white table base.
- * This guarantees scrolled rows never bleed through semi-transparent headers (e.g. bg-slate-50/80,
- * bg-blue-50/50) while preserving tinted column colors.
  */
 export function resolveOpaqueHeaderBg(
   thBg: string | null | undefined,

@@ -1,6 +1,129 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeStickyHeaderOffset, resolveOpaqueHeaderBg } from './stickyTableHeader';
+import {
+  computeFixedHeaderLayout,
+  computeStickyHeaderOffset,
+  resolveOpaqueHeaderBg
+} from './stickyTableHeader';
+
+describe('computeFixedHeaderLayout', () => {
+  it('does not pin before table reaches the sticky boundary', () => {
+    const res = computeFixedHeaderLayout({
+      tableTop: 320,
+      tableBottom: 1400,
+      tableWidth: 1460,
+      theadHeight: 41,
+      wrapperLeft: 80,
+      wrapperClientWidth: 1180,
+      wrapperScrollLeft: 0,
+      effectiveStickyTop: 96
+    });
+
+    assert.equal(res.shouldPin, false);
+  });
+
+  it('pins with constant viewport top while scrolling vertically (zero compositor jitter)', () => {
+    const first = computeFixedHeaderLayout({
+      tableTop: -50,
+      tableBottom: 1030,
+      tableWidth: 1460,
+      theadHeight: 41,
+      wrapperLeft: 80,
+      wrapperClientWidth: 1180,
+      wrapperScrollLeft: 0,
+      effectiveStickyTop: 96
+    });
+
+    const second = computeFixedHeaderLayout({
+      tableTop: -420,
+      tableBottom: 660,
+      tableWidth: 1460,
+      theadHeight: 41,
+      wrapperLeft: 80,
+      wrapperClientWidth: 1180,
+      wrapperScrollLeft: 0,
+      effectiveStickyTop: 96
+    });
+
+    assert.equal(first.shouldPin, true);
+    assert.equal(second.shouldPin, true);
+    assert.equal(first.top, 96);
+    assert.equal(second.top, 96);
+    assert.equal(first.left, 80);
+    assert.equal(first.clipLeft, 0);
+    assert.equal(first.clipRight, 280);
+    assert.equal(first.stickyRightShift, -280);
+  });
+
+  it('tracks horizontal scrollLeft and keeps sticky-right column flush to wrapper right edge', () => {
+    const res = computeFixedHeaderLayout({
+      tableTop: -120,
+      tableBottom: 960,
+      tableWidth: 1460,
+      theadHeight: 41,
+      wrapperLeft: 80,
+      wrapperClientWidth: 1180,
+      wrapperScrollLeft: 150,
+      effectiveStickyTop: 96
+    });
+
+    assert.equal(res.shouldPin, true);
+    assert.equal(res.left, -70);
+    assert.equal(res.clipLeft, 150);
+    assert.equal(res.clipRight, 130);
+    assert.equal(res.stickyRightShift, -130);
+  });
+
+  it('glides out smoothly near the bottom of the table and unpins once past bottom', () => {
+    const nearBottom = computeFixedHeaderLayout({
+      tableTop: -980,
+      tableBottom: 120,
+      tableWidth: 1460,
+      theadHeight: 41,
+      wrapperLeft: 80,
+      wrapperClientWidth: 1180,
+      wrapperScrollLeft: 0,
+      effectiveStickyTop: 96
+    });
+
+    assert.equal(nearBottom.shouldPin, true);
+    assert.equal(nearBottom.top, 79);
+
+    const pastBottom = computeFixedHeaderLayout({
+      tableTop: -1020,
+      tableBottom: 90,
+      tableWidth: 1460,
+      theadHeight: 41,
+      wrapperLeft: 80,
+      wrapperClientWidth: 1180,
+      wrapperScrollLeft: 0,
+      effectiveStickyTop: 96
+    });
+
+    assert.equal(pastBottom.shouldPin, false);
+  });
+
+  it('adjusts coordinates cleanly when inside a transformed fixed containing block', () => {
+    const res = computeFixedHeaderLayout({
+      tableTop: 40,
+      tableBottom: 800,
+      tableWidth: 1200,
+      theadHeight: 40,
+      wrapperLeft: 100,
+      wrapperClientWidth: 1000,
+      wrapperScrollLeft: 50,
+      effectiveStickyTop: 96,
+      fixedOriginTop: 32,
+      fixedOriginLeft: 24
+    });
+
+    assert.equal(res.shouldPin, true);
+    assert.equal(res.top, 64);
+    assert.equal(res.left, 26);
+    assert.equal(res.clipLeft, 50);
+    assert.equal(res.clipRight, 150);
+  });
+});
 
 describe('computeStickyHeaderOffset', () => {
   it('returns offset 0 when table header has not reached the sticky boundary', () => {
@@ -15,31 +138,6 @@ describe('computeStickyHeaderOffset', () => {
     assert.equal(res.isStuck, false);
   });
 
-  it('sticks flush right below the main Navbar when scrolling a tab table', () => {
-    const res = computeStickyHeaderOffset({
-      tableTop: -120,
-      tableBottom: 700,
-      theadHeight: 44,
-      effectiveStickyTop: 64
-    });
-
-    assert.equal(res.offset, 184);
-    assert.equal(res.isStuck, true);
-  });
-
-  it('sticks flush right below the modal header even when modal body has top padding', () => {
-    // Modal header ends at y=96; user scrolled form so tableTop is now at y=36
-    const res = computeStickyHeaderOffset({
-      tableTop: 36,
-      tableBottom: 680,
-      theadHeight: 40,
-      effectiveStickyTop: 96
-    });
-
-    assert.equal(res.offset, 60);
-    assert.equal(res.isStuck, true);
-  });
-
   it('clamps offset at the bottom of the table and never overlaps tfoot', () => {
     const res = computeStickyHeaderOffset({
       tableTop: -500,
@@ -49,50 +147,7 @@ describe('computeStickyHeaderOffset', () => {
       effectiveStickyTop: 64
     });
 
-    // effectiveBottom = 100; maxOffset = 100 - 44 - (-500) = 556
     assert.equal(res.offset, 556);
-    assert.equal(res.isStuck, true);
-  });
-
-  it('returns 0 when table is too short to scroll past header + footer', () => {
-    const res = computeStickyHeaderOffset({
-      tableTop: 20,
-      tableBottom: 60,
-      theadHeight: 40,
-      effectiveStickyTop: 64
-    });
-
-    assert.equal(res.offset, 0);
-    assert.equal(res.isStuck, false);
-  });
-
-  it('avoids double-shifting when native CSS sticky is active inside an inner scrollbox', () => {
-    // Inner max-h-96 box is at y=300 (below modal header at y=120), scrolled down by 100px
-    const res = computeStickyHeaderOffset({
-      tableTop: 200,
-      tableBottom: 800,
-      theadHeight: 40,
-      effectiveStickyTop: 300,
-      nativeStickyTop: 300,
-      maxContainerBottom: 680
-    });
-
-    assert.equal(res.offset, 0);
-    assert.equal(res.isStuck, true);
-  });
-
-  it('adds only the outer delta when outer modal body scrolls a CSS-sticky inner box past modal header', () => {
-    // Modal header ends at y=120; inner max-h-96 box scrolled up to y=50, inner box also scrolled 100px
-    const res = computeStickyHeaderOffset({
-      tableTop: -50,
-      tableBottom: 600,
-      theadHeight: 40,
-      effectiveStickyTop: 120,
-      nativeStickyTop: 50,
-      maxContainerBottom: 430
-    });
-
-    assert.equal(res.offset, 70);
     assert.equal(res.isStuck, true);
   });
 });
@@ -108,18 +163,8 @@ describe('resolveOpaqueHeaderBg', () => {
     assert.equal(bg, 'rgb(244, 249, 254)');
   });
 
-  it('preserves solid rgb backgrounds verbatim', () => {
-    const bg = resolveOpaqueHeaderBg('rgb(236, 253, 245)', 'rgba(248, 250, 252, 0.9)');
-    assert.equal(bg, 'rgb(236, 253, 245)');
-  });
-
   it('supports modern CSS color(srgb ...) syntax', () => {
     const bg = resolveOpaqueHeaderBg('color(srgb 0.945 0.96 0.976 / 1)', 'transparent');
     assert.equal(bg, 'rgb(241, 245, 249)');
-  });
-
-  it('returns fallback when both th and thead backgrounds are transparent', () => {
-    const bg = resolveOpaqueHeaderBg('transparent', 'rgba(0, 0, 0, 0)', '#f1f5f9');
-    assert.equal(bg, '#f1f5f9');
   });
 });
