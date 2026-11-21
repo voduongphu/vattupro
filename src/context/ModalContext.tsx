@@ -25,6 +25,7 @@ interface ModalContextValue {
     id: string;
     title: string;
     priority?: number;
+    confirmOnEsc?: boolean;
     onClose: () => void;
   }) => void;
   unregisterModal: (id: string) => void;
@@ -44,7 +45,13 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   stackRef.current = modalStack;
 
   const registerModal = useCallback(
-    (entry: { id: string; title: string; priority?: number; onClose: () => void }) => {
+    (entry: {
+      id: string;
+      title: string;
+      priority?: number;
+      confirmOnEsc?: boolean;
+      onClose: () => void;
+    }) => {
       setModalStack((prev) => {
         const existing = prev.find((item) => item.id === entry.id);
         const order = existing ? existing.order : ++orderCounterRef.current;
@@ -52,6 +59,7 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           id: entry.id,
           title: entry.title,
           priority: entry.priority ?? 50,
+          confirmOnEsc: Boolean(entry.confirmOnEsc),
           order,
           onClose: entry.onClose
         });
@@ -90,7 +98,7 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [hasActiveModal]);
 
-  // Lắng nghe phím ESC toàn cục: chỉ áp dụng cho hộp thoại trên cùng và luôn hiển thị hộp thoại xác nhận trước khi thoát
+  // Lắng nghe phím ESC toàn cục: chỉ hỏi xác nhận đối với hộp thoại lập/sửa phiếu (confirmOnEsc=true), các hộp thoại khác tự động đóng ngay
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -109,7 +117,12 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       event.preventDefault();
       event.stopPropagation();
-      setPendingEscTarget(topmost);
+
+      if (topmost.confirmOnEsc) {
+        setPendingEscTarget(topmost);
+      } else {
+        topmost.onClose();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown, true);
@@ -231,8 +244,9 @@ export const ModalGuard: React.FC<{
   title: string;
   onClose: () => void;
   priority?: number;
+  confirmOnEsc?: boolean;
   isOpen?: boolean;
-}> = ({ title, onClose, priority = 50, isOpen = true }) => {
+}> = ({ title, onClose, priority = 50, confirmOnEsc = false, isOpen = true }) => {
   const ctx = useContext(ModalContext);
   const id = useId();
   const onCloseRef = useRef(onClose);
@@ -247,12 +261,13 @@ export const ModalGuard: React.FC<{
       id,
       title,
       priority,
+      confirmOnEsc,
       onClose: () => onCloseRef.current()
     });
     return () => {
       unregisterModal(id);
     };
-  }, [id, isOpen, title, priority, registerModal, unregisterModal]);
+  }, [id, isOpen, title, priority, confirmOnEsc, registerModal, unregisterModal]);
 
   return null;
 };

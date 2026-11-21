@@ -2073,6 +2073,7 @@ export const OutboundManager: React.FC = () => {
                 ? `Chỉnh Sửa Phiếu Xuất Kho: ${editingReceipt.issueCode}`
                 : 'Lập Phiếu Xuất Kho Mới'
             }
+            confirmOnEsc
             onClose={() => {
               setIsCreateModalOpen(false);
               setEditingReceipt(null);

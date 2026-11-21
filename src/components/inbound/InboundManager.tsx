@@ -2295,6 +2295,7 @@ export const InboundManager: React.FC = () => {
                 ? `Chỉnh Sửa Phiếu Nhập Kho: ${editingReceipt.receiptCode}`
                 : 'Lập Phiếu Nhập Kho Mới'
             }
+            confirmOnEsc
             onClose={() => {
               setIsCreateModalOpen(false);
               setEditingReceipt(null);

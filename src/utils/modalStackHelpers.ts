@@ -3,6 +3,7 @@ export interface ModalStackEntry {
   title: string;
   priority: number;
   order: number;
+  confirmOnEsc?: boolean;
 }
 
 export function upsertModalEntry<T extends ModalStackEntry>(

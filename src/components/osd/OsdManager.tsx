@@ -1330,6 +1330,7 @@ export const OsdManager: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto overscroll-contain">
           <ModalGuard
             title={editingOsd ? `Chỉnh Sửa Biên Bản OSD: ${editingOsd.osdCode}` : 'Lập Biên Bản OSD Mới'}
+            confirmOnEsc
             onClose={() => setIsModalOpen(false)}
           />
           <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">

@@ -64,4 +64,31 @@ describe('modalStackHelpers', () => {
     stack = removeModalEntry(stack, 'second');
     assert.equal(getTopmostModalEntry(stack)?.id, 'first');
   });
+
+  it('preserves confirmOnEsc flag independently for voucher forms vs view/picker/delete dialogs', () => {
+    let stack: ModalStackEntry[] = [];
+    stack = upsertModalEntry(stack, {
+      id: 'inbound-form',
+      title: 'Lập Phiếu Nhập Kho Mới',
+      priority: 50,
+      order: 1,
+      confirmOnEsc: true
+    });
+    assert.equal(getTopmostModalEntry(stack)?.confirmOnEsc, true);
+
+    stack = upsertModalEntry(stack, {
+      id: 'catalog-picker',
+      title: 'Chọn Vật Tư Từ Danh Mục',
+      priority: 60,
+      order: 2,
+      confirmOnEsc: false
+    });
+    assert.equal(getTopmostModalEntry(stack)?.id, 'catalog-picker');
+    assert.equal(getTopmostModalEntry(stack)?.confirmOnEsc, false);
+
+    // After auto-closing the picker on ESC, underlying voucher modal still requires confirmation
+    stack = removeModalEntry(stack, 'catalog-picker');
+    assert.equal(getTopmostModalEntry(stack)?.id, 'inbound-form');
+    assert.equal(getTopmostModalEntry(stack)?.confirmOnEsc, true);
+  });
 });
