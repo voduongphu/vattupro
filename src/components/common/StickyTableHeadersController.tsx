@@ -12,6 +12,8 @@ interface FixedPinRecord {
   theadHeight: number;
   tableWidth: number;
   xWrapper: HTMLElement;
+  prevTableLayout: string;
+  prevTableWidth: string;
 }
 
 interface AncestorScan {
@@ -200,6 +202,8 @@ export const StickyTableHeadersController: React.FC = () => {
       isMutatingDom = true;
       try {
         pin.spacerRow.remove();
+        table.style.tableLayout = pin.prevTableLayout;
+        table.style.width = pin.prevTableWidth;
         pin.headerRow.classList.remove('vtp-thead-fixed-row');
         pin.headerRow.style.top = '';
         pin.headerRow.style.left = '';
@@ -291,23 +295,44 @@ export const StickyTableHeadersController: React.FC = () => {
       isMutatingDom = true;
       try {
         let pin = existingPin;
+        let activeLayout = layout;
         if (!pin) {
-          // Measure column widths once before promoting row to position: fixed
+          // Measure exact column widths BEFORE promoting headerRow to position: fixed
           const colWidths = cells.map((c) => c.getBoundingClientRect().width);
+          const measuredTableWidth =
+            Math.round(colWidths.reduce((sum, w) => sum + w, 0) * 100) / 100 || tableWidth;
           ensureCellBackgrounds(thead, cells);
 
+          // Build a per-column spacer row with exact measured widths so tbody columns
+          // NEVER shrink or shift when headerRow leaves normal table flow
           const spacerRow = document.createElement('tr');
           spacerRow.setAttribute(SPACER_ATTR, 'true');
           spacerRow.setAttribute('aria-hidden', 'true');
-          const spacerCell = document.createElement('th');
-          spacerCell.colSpan = Math.max(1, cells.length);
-          spacerCell.style.height = `${theadHeight}px`;
-          spacerCell.style.padding = '0';
-          spacerCell.style.border = '0';
-          spacerCell.style.visibility = 'hidden';
-          spacerCell.style.pointerEvents = 'none';
-          spacerRow.appendChild(spacerCell);
-          thead.appendChild(spacerRow);
+          for (let i = 0; i < cells.length; i++) {
+            const w = `${Math.round(colWidths[i] * 100) / 100}px`;
+            const spacerCell = document.createElement('th');
+            if (cells[i].colSpan > 1) {
+              spacerCell.colSpan = cells[i].colSpan;
+            }
+            spacerCell.style.width = w;
+            spacerCell.style.minWidth = w;
+            spacerCell.style.maxWidth = w;
+            spacerCell.style.height = `${theadHeight}px`;
+            spacerCell.style.padding = '0';
+            spacerCell.style.border = '0';
+            spacerCell.style.boxSizing = 'border-box';
+            spacerCell.style.visibility = 'hidden';
+            spacerCell.style.pointerEvents = 'none';
+            spacerRow.appendChild(spacerCell);
+          }
+
+          const prevTableLayout = table.style.tableLayout;
+          const prevTableWidth = table.style.width;
+
+          // Insert spacerRow as first row so table-layout: fixed sizes every tbody column from it
+          thead.insertBefore(spacerRow, headerRow);
+          table.style.tableLayout = 'fixed';
+          table.style.width = `${measuredTableWidth}px`;
 
           for (let i = 0; i < cells.length; i++) {
             const w = `${Math.round(colWidths[i] * 100) / 100}px`;
@@ -326,16 +351,32 @@ export const StickyTableHeadersController: React.FC = () => {
             cells,
             spacerRow,
             theadHeight,
-            tableWidth,
-            xWrapper
+            tableWidth: measuredTableWidth,
+            xWrapper,
+            prevTableLayout,
+            prevTableWidth
           };
           activeFixedPins.set(table, pin);
+
+          activeLayout = computeFixedHeaderLayout({
+            tableTop: tableRect.top,
+            tableBottom: tableRect.bottom,
+            tableWidth: measuredTableWidth,
+            theadHeight,
+            tfootHeight,
+            wrapperLeft: wrapperRect.left,
+            wrapperClientWidth: xWrapper.clientWidth,
+            wrapperScrollLeft: xWrapper.scrollLeft,
+            effectiveStickyTop,
+            fixedOriginTop: fixedOrigin.top,
+            fixedOriginLeft: fixedOrigin.left
+          });
         }
 
-        const nextTop = `${layout.top}px`;
-        const nextLeft = `${layout.left}px`;
-        const nextWidth = `${layout.width}px`;
-        const nextClip = `inset(0px ${layout.clipRight}px -14px ${layout.clipLeft}px)`;
+        const nextTop = `${activeLayout.top}px`;
+        const nextLeft = `${activeLayout.left}px`;
+        const nextWidth = `${activeLayout.width}px`;
+        const nextClip = `inset(0px ${activeLayout.clipRight}px -14px ${activeLayout.clipLeft}px)`;
 
         if (pin.headerRow.style.top !== nextTop) {
           pin.headerRow.style.top = nextTop;
@@ -353,8 +394,8 @@ export const StickyTableHeadersController: React.FC = () => {
         for (const cell of pin.cells) {
           if (cell.classList.contains('sticky')) {
             const nextTransform =
-              layout.stickyRightShift < -0.25
-                ? `translate3d(${layout.stickyRightShift}px, 0, 0)`
+              activeLayout.stickyRightShift < -0.25
+                ? `translate3d(${activeLayout.stickyRightShift}px, 0, 0)`
                 : '';
             if (cell.style.transform !== nextTransform) {
               cell.style.transform = nextTransform;
