@@ -960,11 +960,6 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                 </div>
               </div>
             </div>
-
-            {/* 10. Số trang ở chân trang chuẩn theo mẫu */}
-            <div className="text-center text-[11.5px] pt-6">
-              Page {safePage} of {totalPages}
-            </div>
           </div>
         </div>
       </div>
