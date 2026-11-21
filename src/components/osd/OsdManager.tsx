@@ -1920,7 +1920,8 @@ export const OsdManager: React.FC = () => {
                   Danh Mục Vật Tư Thiết Bị Ghi Nhận Sự Cố OSD:
                 </h4>
                 <div className="border border-slate-200 rounded-xl overflow-hidden">
-                  <table className="w-full text-left text-xs">
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[780px] text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 text-[11px]">
                       <tr>
                         <th className="p-2.5 w-8 text-center">STT</th>
@@ -1974,7 +1975,8 @@ export const OsdManager: React.FC = () => {
                         </tr>
                       ))}
                     </tbody>
-                  </table>
+                    </table>
+                  </div>
                 </div>
               </div>
 

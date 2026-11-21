@@ -18,6 +18,7 @@ import { WarehouseManager } from './components/warehouses/WarehouseManager';
 import { MaterialCatalog } from './components/materials/MaterialCatalog';
 import { UserManager } from './components/users/UserManager';
 import { LoginScreen } from './components/auth/LoginScreen';
+import { StickyTableHeadersController } from './components/common/StickyTableHeadersController';
 import {
   LayoutDashboard,
   ArrowDownLeft,
@@ -91,6 +92,7 @@ const MainLayout: React.FC = () => {
 
   return (
     <div className="min-h-dvh w-full bg-slate-100/70 flex flex-col font-sans">
+      <StickyTableHeadersController />
       <Navbar onOpenMobileMenu={() => setIsMobileMenuOpen(true)} />
 
       {/* Cảnh báo rõ ràng trên thiết bị mới khi hệ thống vừa tự động đăng xuất tài khoản ở thiết bị khác */}
