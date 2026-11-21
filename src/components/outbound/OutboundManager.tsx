@@ -2114,7 +2114,8 @@ export const OutboundManager: React.FC = () => {
               />
             </div>
 
-            <form onSubmit={handleSaveCreate} className="p-4 sm:p-6 space-y-4 overflow-y-auto overscroll-contain flex-1">
+            <form onSubmit={handleSaveCreate} className="overflow-y-auto overscroll-contain flex-1">
+              <div className="p-4 sm:p-6 space-y-4">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -2712,6 +2713,7 @@ export const OutboundManager: React.FC = () => {
                 >
                   Hủy
                 </button>
+              </div>
               </div>
             </form>
           </div>

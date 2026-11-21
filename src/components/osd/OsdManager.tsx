@@ -1866,7 +1866,8 @@ export const OsdManager: React.FC = () => {
             </div>
 
             {/* Content Printable */}
-            <div className="flex-1 overflow-y-auto overscroll-contain p-6 sm:p-8 space-y-6 text-slate-800 font-sans print:p-0">
+            <div className="flex-1 overflow-y-auto overscroll-contain">
+              <div className="p-6 sm:p-8 space-y-6 text-slate-800 font-sans print:p-0">
               <div className="text-center space-y-1 border-b border-slate-200 pb-4">
                 <h2 className="text-lg sm:text-xl font-bold uppercase text-slate-900">
                   BIÊN BẢN GHI NHẬN HÀNG HÓA THỪA - THIẾU - HƯ HỎNG
@@ -2041,6 +2042,7 @@ export const OsdManager: React.FC = () => {
                   <span className="font-bold text-slate-700 uppercase block">NGƯỜI LẬP BIÊN BẢN</span>
                   <span className="text-slate-800 font-semibold text-[11px] block mt-12" data-user-content="true">{viewingOsd.createdBy}</span>
                 </div>
+              </div>
               </div>
             </div>
           </div>

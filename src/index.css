@@ -49,10 +49,9 @@
   }
 
   /* Tier 1: 100% browser-native compositor-thread sticky table header (zero jitter) */
+  /* Apply position: sticky ONLY on th/td cells (not both thead and th) to prevent Blink double-sticky offset */
   thead.vtp-thead-native-sticky {
-    position: sticky;
-    top: var(--vtp-sticky-top, 0px);
-    z-index: 15;
+    position: static !important;
   }
 
   thead.vtp-thead-native-sticky > tr > th,
