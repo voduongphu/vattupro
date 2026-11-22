@@ -34,6 +34,13 @@ interface ModalContextValue {
 
 const ModalContext = createContext<ModalContextValue | null>(null);
 
+export const useModal = (): { activeModalCount: number } => {
+  const ctx = useContext(ModalContext);
+  return {
+    activeModalCount: ctx?.activeModalCount ?? 0
+  };
+};
+
 export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { language, t } = useLanguage();
   const [modalStack, setModalStack] = useState<InternalModalEntry[]>([]);

@@ -16,16 +16,18 @@ import {
   LogIn,
   ChevronDown,
   Menu,
-  X
+  X,
+  Search
 } from 'lucide-react';
 import { LoginModal } from '../auth/LoginModal';
 import { useLanguage, LanguageSwitcher } from '../../context/LanguageContext';
 
 interface NavbarProps {
   onOpenMobileMenu?: () => void;
+  onOpenQuickSearch?: () => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
+export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSearch }) => {
   const {
     currentUser,
     cloudState,
@@ -152,8 +154,23 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
             </div>
           </div>
 
-          {/* Right: Language Switcher + Unified Cloud Sync + User Account */}
+          {/* Right: Quick Search + Language Switcher + Unified Cloud Sync + User Account */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 whitespace-nowrap">
+            {onOpenQuickSearch && currentUser && (
+              <button
+                type="button"
+                onClick={onOpenQuickSearch}
+                title={t('quickSearchBtnTooltip')}
+                className="min-h-[40px] flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700/90 border border-slate-700/80 text-slate-200 hover:text-white text-xs font-medium transition shrink-0 cursor-pointer"
+              >
+                <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <span className="hidden lg:inline">{t('quickSearchBtnLabel')}</span>
+                <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded bg-slate-900/90 border border-slate-600/80 text-[10px] font-mono text-slate-300 leading-none">
+                  Ctrl+K
+                </kbd>
+              </button>
+            )}
+
             {/* Nút chuyển đổi ngôn ngữ Tiếng Anh / Tiếng Việt trong ứng dụng */}
             <LanguageSwitcher variant="dark" showLabel={true} />
 

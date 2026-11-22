@@ -303,12 +303,18 @@ export const InventoryReport: React.FC = () => {
         <div className="relative">
           <input
             type="text"
+            data-quick-search="primary"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Tìm kiếm tổng hợp (mã vật tư, tên kiện, vị trí lưu kho/bãi, hạng mục, bản vẽ, packing list, shipment...)"
-            className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px] sm:min-h-0"
+            className="w-full pl-9 pr-16 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px] sm:min-h-0"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-2.5" />
+          {!searchQuery && (
+            <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-mono text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+              Ctrl+K
+            </kbd>
+          )}
         </div>
 
         {/* Grid các điều kiện cụ thể */}

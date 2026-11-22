@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider, useLanguage } from './context/LanguageContext';
-import { ModalProvider } from './context/ModalContext';
+import { ModalProvider, useModal } from './context/ModalContext';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { DashboardOverview } from './components/dashboard/DashboardOverview';
@@ -19,6 +19,15 @@ import { MaterialCatalog } from './components/materials/MaterialCatalog';
 import { UserManager } from './components/users/UserManager';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { StickyTableHeadersController } from './components/common/StickyTableHeadersController';
+import {
+  QuickGlobalSearchModal,
+  QuickNewVoucherModal,
+  type QuickSearchSelection
+} from './components/common/QuickCommandModals';
+import {
+  focusContextualQuickSearch,
+  matchAppShortcut
+} from './utils/keyboardShortcuts';
 import {
   LayoutDashboard,
   ArrowDownLeft,
@@ -35,8 +44,18 @@ import {
 const MainLayout: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const [isQuickSearchOpen, setIsQuickSearchOpen] = useState<boolean>(false);
+  const [isQuickNewVoucherOpen, setIsQuickNewVoucherOpen] = useState<boolean>(false);
+  const [inboundCreateToken, setInboundCreateToken] = useState<number>(0);
+  const [outboundCreateToken, setOutboundCreateToken] = useState<number>(0);
+  const [quickSearchTarget, setQuickSearchTarget] = useState<{
+    tab: QuickSearchSelection['tab'];
+    query: string;
+    token: number;
+  } | null>(null);
   const { currentUser, replacedOtherDeviceAlert, clearReplacedOtherDeviceAlert } = useAuth();
   const { t } = useLanguage();
+  const { activeModalCount } = useModal();
 
   const mobileQuickTabs = [
     { id: 'dashboard', label: t('quickTabDashboard'), icon: LayoutDashboard },
@@ -82,38 +101,163 @@ const MainLayout: React.FC = () => {
     return () => window.cancelAnimationFrame(rafId);
   }, [activeTab, scrollViewportToTop]);
 
+  const handleSelectTab = useCallback(
+    (tab: string) => {
+      setActiveTab(tab);
+      setIsMobileMenuOpen(false);
+      scrollViewportToTop();
+      if (typeof window !== 'undefined') {
+        window.requestAnimationFrame(() => {
+          scrollViewportToTop();
+        });
+      }
+    },
+    [scrollViewportToTop]
+  );
+
+  const triggerCreateInbound = useCallback(() => {
+    setIsQuickSearchOpen(false);
+    setIsQuickNewVoucherOpen(false);
+    if (activeTab !== 'inbound') {
+      handleSelectTab('inbound');
+    }
+    setInboundCreateToken((prev) => prev + 1);
+  }, [activeTab, handleSelectTab]);
+
+  const triggerCreateOutbound = useCallback(() => {
+    setIsQuickSearchOpen(false);
+    setIsQuickNewVoucherOpen(false);
+    if (activeTab !== 'outbound') {
+      handleSelectTab('outbound');
+    }
+    setOutboundCreateToken((prev) => prev + 1);
+  }, [activeTab, handleSelectTab]);
+
+  const handleGlobalSearchSelect = useCallback(
+    (selection: QuickSearchSelection) => {
+      handleSelectTab(selection.tab);
+      setQuickSearchTarget({
+        tab: selection.tab,
+        query: selection.query,
+        token: Date.now() + Math.random()
+      });
+    },
+    [handleSelectTab]
+  );
+
+  // Phím tắt toàn cục: Ctrl+K (Tìm kiếm nhanh), Ctrl+N / Alt+N (Lập phiếu nhập/xuất kho mới)
+  useEffect(() => {
+    if (!currentUser || typeof window === 'undefined') return;
+
+    const handleGlobalShortcut = (event: KeyboardEvent) => {
+      const action = matchAppShortcut(event);
+      if (!action) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (action === 'quick-search') {
+        if (isQuickNewVoucherOpen) {
+          setIsQuickNewVoucherOpen(false);
+        }
+        if (isQuickSearchOpen) {
+          focusContextualQuickSearch(true);
+          return;
+        }
+        const outcome = focusContextualQuickSearch(activeModalCount > 0);
+        if (outcome === 'open-global') {
+          setIsQuickSearchOpen(true);
+        }
+        return;
+      }
+
+      if (action === 'new-voucher') {
+        // Nếu đang mở hộp thoại khác (vd: đang lập/sửa/xem phiếu) thì không bật đè thêm hộp thoại lập phiếu mới
+        if (activeModalCount > 0 && !isQuickSearchOpen && !isQuickNewVoucherOpen) {
+          return;
+        }
+        if (isQuickSearchOpen) {
+          setIsQuickSearchOpen(false);
+        }
+        if (activeTab === 'inbound') {
+          triggerCreateInbound();
+        } else if (activeTab === 'outbound') {
+          triggerCreateOutbound();
+        } else {
+          setIsQuickNewVoucherOpen(true);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalShortcut, true);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalShortcut, true);
+    };
+  }, [
+    currentUser,
+    activeTab,
+    activeModalCount,
+    isQuickSearchOpen,
+    isQuickNewVoucherOpen,
+    triggerCreateInbound,
+    triggerCreateOutbound
+  ]);
+
   // Hiển thị màn hình đăng nhập nếu người dùng chưa xác thực
   if (!currentUser) {
     return <LoginScreen />;
   }
-
-  const handleSelectTab = (tab: string) => {
-    setActiveTab(tab);
-    setIsMobileMenuOpen(false);
-    scrollViewportToTop();
-    if (typeof window !== 'undefined') {
-      window.requestAnimationFrame(() => {
-        scrollViewportToTop();
-      });
-    }
-  };
 
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
         return <DashboardOverview onNavigate={handleSelectTab} />;
       case 'inbound':
-        return <InboundManager />;
+        return (
+          <InboundManager
+            autoOpenCreateToken={inboundCreateToken}
+            quickSearchSignal={
+              quickSearchTarget?.tab === 'inbound'
+                ? { query: quickSearchTarget.query, token: quickSearchTarget.token }
+                : null
+            }
+          />
+        );
       case 'outbound':
-        return <OutboundManager />;
+        return (
+          <OutboundManager
+            autoOpenCreateToken={outboundCreateToken}
+            quickSearchSignal={
+              quickSearchTarget?.tab === 'outbound'
+                ? { query: quickSearchTarget.query, token: quickSearchTarget.token }
+                : null
+            }
+          />
+        );
       case 'osd':
-        return <OsdManager />;
+        return (
+          <OsdManager
+            quickSearchSignal={
+              quickSearchTarget?.tab === 'osd'
+                ? { query: quickSearchTarget.query, token: quickSearchTarget.token }
+                : null
+            }
+          />
+        );
       case 'report':
         return <InventoryReport />;
       case 'warehouses':
         return <WarehouseManager />;
       case 'materials':
-        return <MaterialCatalog />;
+        return (
+          <MaterialCatalog
+            quickSearchSignal={
+              quickSearchTarget?.tab === 'materials'
+                ? { query: quickSearchTarget.query, token: quickSearchTarget.token }
+                : null
+            }
+          />
+        );
       case 'users':
         return <UserManager />;
       default:
@@ -124,7 +268,10 @@ const MainLayout: React.FC = () => {
   return (
     <div className="min-h-dvh w-full bg-slate-100/70 flex flex-col font-sans">
       <StickyTableHeadersController />
-      <Navbar onOpenMobileMenu={() => setIsMobileMenuOpen(true)} />
+      <Navbar
+        onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
+        onOpenQuickSearch={() => setIsQuickSearchOpen(true)}
+      />
 
       {/* Cảnh báo rõ ràng trên thiết bị mới khi hệ thống vừa tự động đăng xuất tài khoản ở thiết bị khác */}
       {replacedOtherDeviceAlert && (
@@ -190,6 +337,19 @@ const MainLayout: React.FC = () => {
           {renderContent()}
         </main>
       </div>
+
+      <QuickGlobalSearchModal
+        isOpen={isQuickSearchOpen}
+        onClose={() => setIsQuickSearchOpen(false)}
+        onSelect={handleGlobalSearchSelect}
+      />
+
+      <QuickNewVoucherModal
+        isOpen={isQuickNewVoucherOpen}
+        onClose={() => setIsQuickNewVoucherOpen(false)}
+        onCreateInbound={triggerCreateInbound}
+        onCreateOutbound={triggerCreateOutbound}
+      />
     </div>
   );
 };

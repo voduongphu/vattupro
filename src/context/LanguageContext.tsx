@@ -125,7 +125,27 @@ const TRANSLATIONS = {
     escConfirmStay: 'Ở lại tiếp tục',
     escConfirmLeave: 'Xác nhận thoát',
     closeModalTitle: 'Đóng hộp thoại (ESC)',
-    closeModalAria: 'Đóng hộp thoại'
+    closeModalAria: 'Đóng hộp thoại',
+
+    // Keyboard Shortcuts (Ctrl+K / Ctrl+N)
+    quickSearchBtnLabel: 'Tìm nhanh',
+    quickSearchBtnTooltip: 'Tìm kiếm nhanh (Ctrl+K)',
+    quickSearchModalTitle: 'Tìm Kiếm Nhanh Toàn Hệ Thống',
+    quickSearchModalPlaceholder: 'Nhập số phiếu (PNK, PXK, OSD), mã vật tư, tên vật tư, mã lô, kho bãi...',
+    quickSearchEmptyHint: 'Gõ từ khóa để tra cứu nhanh phiếu nhập kho, phiếu xuất kho, vật tư trong danh mục và biên bản OSD.',
+    quickSearchNoResults: 'Không tìm thấy kết quả phù hợp với từ khóa vừa nhập.',
+    quickSearchSectionInbound: 'Phiếu Nhập Kho',
+    quickSearchSectionOutbound: 'Phiếu Xuất Kho',
+    quickSearchSectionMaterials: 'Danh Mục Vật Tư',
+    quickSearchSectionOsd: 'Vật Tư OSD',
+    quickSearchFooterHint: 'Nhấn Enter để mở • ESC để đóng • Ctrl+N lập phiếu mới',
+    quickNewVoucherTitle: 'Lập Phiếu Kho Mới',
+    quickNewVoucherSubtitle: 'Chọn loại phiếu cần tạo (phím tắt Ctrl+N / Alt+N)',
+    quickNewInboundTitle: 'Lập Phiếu Nhập Kho Mới',
+    quickNewInboundDesc: 'Mở biểu mẫu lập phiếu nhập vật tư vào kho bãi (Mẫu QN-OPR-PR11-FM05.01)',
+    quickNewOutboundTitle: 'Lập Phiếu Xuất Kho Mới',
+    quickNewOutboundDesc: 'Mở biểu mẫu lập phiếu xuất vật tư từ tồn kho (Mẫu QN-OPR-PR11-FM06)',
+    quickNewVoucherFooterHint: 'Nhấn phím 1 (Nhập kho) • phím 2 (Xuất kho) • ESC để đóng'
   },
   en: {
     // Document & Top Bar & Brand
@@ -244,7 +264,27 @@ const TRANSLATIONS = {
     escConfirmStay: 'Stay & Continue',
     escConfirmLeave: 'Confirm Close',
     closeModalTitle: 'Close dialog (ESC)',
-    closeModalAria: 'Close dialog'
+    closeModalAria: 'Close dialog',
+
+    // Keyboard Shortcuts (Ctrl+K / Ctrl+N)
+    quickSearchBtnLabel: 'Quick Search',
+    quickSearchBtnTooltip: 'Quick Search (Ctrl+K)',
+    quickSearchModalTitle: 'Global Quick Search',
+    quickSearchModalPlaceholder: 'Type voucher no. (PNK, PXK, OSD), material code, material name, batch, warehouse...',
+    quickSearchEmptyHint: 'Type keywords to search across inbound receipts, outbound issues, material catalog, and OSD reports.',
+    quickSearchNoResults: 'No matching results found for your query.',
+    quickSearchSectionInbound: 'Inbound Receipts',
+    quickSearchSectionOutbound: 'Outbound Issues',
+    quickSearchSectionMaterials: 'Materials Catalog',
+    quickSearchSectionOsd: 'OSD Discrepancies',
+    quickSearchFooterHint: 'Press Enter to open • ESC to close • Ctrl+N for new voucher',
+    quickNewVoucherTitle: 'Create New Warehouse Voucher',
+    quickNewVoucherSubtitle: 'Choose the voucher type to create (shortcut Ctrl+N / Alt+N)',
+    quickNewInboundTitle: 'New Inbound Receipt',
+    quickNewInboundDesc: 'Open the inbound material receipt form (Form QN-OPR-PR11-FM05.01)',
+    quickNewOutboundTitle: 'New Outbound Issue',
+    quickNewOutboundDesc: 'Open the outbound material issue form from inventory (Form QN-OPR-PR11-FM06)',
+    quickNewVoucherFooterHint: 'Press 1 (Inbound) • Press 2 (Outbound) • ESC to close'
   }
 };
 

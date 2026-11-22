@@ -242,12 +242,18 @@ export const WarehouseManager: React.FC = () => {
         <div className="relative flex-1 w-full">
           <input
             type="text"
+            data-quick-search="primary"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder="Tìm theo mã kho, tên kho, địa điểm, thủ kho..."
-            className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
+            className="w-full pl-9 pr-16 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-3" />
+          {!searchTerm && (
+            <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-mono text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+              Ctrl+K
+            </kbd>
+          )}
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto">

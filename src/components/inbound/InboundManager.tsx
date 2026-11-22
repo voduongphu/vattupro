@@ -77,7 +77,15 @@ function summarizeReceiptStorageLocations(items: InboundItemDetail[]): string {
   return seen.size > 0 ? Array.from(seen).join(' | ') : '';
 }
 
-export const InboundManager: React.FC = () => {
+export interface InboundManagerProps {
+  autoOpenCreateToken?: number;
+  quickSearchSignal?: { query: string; token: number } | null;
+}
+
+export const InboundManager: React.FC<InboundManagerProps> = ({
+  autoOpenCreateToken = 0,
+  quickSearchSignal = null
+}) => {
   const { currentUser, isAdmin } = useAuth();
   const [receipts, setReceipts] = useState<InboundReceipt[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -487,6 +495,10 @@ export const InboundManager: React.FC = () => {
     receiptDate
   ]);
 
+  const openCreateModalRef = useRef<() => void>(() => {});
+  const lastAutoOpenTokenRef = useRef<number>(0);
+  const lastQuickSearchTokenRef = useRef<number>(0);
+
   const openCreateModal = () => {
     StorageService.syncMaterialsFromReceipts();
     const mats = StorageService.getMaterials();
@@ -557,6 +569,24 @@ export const InboundManager: React.FC = () => {
 
     setIsCreateModalOpen(true);
   };
+  openCreateModalRef.current = openCreateModal;
+
+  useEffect(() => {
+    if (autoOpenCreateToken > 0 && autoOpenCreateToken !== lastAutoOpenTokenRef.current) {
+      lastAutoOpenTokenRef.current = autoOpenCreateToken;
+      if (!isCreateModalOpen) {
+        openCreateModalRef.current();
+      }
+    }
+  }, [autoOpenCreateToken, isCreateModalOpen]);
+
+  useEffect(() => {
+    if (quickSearchSignal && quickSearchSignal.token !== lastQuickSearchTokenRef.current) {
+      lastQuickSearchTokenRef.current = quickSearchSignal.token;
+      setSearchTerm(quickSearchSignal.query);
+      setCurrentPage(1);
+    }
+  }, [quickSearchSignal]);
 
   const openEditModal = (rcp: InboundReceipt) => {
     if (!isAdmin) {
@@ -1839,10 +1869,14 @@ export const InboundManager: React.FC = () => {
 
           <button
             onClick={openCreateModal}
+            title="Lập Phiếu Nhập Kho Mới (Ctrl+N / Alt+N)"
             className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-xs shadow-md shadow-blue-500/20 transition active:scale-95 min-h-[42px]"
           >
             <Plus className="w-4 h-4 shrink-0" />
             <span>Lập Phiếu Nhập Kho Mới</span>
+            <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 ml-0.5 rounded bg-blue-700/80 border border-blue-400/50 text-[10px] font-mono text-blue-100 leading-none">
+              Ctrl+N
+            </kbd>
           </button>
         </div>
       </div>
@@ -1870,12 +1904,18 @@ export const InboundManager: React.FC = () => {
         <div className="relative flex-1 w-full">
           <input
             type="text"
+            data-quick-search="primary"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder="Tìm theo Số phiếu (PNK...), Đơn vị giao hàng, Hợp đồng, Vị trí lưu kho/bãi, Mã lô, Mã/Tên vật tư..."
-            className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
+            className="w-full pl-9 pr-16 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-3" />
+          {!searchTerm && (
+            <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-mono text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+              Ctrl+K
+            </kbd>
+          )}
         </div>
 
         <div className="flex items-center gap-2 w-full md:w-auto flex-wrap">
@@ -2627,6 +2667,7 @@ export const InboundManager: React.FC = () => {
                       <div className="relative">
                         <input
                           type="text"
+                          data-quick-search="modal"
                           value={formItemSearch}
                           onChange={(e) => {
                             setFormItemSearch(e.target.value);
@@ -2672,6 +2713,7 @@ export const InboundManager: React.FC = () => {
                   <div className="relative">
                     <input
                       type="text"
+                      data-quick-search="modal"
                       value={quickCatalogQuery}
                       onFocus={() => setIsQuickCatalogOpen(true)}
                       onBlur={() => {
@@ -3074,6 +3116,7 @@ export const InboundManager: React.FC = () => {
               <div className="relative flex-1">
                 <input
                   type="text"
+                  data-quick-search="modal"
                   value={catalogSearch}
                   onChange={(e) => {
                     setCatalogSearch(e.target.value);
@@ -3462,6 +3505,7 @@ export const InboundManager: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
+                  data-quick-search="modal"
                   value={detailSearch}
                   onChange={(e) => {
                     setDetailSearch(e.target.value);

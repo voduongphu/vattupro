@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { 
   OsdReceipt, 
@@ -52,7 +52,11 @@ import {
   RefreshCw
 } from 'lucide-react';
 
-export const OsdManager: React.FC = () => {
+export interface OsdManagerProps {
+  quickSearchSignal?: { query: string; token: number } | null;
+}
+
+export const OsdManager: React.FC<OsdManagerProps> = ({ quickSearchSignal = null }) => {
   const { currentUser, isAdmin } = useAuth();
   const [osdList, setOsdList] = useState<OsdReceipt[]>([]);
   const [inbounds, setInbounds] = useState<InboundReceipt[]>([]);
@@ -61,6 +65,14 @@ export const OsdManager: React.FC = () => {
   // Filter States
   const [searchTerm, setSearchTerm] = useState('');
   const deferredSearch = useDeferredValue(searchTerm);
+  const lastQuickSearchTokenRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (quickSearchSignal && quickSearchSignal.token !== lastQuickSearchTokenRef.current) {
+      lastQuickSearchTokenRef.current = quickSearchSignal.token;
+      setSearchTerm(quickSearchSignal.query);
+    }
+  }, [quickSearchSignal]);
   const [filterStatus, setFilterStatus] = useState<'all' | 'open' | 'closed'>('all');
   const [filterType, setFilterType] = useState<'all' | 'overage' | 'shortage' | 'damage'>('all');
   const [filterWarehouse, setFilterWarehouse] = useState('all');
@@ -1033,12 +1045,18 @@ export const OsdManager: React.FC = () => {
             <div className="relative">
               <input
                 type="text"
+                data-quick-search="primary"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Mã OSD, phiếu nhập, NCC, mã vật tư, số kiện..."
-                className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                className="w-full pl-8 pr-14 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
               />
               <Search className="w-4 h-4 text-slate-400 absolute left-2.5 top-2.5" />
+              {!searchTerm && (
+                <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-mono text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                  Ctrl+K
+                </kbd>
+              )}
             </div>
           </div>
 
