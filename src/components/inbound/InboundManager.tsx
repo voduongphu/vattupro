@@ -1869,13 +1869,13 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
 
           <button
             onClick={openCreateModal}
-            title="Lập Phiếu Nhập Kho Mới (Ctrl+N / Alt+N)"
+            title="Lập Phiếu Nhập Kho Mới (Ctrl+Space)"
             className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-xs shadow-md shadow-blue-500/20 transition active:scale-95 min-h-[42px]"
           >
             <Plus className="w-4 h-4 shrink-0" />
             <span>Lập Phiếu Nhập Kho Mới</span>
             <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 ml-0.5 rounded bg-blue-700/80 border border-blue-400/50 text-[10px] font-mono text-blue-100 leading-none">
-              Ctrl+N
+              Ctrl+Space
             </kbd>
           </button>
         </div>

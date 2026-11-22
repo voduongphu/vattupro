@@ -145,7 +145,7 @@ const MainLayout: React.FC = () => {
     [handleSelectTab]
   );
 
-  // Phím tắt toàn cục: Ctrl+K (Tìm kiếm nhanh), Ctrl+N / Alt+N (Lập phiếu nhập/xuất kho mới)
+  // Phím tắt toàn cục: Ctrl+K (Tìm kiếm nhanh), Ctrl+Space (Lập phiếu nhập/xuất kho mới)
   useEffect(() => {
     if (!currentUser || typeof window === 'undefined') return;
 

@@ -12,13 +12,14 @@ export interface ShortcutKeyEventLike {
 /**
  * Nhận diện phím tắt toàn cục của ứng dụng:
  * - Ctrl+K / Cmd+K -> 'quick-search' (Tìm kiếm nhanh)
- * - Ctrl+N / Cmd+N (và Alt+N dự phòng khi trình duyệt web chặn Ctrl+N) -> 'new-voucher' (Lập phiếu nhập/xuất kho mới)
+ * - Ctrl+Space -> 'new-voucher' (Lập phiếu nhập/xuất kho mới)
  *
- * Kiểm tra cả `event.key` lẫn `event.code` (KeyK/KeyN) để hoạt động ổn định
+ * Kiểm tra cả `event.key` lẫn `event.code` (KeyK / Space) để hoạt động ổn định
  * ngay cả khi người dùng đang bật bộ gõ tiếng Việt (Unikey/EVKey/Telex) hoặc CapsLock.
  */
 export function matchAppShortcut(event: ShortcutKeyEventLike): AppShortcutAction | null {
-  const keyLower = (event.key || '').toLowerCase();
+  const key = event.key || '';
+  const keyLower = key.toLowerCase();
   const code = event.code || '';
   const hasPrimaryModifier = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey;
 
@@ -27,9 +28,8 @@ export function matchAppShortcut(event: ShortcutKeyEventLike): AppShortcutAction
     return 'quick-search';
   }
 
-  const isN = keyLower === 'n' || code === 'KeyN';
-  const hasAltOnly = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-  if ((hasPrimaryModifier || hasAltOnly) && isN) {
+  const isSpace = code === 'Space' || key === ' ' || key === 'Spacebar';
+  if (hasPrimaryModifier && isSpace) {
     return 'new-voucher';
   }
 

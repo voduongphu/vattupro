@@ -41,11 +41,11 @@ test('matchAppShortcut matches Ctrl+K and Cmd+K for quick-search', () => {
   );
 });
 
-test('matchAppShortcut matches Ctrl+N, Cmd+N, and Alt+N fallback for new-voucher', () => {
+test('matchAppShortcut matches Ctrl+Space for new-voucher', () => {
   assert.equal(
     matchAppShortcut({
-      key: 'n',
-      code: 'KeyN',
+      key: ' ',
+      code: 'Space',
       ctrlKey: true,
       metaKey: false,
       altKey: false,
@@ -56,34 +56,35 @@ test('matchAppShortcut matches Ctrl+N, Cmd+N, and Alt+N fallback for new-voucher
 
   assert.equal(
     matchAppShortcut({
-      key: 'N',
-      code: 'KeyN',
-      ctrlKey: false,
-      metaKey: true,
+      key: 'Spacebar',
+      code: 'Space',
+      ctrlKey: true,
+      metaKey: false,
       altKey: false,
       shiftKey: false
     }),
     'new-voucher'
   );
 
+  // Supports IME key values via physical Space code
   assert.equal(
     matchAppShortcut({
-      key: 'n',
-      code: 'KeyN',
-      ctrlKey: false,
+      key: 'Process',
+      code: 'Space',
+      ctrlKey: true,
       metaKey: false,
-      altKey: true,
+      altKey: false,
       shiftKey: false
     }),
     'new-voucher'
   );
 });
 
-test('matchAppShortcut ignores conflicting modifier combos and plain keys', () => {
+test('matchAppShortcut ignores plain Space, Ctrl+N, and conflicting modifier combos', () => {
   assert.equal(
     matchAppShortcut({
-      key: 'k',
-      code: 'KeyK',
+      key: ' ',
+      code: 'Space',
       ctrlKey: false,
       metaKey: false,
       altKey: false,
@@ -94,6 +95,18 @@ test('matchAppShortcut ignores conflicting modifier combos and plain keys', () =
 
   assert.equal(
     matchAppShortcut({
+      key: 'n',
+      code: 'KeyN',
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false
+    }),
+    null
+  );
+
+  assert.equal(
+    matchAppShortcut({
       key: 'k',
       code: 'KeyK',
       ctrlKey: true,
@@ -106,8 +119,8 @@ test('matchAppShortcut ignores conflicting modifier combos and plain keys', () =
 
   assert.equal(
     matchAppShortcut({
-      key: 'n',
-      code: 'KeyN',
+      key: ' ',
+      code: 'Space',
       ctrlKey: true,
       metaKey: false,
       altKey: true,
@@ -118,24 +131,12 @@ test('matchAppShortcut ignores conflicting modifier combos and plain keys', () =
 
   assert.equal(
     matchAppShortcut({
-      key: 'n',
-      code: 'KeyN',
+      key: ' ',
+      code: 'Space',
       ctrlKey: true,
       metaKey: false,
       altKey: false,
       shiftKey: true
-    }),
-    null
-  );
-
-  assert.equal(
-    matchAppShortcut({
-      key: 's',
-      code: 'KeyS',
-      ctrlKey: true,
-      metaKey: false,
-      altKey: false,
-      shiftKey: false
     }),
     null
   );
