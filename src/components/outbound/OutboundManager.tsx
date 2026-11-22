@@ -37,6 +37,11 @@ import {
   isWarehouseAuthorized
 } from '../../utils/additiveMerge';
 import {
+  isBlankOutboundField,
+  validateOutboundExcelImport,
+  type OutboundValidatedRowEntry
+} from '../../utils/outboundImportValidation';
+import {
   ArrowUpRight,
   Plus,
   FileSpreadsheet,
@@ -736,62 +741,34 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       return;
     }
 
-    const fallbackWh: Warehouse = scopedWhList[0] || {
-      id: 'wh-01',
-      name: 'Kho Tổng Trung Tâm',
-      code: 'WH-01',
-      location: 'Khu dự án',
-      type: 'covered',
-      status: 'active',
-      createdAt: new Date().toISOString()
-    };
+    const validationSummary = validateOutboundExcelImport({
+      rows: imported as any[],
+      allWarehouses: allWh,
+      authorizedWarehouses: scopedWhList,
+      isAdmin,
+      defaultWarehouseId: defaultWhId || 'auto',
+      materials: StorageService.getMaterials(),
+      stockRecords: StorageService.ensureBaseInventoryCache(),
+      inbounds: StorageService.getInboundReceipts()
+    });
 
-    const selectedDefaultWh =
-      defaultWhId && defaultWhId !== 'auto'
-        ? scopedWhList.find((w) => w.id === defaultWhId) || fallbackWh
-        : fallbackWh;
-
-    const whResolveCache = new Map<string, Warehouse>();
-    let unauthorizedWarehouseName: string | null = null;
-    const resolveWarehouse = (itemWhName?: string): Warehouse => {
-      if (!itemWhName) return selectedDefaultWh;
-      const trimmed = itemWhName.trim().toLowerCase();
-      if (!trimmed) return selectedDefaultWh;
-
-      const cached = whResolveCache.get(trimmed);
-      if (cached) return cached;
-
-      const matchedAllowed = scopedWhList.find((w) => {
-        const wName = w.name.toLowerCase();
-        const wCode = w.code.toLowerCase();
-        return (
-          wName === trimmed ||
-          wCode === trimmed ||
-          wName.includes(trimmed) ||
-          trimmed.includes(wName)
+    if (validationSummary.validCount === 0) {
+      const unauthErr = validationSummary.errorRows.find(
+        (e) => e.validation.errorCode === 'UNAUTHORIZED_WAREHOUSE'
+      );
+      if (unauthErr?.validation.unauthorizedWarehouseName) {
+        showToast(
+          `Bạn không có quyền import phiếu xuất cho kho "${unauthErr.validation.unauthorizedWarehouseName}". Vui lòng kiểm tra lại file Excel hoặc liên hệ Admin.`,
+          'error'
         );
-      });
-
-      if (!matchedAllowed && !isAdmin) {
-        const matchesOtherWh = allWh.find((w) => {
-          const wName = w.name.toLowerCase();
-          const wCode = w.code.toLowerCase();
-          return (
-            wName === trimmed ||
-            wCode === trimmed ||
-            wName.includes(trimmed) ||
-            trimmed.includes(wName)
-          );
-        });
-        if (matchesOtherWh) {
-          unauthorizedWarehouseName = matchesOtherWh.name;
-        }
+      } else {
+        showToast(
+          `Không có dòng vật tư nào thỏa điều kiện xuất kho (${validationSummary.errorCodeCount.toLocaleString('vi-VN')} mã lỗi chưa nhập kho hoặc tồn kho < số lượng xuất).`,
+          'error'
+        );
       }
-
-      const matched = matchedAllowed || selectedDefaultWh;
-      whResolveCache.set(trimmed, matched);
-      return matched;
-    };
+      return;
+    }
 
     const groups = new Map<
       string,
@@ -806,20 +783,15 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
         recipientDepartment?: string;
         requestNo?: string;
         notes?: string;
-        items: Partial<OutboundItemDetail>[];
+        entries: OutboundValidatedRowEntry[];
       }
     >();
 
-    for (let i = 0; i < imported.length; i++) {
-      const item = imported[i] as any;
-      const wh = resolveWarehouse(item.warehouseName);
-      if (unauthorizedWarehouseName) {
-        showToast(
-          `Bạn không có quyền import phiếu xuất cho kho "${unauthorizedWarehouseName}". Vui lòng kiểm tra lại file Excel hoặc liên hệ Admin.`,
-          'error'
-        );
-        return;
-      }
+    for (let i = 0; i < validationSummary.validRows.length; i++) {
+      const entry = validationSummary.validRows[i];
+      const item = entry.row as any;
+      const wh = entry.validation.resolvedWarehouse;
+
       const rawCode = (item.issueCode || '').trim();
       const customCode = rawCode || (item.packingListNo ? `PXK-${item.packingListNo.trim()}` : '');
       const rowType: 'issue' | 'transfer' = item.outboundType === 'transfer' ? 'transfer' : 'issue';
@@ -840,7 +812,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
           recipientDepartment: item.recipientDepartment,
           requestNo: item.requestNo,
           notes: item.issueNotes,
-          items: []
+          entries: []
         };
         groups.set(groupKey, currentGroup);
       } else {
@@ -859,7 +831,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
         if (!currentGroup.requestNo && item.requestNo) currentGroup.requestNo = item.requestNo;
         if (!currentGroup.notes && item.issueNotes) currentGroup.notes = item.issueNotes;
       }
-      currentGroup.items.push(item);
+      currentGroup.entries.push(entry);
     }
 
     const todayIso = new Date().toISOString();
@@ -869,13 +841,6 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     const userFullName = currentUser?.fullName || 'Võ Dương Phú';
     let createdCount = 0;
     const existingForAutoNumber = StorageService.getOutboundReceipts();
-    const usedMaterialCodes = collectUsedMaterialCodeKeys({
-      materials: StorageService.getMaterials(),
-      inbounds: StorageService.getInboundReceipts(),
-      outbounds: existingForAutoNumber,
-      osd: StorageService.getOsdReceipts(),
-      extraCodes: imported.map((x: any) => x?.materialCode)
-    });
     const newReceipts: OutboundReceipt[] = [];
 
     groups.forEach(
@@ -890,9 +855,9 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
         recipientDepartment: customDept,
         requestNo: customReqNo,
         notes: customNotes,
-        items: whItems
+        entries: whEntries
       }) => {
-        const first = whItems[0] as any;
+        const first = whEntries[0]?.row as any;
         const normalizedGroupDate = formatExcelDate(customDate) || todayDate;
         const generatedCode = customCode?.trim()
           ? customCode.trim()
@@ -902,22 +867,42 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
               targetWh
             );
 
-        const len = whItems.length;
+        const len = whEntries.length;
         const fullItems: OutboundItemDetail[] = new Array(len);
         const occurrenceMap = new Map<string, number>();
 
         for (let idx = 0; idx < len; idx++) {
-          const item = whItems[idx] as any;
-          const qty = Math.max(0, roundQty(item.quantity));
-          const weight = Math.max(0, Math.round((Number(item.weightKg) || 0) * 100) / 100);
-          const batchVal = String(item.batchCode || item.packageNo || '').trim();
-          const pkgNo = String(item.packageNo || batchVal || `PKG-${idx + 1}`).trim();
-          const rawMatCode = String(item.materialCode || '').trim();
-          const matCode = rawMatCode
-            ? rawMatCode.toUpperCase()
-            : generateUniqueMaterialCode(usedMaterialCodes, item.materialName, 'VT');
-          const plNo = String(item.packingListNo || 'PL-EXCEL-01').trim();
-          const dwgNo = String(item.drawingNo || 'N/A').trim();
+          const { row: item, validation } = whEntries[idx];
+          const meta = validation.matchedStockMetadata;
+          const qty = validation.requestedQty;
+          const weight = validation.requestedWeightKg;
+          const batchVal = String(
+            item.batchCode || item.packageNo || meta?.packageNo || ''
+          ).trim();
+          const pkgNo = String(
+            item.packageNo || batchVal || meta?.packageNo || `PKG-${idx + 1}`
+          ).trim();
+          const matCode = validation.resolvedMaterialCode;
+          const matName =
+            !isBlankOutboundField(item.materialName) &&
+            String(item.materialName).trim().toUpperCase() !== matCode
+              ? String(item.materialName).trim()
+              : validation.resolvedMaterialName;
+          const plNo = String(
+            (!isBlankOutboundField(item.packingListNo)
+              ? item.packingListNo
+              : meta?.packingListNo) || 'N/A'
+          ).trim();
+          const shipmentVal = String(
+            (!isBlankOutboundField(item.shipment)
+              ? item.shipment
+              : meta?.shipment) || 'N/A'
+          ).trim();
+          const dwgNo = String(
+            (!isBlankOutboundField(item.drawingNo)
+              ? item.drawingNo
+              : meta?.drawingNo) || 'N/A'
+          ).trim();
 
           const sigSeed = `${matCode}|${batchVal}|${plNo}|${pkgNo}|${dwgNo}|${qty}|${weight}`;
           const occ = (occurrenceMap.get(sigSeed) || 0) + 1;
@@ -926,17 +911,23 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
           fullItems[idx] = {
             id: buildDeterministicItemId('out', generatedCode, sigSeed, occ),
             materialCode: matCode,
-            materialName: item.materialName || 'Vật tư xuất kho',
-            unit: item.unit || 'Ống',
+            materialName: matName || 'Vật tư xuất kho',
+            unit: String(item.unit || meta?.unit || 'Ống').trim(),
             batchCode: batchVal,
             packingListNo: plNo,
-            shipment: item.shipment || 'SHP-EXCEL',
+            shipment: shipmentVal,
             packageNo: pkgNo,
-            packageName: item.packageName || '',
-            category: item.category || 'Hạng mục lắp đặt',
+            packageName: item.packageName || meta?.packageName || '',
+            category: item.category || meta?.category || 'Hạng mục lắp đặt',
             drawingNo: dwgNo,
-            manufacturer: item.manufacturer || 'N/A',
-            supplier: item.supplier || 'N/A',
+            manufacturer:
+              (!isBlankOutboundField(item.manufacturer)
+                ? item.manufacturer
+                : meta?.manufacturer) || 'N/A',
+            supplier:
+              (!isBlankOutboundField(item.supplier)
+                ? item.supplier
+                : meta?.supplier) || 'N/A',
             warehouseName: targetWh.name,
             weightKg: weight,
             quantity: qty,
@@ -983,9 +974,15 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     setCurrentPage(1);
 
     loadData();
-    showToast(
-      `Đã import thành công ${newReceipts.length.toLocaleString('vi-VN')} phiếu xuất kho (${imported.length.toLocaleString('vi-VN')} mục hàng)!`
-    );
+    if (validationSummary.errorRowCount > 0) {
+      showToast(
+        `Đã import ${newReceipts.length.toLocaleString('vi-VN')} phiếu xuất kho (${validationSummary.validCount.toLocaleString('vi-VN')} mục hàng hợp lệ). Đã bỏ qua ${validationSummary.errorRowCount.toLocaleString('vi-VN')} dòng (${validationSummary.errorCodeCount.toLocaleString('vi-VN')} mã lỗi chưa nhập kho hoặc không đủ tồn kho).`
+      );
+    } else {
+      showToast(
+        `Đã import thành công ${newReceipts.length.toLocaleString('vi-VN')} phiếu xuất kho (${validationSummary.validCount.toLocaleString('vi-VN')} mục hàng)!`
+      );
+    }
     void SyncService.syncNow();
   };
 

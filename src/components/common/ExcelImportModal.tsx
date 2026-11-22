@@ -24,10 +24,18 @@ import { Warehouse } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
 import {
   createInboundMaterialCodeResolver,
+  isUserAdmin,
   type MaterialCodeResolutionResult
 } from '../../utils/additiveMerge';
+import {
+  isBlankOutboundField,
+  validateOutboundExcelImport,
+  type OutboundImportValidationSummary,
+  type OutboundRowValidationResult
+} from '../../utils/outboundImportValidation';
 import { PaginationBar } from './PaginationBar';
 import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
+import { useAuth } from '../../context/AuthContext';
 
 interface ExcelImportModalProps {
   isOpen: boolean;
@@ -61,6 +69,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   // Phân trang cho bảng xem trước (đảm bảo mượt tuyệt đối với 100.000+ dòng)
   const [previewPage, setPreviewPage] = useState(1);
   const [previewPageSize, setPreviewPageSize] = useState(50);
+  const [outboundPreviewFilter, setOutboundPreviewFilter] = useState<'all' | 'valid' | 'error'>('all');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bodyScrollRef = useRef<HTMLDivElement>(null);
@@ -71,7 +80,27 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     }
   }, [activeTab]);
 
-  const availableWarehouses = warehouses !== undefined ? warehouses : StorageService.getWarehouses();
+  const { currentUser } = useAuth();
+  const isAdminUser = currentUser ? isUserAdmin(currentUser) : true;
+  const allWarehouses = useMemo(
+    () => (isOpen ? StorageService.getWarehouses() : []),
+    [isOpen]
+  );
+  const availableWarehouses = warehouses !== undefined ? warehouses : allWarehouses;
+
+  const outboundValidation = useMemo<OutboundImportValidationSummary | null>(() => {
+    if (!isOpen || type !== 'outbound' || parsedRows.length === 0) return null;
+    return validateOutboundExcelImport({
+      rows: parsedRows,
+      allWarehouses,
+      authorizedWarehouses: availableWarehouses,
+      isAdmin: isAdminUser,
+      defaultWarehouseId: selectedWarehouseId,
+      materials: StorageService.getMaterials(),
+      stockRecords: StorageService.ensureBaseInventoryCache(),
+      inbounds: StorageService.getInboundReceipts()
+    });
+  }, [isOpen, type, parsedRows, allWarehouses, availableWarehouses, isAdminUser, selectedWarehouseId]);
 
   // Tính toán thống kê tổng hợp chỉ 1 lần bằng useMemo O(N)
   const summaryStats = useMemo(() => {
@@ -89,8 +118,13 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     const slipSet = new Set<string>();
     const sampleSlips: string[] = [];
 
-    for (let i = 0; i < parsedRows.length; i++) {
-      const r = parsedRows[i];
+    const sourceRows =
+      type === 'outbound' && outboundValidation
+        ? outboundValidation.validRows.map((entry) => entry.row)
+        : parsedRows;
+
+    for (let i = 0; i < sourceRows.length; i++) {
+      const r = sourceRows[i];
       if (type !== 'materials') {
         totalWeight += Number(r.weightKg) || 0;
         totalQty += Number(r.quantity) || 0;
@@ -110,12 +144,38 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       detectedSlipCount: slipSet.size,
       sampleSlips
     };
-  }, [parsedRows, type]);
+  }, [parsedRows, type, outboundValidation]);
 
-  const pagedPreviewRows = useMemo(() => {
-    const start = (previewPage - 1) * previewPageSize;
-    return parsedRows.slice(start, start + previewPageSize);
-  }, [parsedRows, previewPage, previewPageSize]);
+  const filteredPreviewEntries = useMemo<
+    Array<{ row: any; globalIdx: number; validation?: OutboundRowValidationResult }>
+  >(() => {
+    if (type !== 'outbound' || !outboundValidation) {
+      return parsedRows.map((row, globalIdx) => ({ row, globalIdx }));
+    }
+    const entries: Array<{ row: any; globalIdx: number; validation: OutboundRowValidationResult }> = [];
+    for (let i = 0; i < parsedRows.length; i++) {
+      const val = outboundValidation.results[i];
+      if (outboundPreviewFilter === 'valid' && !val?.valid) continue;
+      if (outboundPreviewFilter === 'error' && val?.valid) continue;
+      entries.push({ row: parsedRows[i], globalIdx: i, validation: val });
+    }
+    return entries;
+  }, [parsedRows, type, outboundValidation, outboundPreviewFilter]);
+
+  const effectivePreviewPage = useMemo(() => {
+    const totalPages = Math.max(1, Math.ceil(filteredPreviewEntries.length / previewPageSize));
+    return Math.min(previewPage, totalPages);
+  }, [filteredPreviewEntries.length, previewPage, previewPageSize]);
+
+  const pagedPreviewEntries = useMemo(() => {
+    const start = (effectivePreviewPage - 1) * previewPageSize;
+    return filteredPreviewEntries.slice(start, start + previewPageSize);
+  }, [filteredPreviewEntries, effectivePreviewPage, previewPageSize]);
+
+  const pagedPreviewRows = useMemo(
+    () => pagedPreviewEntries.map((entry) => entry.row),
+    [pagedPreviewEntries]
+  );
 
   const previewInboundResolvedCodes = useMemo<MaterialCodeResolutionResult[]>(() => {
     if (type !== 'inbound' || parsedRows.length === 0) return [];
@@ -164,6 +224,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     setParseErrors([]);
     setParsedRows([]);
     setPreviewPage(1);
+    setOutboundPreviewFilter('all');
 
     const onProgress = (percent: number, processed: number, total: number) => {
       setProgressInfo({ percent, processed, total });
@@ -195,6 +256,9 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
 
   const handleConfirmImport = async () => {
     if (parsedRows.length === 0 || isSaving) return;
+    if (type === 'outbound' && outboundValidation && outboundValidation.validCount === 0) {
+      return;
+    }
     setIsSaving(true);
 
     // Nhường 1 nhịp render để hiển thị trạng thái đang lưu khi dữ liệu >100.000 dòng
@@ -203,6 +267,17 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     try {
       if (type === 'materials') {
         await onImportSuccess(parsedRows, undefined, materialImportMode);
+      } else if (type === 'outbound' && outboundValidation) {
+        const validOutboundRows = outboundValidation.validRows.map(({ row, validation }) => ({
+          ...row,
+          materialCode: validation.resolvedMaterialCode,
+          materialName:
+            !isBlankOutboundField(row.materialName) &&
+            String(row.materialName).trim().toUpperCase() !== validation.resolvedMaterialCode
+              ? row.materialName
+              : validation.resolvedMaterialName
+        }));
+        await onImportSuccess(validOutboundRows, selectedWarehouseId);
       } else {
         await onImportSuccess(parsedRows, selectedWarehouseId);
       }
@@ -214,6 +289,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       setActiveTab('upload');
       setSelectedWarehouseId('auto');
       setPreviewPage(1);
+      setOutboundPreviewFilter('all');
     } finally {
       setIsSaving(false);
     }
@@ -519,6 +595,110 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
+              {/* Cảnh báo kiểm tra mã vật tư & tồn kho khi import xuất kho */}
+              {type === 'outbound' && outboundValidation && (
+                <div
+                  className={`p-3.5 rounded-xl border text-xs space-y-2 ${
+                    outboundValidation.errorRowCount > 0
+                      ? outboundValidation.validCount > 0
+                        ? 'bg-amber-50/90 border-amber-300 text-amber-950'
+                        : 'bg-rose-50/90 border-rose-300 text-rose-950'
+                      : 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="flex items-start gap-2">
+                      {outboundValidation.errorRowCount > 0 ? (
+                        <AlertCircle
+                          className={`w-4 h-4 shrink-0 mt-0.5 ${
+                            outboundValidation.validCount > 0 ? 'text-amber-600' : 'text-rose-600'
+                          }`}
+                        />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                      )}
+                      <div className="space-y-1">
+                        {outboundValidation.errorRowCount > 0 ? (
+                          <>
+                            <div className="font-bold">
+                              Phát hiện{' '}
+                              <span className="text-rose-700">
+                                {outboundValidation.errorCodeCount.toLocaleString('vi-VN')} mã lỗi
+                              </span>{' '}
+                              ({outboundValidation.errorRowCount.toLocaleString('vi-VN')} /{' '}
+                              {outboundValidation.totalCount.toLocaleString('vi-VN')} dòng không đạt điều kiện xuất kho)
+                            </div>
+                            <p className="text-[11px] leading-relaxed">
+                              {outboundValidation.validCount > 0 ? (
+                                <>
+                                  Chỉ các dòng thỏa điều kiện (có mã vật tư trong kho và{' '}
+                                  <strong>Tồn kho ≥ Số lượng xuất</strong>) mới được phép xuất:{' '}
+                                  <strong className="text-emerald-700">
+                                    {outboundValidation.validCount.toLocaleString('vi-VN')} dòng hợp lệ
+                                  </strong>{' '}
+                                  sẽ được import;{' '}
+                                  <strong className="text-rose-700">
+                                    {outboundValidation.errorRowCount.toLocaleString('vi-VN')} dòng lỗi
+                                  </strong>{' '}
+                                  sẽ tự động được bỏ qua để không gây âm tồn kho.
+                                </>
+                              ) : (
+                                <>
+                                  Không có mặt hàng nào thỏa điều kiện xuất kho (mã/tên vật tư chưa được nhập kho
+                                  hoặc số lượng tồn kho nhỏ hơn số lượng xuất). Vui lòng nhập kho trước khi thực hiện xuất kho.
+                                </>
+                              )}
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <div className="font-bold text-emerald-900">
+                              Kiểm tra hợp lệ: Toàn bộ{' '}
+                              {outboundValidation.validCount.toLocaleString('vi-VN')} dòng xuất kho đều đủ tồn kho
+                            </div>
+                            <p className="text-[11px] text-emerald-800">
+                              Hệ thống đã tự động đối chiếu mã vật tư theo tên (với các dòng bỏ trống cột mã) và xác nhận{' '}
+                              <strong>Tồn kho ≥ Số lượng xuất</strong>.
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-semibold shrink-0">
+                      <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        Hợp lệ: {outboundValidation.validCount.toLocaleString('vi-VN')}
+                      </span>
+                      {outboundValidation.errorRowCount > 0 && (
+                        <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200">
+                          Mã lỗi: {outboundValidation.errorCodeCount.toLocaleString('vi-VN')} ({outboundValidation.errorRowCount.toLocaleString('vi-VN')} dòng)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {outboundValidation.errorCodes.length > 0 && (
+                    <div className="pl-6 text-[11px] text-rose-800 flex flex-wrap items-center gap-1">
+                      <span className="font-semibold">Mã/Vật tư lỗi:</span>
+                      {outboundValidation.errorCodes.slice(0, 6).map((code, idx) => (
+                        <span
+                          key={`${code}-${idx}`}
+                          className="font-mono bg-white/80 border border-rose-200 px-1.5 py-0.5 rounded text-[10px]"
+                          data-user-content="true"
+                        >
+                          {code}
+                        </span>
+                      ))}
+                      {outboundValidation.errorCodes.length > 6 && (
+                        <span className="text-rose-700 font-medium">
+                          ... (+{(outboundValidation.errorCodes.length - 6).toLocaleString('vi-VN')} mã khác)
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Thông báo số lượng phiếu tự tạo nhận diện được */}
               {type !== 'materials' && (
                 <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 text-xs ${
@@ -529,9 +709,11 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className={`w-4 h-4 shrink-0 ${summaryStats.detectedSlipCount > 0 ? 'text-blue-600' : 'text-amber-600'}`} />
                     <span>
-                      {summaryStats.detectedSlipCount > 0 ? (
+                      {type === 'outbound' && outboundValidation && outboundValidation.validCount === 0 ? (
+                        <>Chưa có dòng hợp lệ nào để tạo phiếu xuất kho.</>
+                      ) : summaryStats.detectedSlipCount > 0 ? (
                         <>
-                          Nhận diện <strong>{summaryStats.detectedSlipCount.toLocaleString('vi-VN')}</strong> số phiếu trong file:{' '}
+                          Nhận diện <strong>{summaryStats.detectedSlipCount.toLocaleString('vi-VN')}</strong> số phiếu{type === 'outbound' && outboundValidation?.errorRowCount ? ' hợp lệ' : ''} trong file:{' '}
                           <span className="font-mono font-bold text-blue-700">
                             {summaryStats.sampleSlips.join(', ')}
                             {summaryStats.detectedSlipCount > summaryStats.sampleSlips.length
@@ -556,11 +738,62 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               )}
 
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-slate-700">
-                  Xem trước dữ liệu bóc tách ({parsedRows.length.toLocaleString('vi-VN')} mặt hàng)
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-700">
+                    Xem trước dữ liệu bóc tách ({parsedRows.length.toLocaleString('vi-VN')} mặt hàng)
+                  </span>
+                  {type === 'outbound' && outboundValidation && outboundValidation.errorRowCount > 0 && (
+                    <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOutboundPreviewFilter('all');
+                          setPreviewPage(1);
+                        }}
+                        className={`px-2 py-0.5 rounded-md font-semibold transition ${
+                          outboundPreviewFilter === 'all'
+                            ? 'bg-white text-slate-900 shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Tất cả ({outboundValidation.totalCount.toLocaleString('vi-VN')})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOutboundPreviewFilter('valid');
+                          setPreviewPage(1);
+                        }}
+                        className={`px-2 py-0.5 rounded-md font-semibold transition ${
+                          outboundPreviewFilter === 'valid'
+                            ? 'bg-emerald-600 text-white shadow-sm'
+                            : 'text-emerald-700 hover:bg-emerald-50'
+                        }`}
+                      >
+                        Hợp lệ ({outboundValidation.validCount.toLocaleString('vi-VN')})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOutboundPreviewFilter('error');
+                          setPreviewPage(1);
+                        }}
+                        className={`px-2 py-0.5 rounded-md font-semibold transition ${
+                          outboundPreviewFilter === 'error'
+                            ? 'bg-rose-600 text-white shadow-sm'
+                            : 'text-rose-700 hover:bg-rose-50'
+                        }`}
+                      >
+                        Lỗi ({outboundValidation.errorRowCount.toLocaleString('vi-VN')})
+                      </button>
+                    </div>
+                  )}
+                </div>
                 {type !== 'materials' ? (
                   <span className="text-xs text-slate-500">
+                    {type === 'outbound' && outboundValidation && outboundValidation.errorRowCount > 0
+                      ? 'Tổng hợp lệ — '
+                      : ''}
                     Tổng khối lượng: <strong className="text-blue-700">{summaryStats.totalWeight.toLocaleString('vi-VN')} kg</strong>
                     {' | '}
                     Tổng số lượng: <strong className="text-emerald-700">{summaryStats.totalQty.toLocaleString('vi-VN')}</strong>
@@ -593,7 +826,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {pagedPreviewRows.map((r, i) => {
-                          const globalIdx = (previewPage - 1) * previewPageSize + i;
+                          const globalIdx = (effectivePreviewPage - 1) * previewPageSize + i;
                           return (
                             <tr key={r.id || globalIdx} className="hover:bg-slate-50">
                               <td className="p-2.5 font-mono text-slate-500">{(globalIdx + 1).toLocaleString('vi-VN')}</td>
@@ -643,7 +876,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                       </tbody>
                     </table>
                   ) : (
-                    <table className="w-full min-w-[980px] text-left text-xs">
+                    <table className={`w-full ${type === 'outbound' ? 'min-w-[1160px]' : 'min-w-[980px]'} text-left text-xs`}>
                       <thead className="bg-slate-100 text-slate-700 sticky top-0 font-semibold border-b border-slate-200">
                         <tr>
                           <th className="p-2.5">STT</th>
@@ -657,6 +890,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           <th className="p-2.5 text-right">SL (cây/tấm)</th>
                           <th className="p-2.5 text-center">ĐVT</th>
                           <th className="p-2.5 text-right">KL (Kg)</th>
+                          {type === 'outbound' && <th className="p-2.5 min-w-[210px]">Tình Trạng &amp; Tồn Kho</th>}
                           {type === 'inbound' && <th className="p-2.5 text-right">Thành tiền (VNĐ)</th>}
                           {type === 'inbound' && <th className="p-2.5">Vị trí lưu kho/bãi</th>}
                           <th className="p-2.5">Ghi chú</th>
@@ -664,8 +898,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {pagedPreviewRows.map((r, i) => {
-                          const globalIdx = (previewPage - 1) * previewPageSize + i;
+                        {pagedPreviewEntries.map(({ row: r, globalIdx, validation }) => {
                           const rowAny = r as any;
                           const customCode = rowAny.receiptCode || rowAny.issueCode;
                           const batchCodeVal = String(rowAny.batchCode || '').trim();
@@ -682,8 +915,12 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                             Number(rowAny.totalPrice) ||
                             Number(rowAny.totalAmount) ||
                             (Number(r.quantity || 0) * Number(rowAny.unitPrice || 0));
+                          const isOutboundInvalid = type === 'outbound' && validation && !validation.valid;
                           return (
-                            <tr key={r.id || globalIdx} className="hover:bg-slate-50">
+                            <tr
+                              key={r.id || globalIdx}
+                              className={isOutboundInvalid ? 'bg-rose-50/70 hover:bg-rose-50' : 'hover:bg-slate-50'}
+                            >
                               <td className="p-2.5 font-mono text-slate-400">{(globalIdx + 1).toLocaleString('vi-VN')}</td>
                               <td className="p-2.5">
                                 {customCode ? (
@@ -717,7 +954,11 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               <td className="p-2.5">
                                 <span className="inline-flex items-center gap-1 font-semibold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                                   <WarehouseIcon className="w-3 h-3 text-blue-600 shrink-0" />
-                                  <span data-user-content="true">{getRowWarehouseDisplay(r)}</span>
+                                  <span data-user-content="true">
+                                    {type === 'outbound' && validation?.resolvedWarehouse
+                                      ? validation.resolvedWarehouse.name
+                                      : getRowWarehouseDisplay(r)}
+                                  </span>
                                 </span>
                               </td>
                               <td className="p-2.5">
@@ -743,9 +984,30 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                 )}
                               </td>
                               <td className="p-2.5">
-                                <div className="font-semibold text-slate-900" data-user-content="true">{r.materialName}</div>
+                                <div className="font-semibold text-slate-900" data-user-content="true">
+                                  {type === 'outbound' && validation
+                                    ? validation.resolvedMaterialName
+                                    : r.materialName}
+                                </div>
                                 <div className="text-[11px] font-mono text-blue-700 flex items-center gap-1.5 flex-wrap">
-                                  {r.materialCode ? (
+                                  {type === 'outbound' && validation ? (
+                                    validation.codeSource === 'explicit' ? (
+                                      <span data-user-content="true">{validation.resolvedMaterialCode}</span>
+                                    ) : validation.codeSource === 'catalog_or_stock' && validation.resolvedMaterialCode ? (
+                                      <>
+                                        <span className="text-emerald-700 font-semibold" data-user-content="true">
+                                          {validation.resolvedMaterialCode}
+                                        </span>
+                                        <span className="font-sans font-medium text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                          Tự tìm theo tên
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="font-sans font-medium text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 border border-rose-200">
+                                        Chưa có mã / Chưa nhập kho
+                                      </span>
+                                    )
+                                  ) : r.materialCode ? (
                                     <span data-user-content="true">{r.materialCode}</span>
                                   ) : type === 'inbound' && previewInboundResolvedCodes[globalIdx] ? (
                                     <>
@@ -784,6 +1046,33 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               <td className="p-2.5 text-right font-mono font-medium text-slate-800">
                                 {Number(r.weightKg || 0).toLocaleString('vi-VN')}
                               </td>
+                              {type === 'outbound' && validation && (
+                                <td className="p-2.5">
+                                  {validation.valid ? (
+                                    <div className="space-y-0.5">
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                        <CheckCircle2 className="w-3 h-3 shrink-0" />
+                                        <span>Đủ điều kiện</span>
+                                      </span>
+                                      <div className="text-[11px] text-slate-600 font-mono">
+                                        Tồn: <strong className="text-slate-800">{validation.availableStockBefore.toLocaleString('vi-VN')}</strong>
+                                        {' → '}
+                                        Còn: <strong className="text-emerald-700">{validation.availableStockAfter.toLocaleString('vi-VN')}</strong>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="space-y-0.5">
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-100 text-rose-800 border border-rose-200">
+                                        <AlertCircle className="w-3 h-3 shrink-0" />
+                                        <span>Lỗi xuất kho</span>
+                                      </span>
+                                      <div className="text-[11px] text-rose-700 leading-snug">
+                                        {validation.errorMessage}
+                                      </div>
+                                    </div>
+                                  )}
+                                </td>
+                              )}
                               {type === 'inbound' && (
                                 <td className="p-2.5 text-right font-mono font-semibold text-emerald-700">
                                   {lineAmount > 0 ? lineAmount.toLocaleString('vi-VN') : '-'}
@@ -821,8 +1110,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                 </div>
 
                 <PaginationBar
-                  currentPage={previewPage}
-                  totalItems={parsedRows.length}
+                  currentPage={effectivePreviewPage}
+                  totalItems={filteredPreviewEntries.length}
                   pageSize={previewPageSize}
                   onPageChange={setPreviewPage}
                   onPageSizeChange={setPreviewPageSize}
@@ -869,14 +1158,46 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                 </button>
                 <button
                   onClick={handleConfirmImport}
-                  disabled={isSaving}
-                  className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-600/20 transition active:scale-95 disabled:opacity-70 min-h-[42px]"
+                  disabled={
+                    isSaving ||
+                    (type === 'outbound' && outboundValidation !== null && outboundValidation.validCount === 0)
+                  }
+                  className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-600/20 transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed min-h-[42px]"
                 >
                   {isSaving ? (
                     <>
                       <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />
-                      <span>Đang lưu {parsedRows.length.toLocaleString('vi-VN')} dòng...</span>
+                      <span>
+                        Đang lưu{' '}
+                        {(type === 'outbound' && outboundValidation
+                          ? outboundValidation.validCount
+                          : parsedRows.length
+                        ).toLocaleString('vi-VN')}{' '}
+                        dòng...
+                      </span>
                     </>
+                  ) : type === 'outbound' && outboundValidation ? (
+                    outboundValidation.validCount === 0 ? (
+                      <>
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        <span>Không Có Dòng Hợp Lệ Để Import</span>
+                      </>
+                    ) : outboundValidation.errorRowCount > 0 ? (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        <span>
+                          Chỉ Import {outboundValidation.validCount.toLocaleString('vi-VN')} Dòng Hợp Lệ (Bỏ qua{' '}
+                          {outboundValidation.errorRowCount.toLocaleString('vi-VN')} lỗi)
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        <span>
+                          Xác Nhận Import ({outboundValidation.validCount.toLocaleString('vi-VN')} mặt hàng)
+                        </span>
+                      </>
+                    )
                   ) : (
                     <>
                       <CheckCircle2 className="w-4 h-4 shrink-0" />
