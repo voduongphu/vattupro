@@ -45,6 +45,15 @@ import {
   formatFirestoreQuotaMessage,
   evaluatePreSyncCheck,
   resolveConvergedCheckpointDigests,
+  CLOUD_SYNC_HARD_TIMEOUT_MS,
+  SyncAbortedError,
+  isSyncAbortedError,
+  createSyncDeadline,
+  getEffectiveStepTimeoutMs,
+  classifyCloudPauseReason,
+  formatCloudPauseNotice,
+  shouldPauseCloudOnFailure,
+  shouldSkipAutoCloudActivity,
   type ManifestSnapshotLike
 } from './cloudSyncHelpers.ts';
 import {
@@ -1267,6 +1276,144 @@ describe('cloudSyncHelpers', () => {
       code: 'permission-denied'
     });
     assert.equal(isFirestoreBillingOrPlanError(normalPermErr), false);
+  });
+
+  it('enforces a 2-minute (120_000 ms) sync deadline watchdog and aborts backoff/concurrency loops cleanly', async () => {
+    assert.equal(CLOUD_SYNC_HARD_TIMEOUT_MS, 120_000);
+
+    let fakeNow = 10_000;
+    let timedOutCallbackFired = 0;
+    const deadline = createSyncDeadline(CLOUD_SYNC_HARD_TIMEOUT_MS, {
+      nowFn: () => fakeNow,
+      onTimeout: () => {
+        timedOutCallbackFired += 1;
+      }
+    });
+
+    assert.equal(deadline.isAborted(), false);
+    assert.equal(deadline.remainingMs(), 120_000);
+    assert.equal(getEffectiveStepTimeoutMs(15_000, deadline.remainingMs()), 15_000);
+
+    fakeNow += 116_000;
+    assert.equal(deadline.isAborted(), false);
+    assert.equal(deadline.remainingMs(), 4_000);
+    assert.equal(getEffectiveStepTimeoutMs(15_000, deadline.remainingMs()), 4_000);
+
+    fakeNow += 4_500;
+    assert.equal(deadline.isAborted(), true);
+    assert.equal(deadline.didTimeOut(), true);
+    assert.equal(timedOutCallbackFired, 1);
+    assert.throws(() => deadline.throwIfAborted(), (err: unknown) => isSyncAbortedError(err));
+    assert.throws(
+      () => getEffectiveStepTimeoutMs(10_000, deadline.remainingMs()),
+      (err: unknown) => isSyncAbortedError(err) && (err as SyncAbortedError).timedOut === true
+    );
+    deadline.dispose();
+
+    // retryAsyncWithBackoff stops immediately without retrying once aborted
+    let retryAttempts = 0;
+    let abortedFlag = false;
+    await assert.rejects(
+      async () =>
+        retryAsyncWithBackoff(
+          async () => {
+            retryAttempts += 1;
+            abortedFlag = true;
+            throw Object.assign(new Error('transient'), { code: 'unavailable' });
+          },
+          {
+            maxRetries: 5,
+            baseDelayMs: 500,
+            isAborted: () => abortedFlag,
+            getAbortError: () => new SyncAbortedError('aborted mid-retry', { timedOut: true })
+          }
+        ),
+      (err: unknown) => isSyncAbortedError(err)
+    );
+    assert.equal(retryAttempts, 1);
+
+    // runWithConcurrencyLimit stops launching remaining items once aborted
+    let processedCount = 0;
+    let stopMidPool = false;
+    await assert.rejects(
+      async () =>
+        runWithConcurrencyLimit([1, 2, 3, 4, 5, 6], 1, async (n) => {
+          processedCount += 1;
+          if (n === 2) stopMidPool = true;
+          return n;
+        }, {
+          isAborted: () => stopMidPool,
+          getAbortError: () => new SyncAbortedError('aborted pool')
+        }),
+      (err: unknown) => isSyncAbortedError(err)
+    );
+    assert.equal(processedCount, 2);
+  });
+
+  it('classifies pause reasons, formats clear reconnect notices, and blocks auto sync while paused', () => {
+    const timeoutNotice = formatCloudPauseNotice(
+      classifyCloudPauseReason('timeout', { timedOutOver2Min: true, isOnline: true })
+    );
+    assert.match(timeoutNotice, /^Tạm dừng kết nối Cloud vì lý do: .+\. Vui lòng nhấn nút "Đồng Bộ Cloud" để chủ động kết nối lại\.$/);
+    assert.ok(timeoutNotice.includes('2 phút'));
+
+    const offlineNotice = formatCloudPauseNotice(
+      classifyCloudPauseReason('any', { isOnline: false })
+    );
+    assert.ok(offlineNotice.includes('ngoại tuyến'));
+
+    const sparkReason = classifyCloudPauseReason(
+      Object.assign(new Error('Database disabled on Spark plan'), { code: 'failed-precondition' })
+    );
+    assert.ok(sparkReason.includes('Spark'));
+    assert.ok(sparkReason.includes('Blaze'));
+
+    const networkReason = classifyCloudPauseReason(
+      Object.assign(new Error('network unavailable'), { code: 'unavailable' })
+    );
+    assert.ok(networkReason.includes('mạng di động'));
+
+    // Auto vs manual pause thresholds
+    assert.equal(
+      shouldPauseCloudOnFailure({
+        elapsedMs: 120_000,
+        maxDurationMs: 120_000,
+        consecutiveFailures: 1
+      }),
+      true
+    );
+    assert.equal(
+      shouldPauseCloudOnFailure({
+        elapsedMs: 10_000,
+        maxDurationMs: 120_000,
+        consecutiveFailures: 1,
+        isManualTrigger: false
+      }),
+      false
+    );
+    assert.equal(
+      shouldPauseCloudOnFailure({
+        elapsedMs: 10_000,
+        maxDurationMs: 120_000,
+        consecutiveFailures: 2,
+        isManualTrigger: false
+      }),
+      true
+    );
+    assert.equal(
+      shouldPauseCloudOnFailure({
+        elapsedMs: 10_000,
+        maxDurationMs: 120_000,
+        consecutiveFailures: 1,
+        isManualTrigger: true
+      }),
+      true
+    );
+
+    // Paused gate blocks automatic syncs but allows manual sync
+    assert.equal(shouldSkipAutoCloudActivity({ connectionPaused: true, isManualTrigger: false }), true);
+    assert.equal(shouldSkipAutoCloudActivity({ connectionPaused: true, isManualTrigger: true }), false);
+    assert.equal(shouldSkipAutoCloudActivity({ connectionPaused: false, isManualTrigger: false }), false);
   });
 });
 

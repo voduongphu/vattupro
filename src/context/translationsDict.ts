@@ -1784,5 +1784,37 @@ export const SYSTEM_UI_PATTERN_RULES_EN: SystemUiPatternRule[] = [
   {
     pattern: /^Đã chọn\s+([0-9.,]+)\s+vật tư vào phiếu xuất kho!$/i,
     replace: (_, n) => `Selected ${n} materials for the outbound issue!`
+  },
+  {
+    pattern: /^Thiết bị đang ngoại tuyến\.\s*Vui lòng kiểm tra kết nối mạng và nhấn nút "Đồng Bộ Cloud" để thử lại\.?$/i,
+    replace: () => 'Device is offline. Please check your network connection and click "Cloud Sync" to retry.'
+  },
+  {
+    pattern: /^Tạm dừng kết nối Cloud vì lý do:\s*(.+?)\.\s*Vui lòng nhấn nút "Đồng Bộ Cloud" để chủ động kết nối lại\.?$/i,
+    replace: (_, reason) => {
+      const rawReason = String(reason || '').trim();
+      const r = rawReason.toLowerCase();
+      let enReason = rawReason;
+      if (r.includes('ngoại tuyến') || r.includes('mất kết nối mạng internet')) {
+        enReason = 'Device is offline (no Internet connection)';
+      } else if (r.includes('> 2 phút') || r.includes('quá thời gian chờ')) {
+        enReason = 'Connection/sync timed out (> 2 minutes) due to slow mobile network or unreachable Cloud server';
+      } else if (r.includes('spark') || r.includes('blaze') || r.includes('thanh toán')) {
+        enReason = 'Firebase project is on the Spark plan or Cloud Firestore Blaze billing is disabled';
+      } else if (r.includes('hạn mức') || r.includes('quota')) {
+        enReason = 'Daily free Cloud Firestore read/write quota exceeded';
+      } else if (r.includes('chặn cửa sổ')) {
+        enReason = 'Device browser blocked the Google authentication popup';
+      } else if (r.includes('hết hạn') || r.includes('đăng nhập lại')) {
+        enReason = 'Google authentication session expired; please sign in again';
+      } else if (r.includes('quyền') || r.includes('thu hồi')) {
+        enReason = 'Google account lacks permission or Cloud access was revoked';
+      } else if (r.includes('mạng di động') || r.includes('chập chờn')) {
+        enReason = 'Weak or unstable mobile network; unable to reach Google Cloud server';
+      } else if (/[À-ỹà-ỹĐđ]/.test(enReason)) {
+        enReason = 'Unable to connect to Google Cloud Firestore server';
+      }
+      return `Paused Cloud sync due to: ${enReason}. Click "Cloud Sync" to manually reconnect.`;
+    }
   }
 ];

@@ -69,7 +69,13 @@ interface AuthContextType {
   currentUser: User | null;
   users: User[];
   cloudState: CloudSyncSnapshotState;
-  connectCloudSync: () => Promise<{ success: boolean; message: string; email?: string | null }>;
+  connectCloudSync: () => Promise<{
+    success: boolean;
+    redirected?: boolean;
+    paused?: boolean;
+    message: string;
+    email?: string | null;
+  }>;
   disconnectCloudSync: () => Promise<void>;
   loginWithGoogle: (
     forceLogoutOtherDevice?: boolean,
@@ -175,8 +181,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unified = SyncService.getUnifiedSession();
     if (unified) {
       void SyncService.verifyCurrentSession();
-      // Tự động kết nối Google Cloud Firestore trong nền để đồng bộ toàn bộ dữ liệu, tránh sót
-      void SyncService.autoConnectAndSyncIfPossible();
+      void (async () => {
+        const redirectRes = await SyncService.resumePendingCloudConnectRedirectIfAny();
+        if (redirectRes.handled) {
+          refreshUsers();
+          return;
+        }
+        // Tự động kết nối Google Cloud Firestore trong nền để đồng bộ toàn bộ dữ liệu, tránh sót
+        await SyncService.autoConnectAndSyncIfPossible();
+      })();
     } else {
       setCurrentUser(null);
       void (async () => {
@@ -248,6 +261,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const connectCloudSync = async (): Promise<{
     success: boolean;
+    redirected?: boolean;
+    paused?: boolean;
     message: string;
     email?: string | null;
   }> => {

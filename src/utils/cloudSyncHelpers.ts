@@ -1089,6 +1089,9 @@ export async function retryAsyncWithBackoff<T>(
     baseDelayMs?: number;
     shouldRetry?: (err: unknown, attempt: number) => boolean;
     sleepFn?: (ms: number) => Promise<void>;
+    isAborted?: () => boolean;
+    getAbortError?: () => Error;
+    getRemainingMs?: () => number;
   }
 ): Promise<T> {
   const maxRetries = Math.max(0, Math.floor(Number(options?.maxRetries ?? 1)));
@@ -1097,18 +1100,38 @@ export async function retryAsyncWithBackoff<T>(
   const sleepFn =
     options?.sleepFn ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
+  const buildAbortErr = () =>
+    options?.getAbortError
+      ? options.getAbortError()
+      : new SyncAbortedError('Đã tạm dừng đồng bộ Cloud.', { timedOut: true });
+
   let attempt = 0;
   while (true) {
+    if (options?.isAborted?.()) {
+      throw buildAbortErr();
+    }
     try {
       return await fn();
     } catch (err) {
+      if (isSyncAbortedError(err) || options?.isAborted?.()) {
+        throw isSyncAbortedError(err) ? err : buildAbortErr();
+      }
       if (attempt >= maxRetries || !shouldRetry(err, attempt)) {
         throw err;
       }
       const delayMs = baseDelayMs * Math.pow(2, attempt);
+      if (options?.getRemainingMs) {
+        const rem = options.getRemainingMs();
+        if (!Number.isFinite(rem) || rem <= 0 || delayMs >= rem) {
+          throw buildAbortErr();
+        }
+      }
       attempt += 1;
       if (delayMs > 0) {
         await sleepFn(delayMs);
+        if (options?.isAborted?.()) {
+          throw buildAbortErr();
+        }
       }
     }
   }
@@ -1117,15 +1140,26 @@ export async function retryAsyncWithBackoff<T>(
 export async function runWithConcurrencyLimit<T, R>(
   items: readonly T[],
   concurrency: number,
-  worker: (item: T, index: number) => Promise<R>
+  worker: (item: T, index: number) => Promise<R>,
+  options?: {
+    isAborted?: () => boolean;
+    getAbortError?: () => Error;
+  }
 ): Promise<R[]> {
   if (!Array.isArray(items) || items.length === 0) return [];
   const limit = Math.max(1, Math.min(items.length, Math.floor(Number(concurrency) || 1)));
   const results = new Array<R>(items.length);
   let nextIndex = 0;
+  const buildAbortErr = () =>
+    options?.getAbortError
+      ? options.getAbortError()
+      : new SyncAbortedError('Đã tạm dừng đồng bộ Cloud.', { timedOut: true });
 
   const runWorker = async () => {
     while (true) {
+      if (options?.isAborted?.()) {
+        throw buildAbortErr();
+      }
       const idx = nextIndex;
       if (idx >= items.length) return;
       nextIndex = idx + 1;
@@ -1597,5 +1631,259 @@ export function resolveConvergedCheckpointDigests(
     remoteSyncedMaterialsDigest
   };
 }
+
+export const CLOUD_SYNC_HARD_TIMEOUT_MS = 120_000;
+
+export class SyncAbortedError extends Error {
+  reason: string;
+  timedOut: boolean;
+
+  constructor(
+    message = 'Đã tạm dừng đồng bộ Cloud do quá thời gian chờ.',
+    options?: { reason?: string; timedOut?: boolean }
+  ) {
+    super(message);
+    this.name = 'SyncAbortedError';
+    this.reason = options?.reason || message;
+    this.timedOut = Boolean(options?.timedOut);
+  }
+}
+
+export function isSyncAbortedError(err: unknown): boolean {
+  return err instanceof SyncAbortedError || (err instanceof Error && err.name === 'SyncAbortedError');
+}
+
+export interface SyncDeadlineController {
+  readonly startedAtMs: number;
+  readonly deadlineMs: number;
+  isAborted: () => boolean;
+  isExpired: () => boolean;
+  remainingMs: () => number;
+  elapsedMs: () => number;
+  getAbortReason: () => string | null;
+  didTimeOut: () => boolean;
+  abort: (reason?: string, timedOut?: boolean) => void;
+  throwIfAborted: () => void;
+  dispose: () => void;
+}
+
+export function createSyncDeadline(
+  timeoutMs = CLOUD_SYNC_HARD_TIMEOUT_MS,
+  options?: {
+    nowFn?: () => number;
+    onTimeout?: () => void;
+  }
+): SyncDeadlineController {
+  const nowFn = options?.nowFn ?? Date.now;
+  const effectiveTimeoutMs = Math.max(1000, Math.floor(Number(timeoutMs) || CLOUD_SYNC_HARD_TIMEOUT_MS));
+  const startedAtMs = nowFn();
+  const deadlineMs = startedAtMs + effectiveTimeoutMs;
+  let aborted = false;
+  let timedOut = false;
+  let abortReason: string | null = null;
+  let disposed = false;
+  let notifiedTimeout = false;
+
+  const triggerTimeout = () => {
+    if (disposed) return;
+    if (!aborted) {
+      aborted = true;
+      timedOut = true;
+      abortReason =
+        abortReason ||
+        'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
+    }
+    clearTimeout(timer);
+    if (!notifiedTimeout) {
+      notifiedTimeout = true;
+      try {
+        options?.onTimeout?.();
+      } catch {
+        // ignore timeout callback error
+      }
+    }
+  };
+
+  const timer = setTimeout(() => {
+    if (disposed || aborted) return;
+    triggerTimeout();
+  }, effectiveTimeoutMs);
+
+  const checkExpired = (): boolean => {
+    if (aborted) return true;
+    if (nowFn() >= deadlineMs) {
+      triggerTimeout();
+      return true;
+    }
+    return false;
+  };
+
+  return {
+    startedAtMs,
+    deadlineMs,
+    isAborted: () => checkExpired(),
+    isExpired: () => checkExpired(),
+    remainingMs: () => Math.max(0, deadlineMs - nowFn()),
+    elapsedMs: () => Math.max(0, nowFn() - startedAtMs),
+    getAbortReason: () => {
+      checkExpired();
+      return abortReason;
+    },
+    didTimeOut: () => {
+      checkExpired();
+      return timedOut;
+    },
+    abort: (reason?: string, isTimeout = false) => {
+      if (aborted) return;
+      aborted = true;
+      timedOut = Boolean(isTimeout);
+      abortReason = reason || 'Đã tạm dừng kết nối Cloud.';
+      clearTimeout(timer);
+    },
+    throwIfAborted: () => {
+      if (checkExpired()) {
+        throw new SyncAbortedError(
+          abortReason || 'Quá thời gian chờ kết nối/đồng bộ Cloud (> 2 phút).',
+          { reason: abortReason || undefined, timedOut }
+        );
+      }
+    },
+    dispose: () => {
+      disposed = true;
+      clearTimeout(timer);
+    }
+  };
+}
+
+export function getEffectiveStepTimeoutMs(
+  requestedTimeoutMs: number,
+  remainingMs: number
+): number {
+  const req = Math.max(1000, Math.floor(Number(requestedTimeoutMs) || 10_000));
+  if (!Number.isFinite(remainingMs)) return req;
+  if (remainingMs <= 0) {
+    throw new SyncAbortedError(
+      'Quá thời gian chờ kết nối/đồng bộ Cloud (> 2 phút).',
+      {
+        reason:
+          'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud',
+        timedOut: true
+      }
+    );
+  }
+  return Math.max(1000, Math.min(req, Math.floor(remainingMs)));
+}
+
+export function classifyCloudPauseReason(
+  errOrMsg: unknown,
+  ctx?: { isOnline?: boolean; timedOutOver2Min?: boolean }
+): string {
+  if (ctx?.isOnline === false) {
+    return 'Thiết bị đang mất kết nối mạng Internet (ngoại tuyến)';
+  }
+  if (
+    ctx?.timedOutOver2Min ||
+    (errOrMsg instanceof SyncAbortedError && errOrMsg.timedOut)
+  ) {
+    return 'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
+  }
+  if (isFirestoreBillingOrPlanError(errOrMsg)) {
+    return 'Dự án Firebase đang ở gói Spark hoặc dịch vụ Cloud Firestore chưa bật thanh toán Blaze';
+  }
+  if (isFirestoreQuotaExceededError(errOrMsg)) {
+    return 'Cloud Firestore tạm vượt hạn mức đọc/ghi miễn phí trong ngày';
+  }
+
+  const code = String((errOrMsg as any)?.code || '').toLowerCase();
+  const raw = extractRawFirestoreErrorMessage(errOrMsg);
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('ngoại tuyến') || lower.includes('offline')) {
+    return 'Thiết bị đang mất kết nối mạng Internet (ngoại tuyến)';
+  }
+  if (
+    lower.includes('> 2 phút') ||
+    lower.includes('2 phút') ||
+    lower.includes('quá thời gian chờ kết nối')
+  ) {
+    return 'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
+  }
+  if (
+    code === 'auth/popup-blocked' ||
+    lower.includes('popup-blocked') ||
+    lower.includes('chặn cửa sổ')
+  ) {
+    return 'Trình duyệt trên thiết bị đang chặn cửa sổ xác thực Google';
+  }
+  if (
+    code === 'auth/user-token-expired' ||
+    code === 'auth/invalid-user-token' ||
+    code === 'unauthenticated' ||
+    lower.includes('hết hạn') ||
+    lower.includes('token') ||
+    lower.includes('unauthenticated')
+  ) {
+    return 'Phiên xác thực tài khoản Google đã hết hạn hoặc cần đăng nhập lại';
+  }
+  if (
+    code === 'permission-denied' ||
+    code.includes('permission-denied') ||
+    lower.includes('missing or insufficient permissions') ||
+    lower.includes('permission_denied') ||
+    lower.includes('thu hồi') ||
+    lower.includes('quyền truy cập')
+  ) {
+    return 'Tài khoản Google chưa được cấp quyền hoặc đã bị thu hồi quyền truy cập Cloud';
+  }
+  if (
+    code === 'unavailable' ||
+    code === 'deadline-exceeded' ||
+    code === 'aborted' ||
+    code === 'auth/network-request-failed' ||
+    lower.includes('network') ||
+    lower.includes('unavailable') ||
+    lower.includes('failed to fetch') ||
+    lower.includes('transport') ||
+    lower.includes('mạng') ||
+    lower.includes('kết nối') ||
+    isLocalTimeoutError(errOrMsg)
+  ) {
+    return 'Kết nối mạng di động yếu, chập chờn hoặc không thể liên hệ máy chủ Google Cloud';
+  }
+  if (raw) {
+    return raw.length > 160 ? `${raw.slice(0, 157)}...` : raw;
+  }
+  return 'Không thể kết nối tới máy chủ Google Cloud Firestore';
+}
+
+export function formatCloudPauseNotice(reason: string): string {
+  const cleanReason = String(reason || '').trim().replace(/\.+$/, '') || 'Không thể kết nối Cloud Firestore';
+  return `Tạm dừng kết nối Cloud vì lý do: ${cleanReason}. Vui lòng nhấn nút "Đồng Bộ Cloud" để chủ động kết nối lại.`;
+}
+
+export function shouldPauseCloudOnFailure(params: {
+  elapsedMs: number;
+  maxDurationMs: number;
+  consecutiveFailures: number;
+  quotaExceeded?: boolean;
+  offline?: boolean;
+  timedOutOver2Min?: boolean;
+  nonRetryableError?: boolean;
+  isManualTrigger?: boolean;
+}): boolean {
+  if (params.timedOutOver2Min) return true;
+  if (params.elapsedMs >= params.maxDurationMs) return true;
+  if (params.quotaExceeded || params.offline || params.nonRetryableError) return true;
+  if (params.isManualTrigger && params.consecutiveFailures >= 1) return true;
+  return params.consecutiveFailures >= 2;
+}
+
+export function shouldSkipAutoCloudActivity(params: {
+  connectionPaused: boolean;
+  isManualTrigger: boolean;
+}): boolean {
+  return Boolean(params.connectionPaused && !params.isManualTrigger);
+}
+
 
 

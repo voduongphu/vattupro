@@ -46,6 +46,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
   const [isForcingRemoteLogout, setIsForcingRemoteLogout] = useState(false);
   const [remoteLogoutNotice, setRemoteLogoutNotice] = useState<{
     success: boolean;
+    paused?: boolean;
+    redirected?: boolean;
     message: string;
   } | null>(null);
   const [dismissedCloudErrorMsg, setDismissedCloudErrorMsg] = useState<string | null>(null);
@@ -53,6 +55,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
   useEffect(() => {
     return SyncService.subscribeSyncState(setIsSyncing);
   }, []);
+
+  useEffect(() => {
+    if (cloudState.pausedAt) {
+      setDismissedCloudErrorMsg(null);
+    }
+  }, [cloudState.pausedAt]);
 
   useEffect(() => {
     if (!remoteLogoutNotice) return;
@@ -71,6 +79,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
       const res = await SyncService.syncCloudChangesOnly();
       setRemoteLogoutNotice({
         success: res.success,
+        paused: res.paused,
+        redirected: res.redirected,
         message: res.message
       });
     } catch (err: any) {
@@ -175,14 +185,15 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
             <LanguageSwitcher variant="dark" showLabel={true} />
 
             {(() => {
-              const busy = isSyncing || isConnectingCloud || cloudState.status === 'connecting';
+              const isPaused = cloudState.status === 'paused' || Boolean(cloudState.connectionPaused);
+              const busy = (isSyncing || isConnectingCloud || cloudState.status === 'connecting') && !isPaused;
               const quotaExceeded = Boolean(cloudState.quotaExceeded);
               const isSparkPaused = Boolean(
                 quotaExceeded &&
                   cloudState.errorMessage &&
                   /spark|blaze|thanh toán|billing/i.test(cloudState.errorMessage)
               );
-              const hasError = cloudState.status === 'error';
+              const hasError = cloudState.status === 'error' || isPaused;
               const connected = cloudState.status === 'connected' && !hasError;
 
               return (
@@ -191,16 +202,18 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                   onClick={handleUnifiedSync}
                   disabled={isSyncing || isConnectingCloud || isCheckingSync}
                   title={
-                    quotaExceeded
-                      ? cloudState.errorMessage || t('cloudQuotaExceeded')
-                      : hasError && cloudState.errorMessage
-                        ? cloudState.errorMessage
-                        : connected
-                          ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
-                          : t('cloudConnectTooltip')
+                    isPaused
+                      ? cloudState.errorMessage || t('cloudPausedReconnectTooltip')
+                      : quotaExceeded
+                        ? cloudState.errorMessage || t('cloudQuotaExceeded')
+                        : hasError && cloudState.errorMessage
+                          ? cloudState.errorMessage
+                          : connected
+                            ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
+                            : t('cloudConnectTooltip')
                   }
                   className={`min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition disabled:opacity-75 shrink-0 ${
-                    quotaExceeded
+                    quotaExceeded || isPaused
                       ? 'text-amber-200 hover:text-white bg-amber-950/85 hover:bg-amber-900/90 border-amber-600/70 shadow-xs'
                       : hasError
                         ? 'text-rose-200 hover:text-white bg-rose-950/85 hover:bg-rose-900/90 border-rose-700/70 shadow-xs'
@@ -211,7 +224,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                 >
                   {busy ? (
                     <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin shrink-0" />
-                  ) : quotaExceeded ? (
+                  ) : quotaExceeded || isPaused ? (
                     <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
                   ) : hasError ? (
                     <CloudOff className="w-4 h-4 text-rose-400 shrink-0" />
@@ -227,7 +240,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                         ? t('cloudPausedSparkShort')
                         : quotaExceeded
                           ? t('cloudQuotaExceededShort')
-                          : t('cloudSync')}
+                          : isPaused
+                            ? t('cloudPausedShort')
+                            : t('cloudSync')}
                   </span>
                 </button>
               );
@@ -337,70 +352,109 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
             className={`px-3 sm:px-6 py-2 text-xs flex items-start sm:items-center justify-between gap-2 border-t ${
               remoteLogoutNotice.success
                 ? 'bg-emerald-950/95 border-emerald-800 text-emerald-200'
-                : cloudState.quotaExceeded
-                  ? 'bg-amber-950/95 border-amber-700 text-amber-100'
-                  : 'bg-rose-950/95 border-rose-800 text-rose-200'
+                : remoteLogoutNotice.redirected
+                  ? 'bg-blue-950/95 border-blue-800 text-blue-100'
+                  : cloudState.quotaExceeded || remoteLogoutNotice.paused || cloudState.connectionPaused
+                    ? 'bg-amber-950/95 border-amber-700 text-amber-100'
+                    : 'bg-rose-950/95 border-rose-800 text-rose-200'
             }`}
           >
             <div className="flex items-start sm:items-center gap-2 min-w-0">
               {remoteLogoutNotice.success ? (
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5 sm:mt-0" />
-              ) : cloudState.quotaExceeded ? (
+              ) : remoteLogoutNotice.redirected ? (
+                <RefreshCw className="w-4 h-4 text-blue-400 animate-spin shrink-0 mt-0.5 sm:mt-0" />
+              ) : cloudState.quotaExceeded || remoteLogoutNotice.paused || cloudState.connectionPaused ? (
                 <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
               ) : (
                 <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 sm:mt-0" />
               )}
               <span className="leading-relaxed break-words">{t(remoteLogoutNotice.message)}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setRemoteLogoutNotice(null)}
-              className="p-1 rounded-lg hover:bg-white/10 transition shrink-0"
-              title={t('closeNotification')}
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-
-        {cloudState.status === 'error' &&
-          cloudState.errorMessage &&
-          dismissedCloudErrorMsg !== cloudState.errorMessage &&
-          (!remoteLogoutNotice || remoteLogoutNotice.message !== cloudState.errorMessage) && (
-            <div
-              className={`px-3 sm:px-6 py-2 text-xs flex items-start sm:items-center justify-between gap-2 border-t ${
-                cloudState.quotaExceeded
-                  ? 'bg-amber-950/95 border-amber-700/90 text-amber-100'
-                  : 'bg-rose-950/95 border-rose-800 text-rose-200'
-              }`}
-            >
-              <div className="flex items-start sm:items-center gap-2 min-w-0">
-                {cloudState.quotaExceeded ? (
-                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
-                ) : (
-                  <CloudOff className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 sm:mt-0" />
-                )}
-                <span className="leading-relaxed break-words">
-                  <strong className="mr-1.5">
-                    {cloudState.quotaExceeded
-                      ? /spark|blaze|thanh toán|billing/i.test(cloudState.errorMessage)
-                        ? t('cloudPausedSparkPrefix')
-                        : `${t('cloudQuotaExceeded')}:`
-                      : t('cloudErrorPrefix')}
-                  </strong>
-                  {t(cloudState.errorMessage)}
-                </span>
-              </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {(remoteLogoutNotice.paused || cloudState.connectionPaused) && !remoteLogoutNotice.success && (
+                <button
+                  type="button"
+                  onClick={handleUnifiedSync}
+                  disabled={isSyncing || isConnectingCloud || isCheckingSync}
+                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
+                >
+                  {t('cloudReconnectNow')}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => setDismissedCloudErrorMsg(cloudState.errorMessage)}
+                onClick={() => setRemoteLogoutNotice(null)}
                 className="p-1 rounded-lg hover:bg-white/10 transition shrink-0"
                 title={t('closeNotification')}
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
-          )}
+          </div>
+        )}
+
+        {(cloudState.status === 'error' ||
+          cloudState.status === 'paused' ||
+          Boolean(cloudState.connectionPaused)) &&
+          cloudState.errorMessage &&
+          dismissedCloudErrorMsg !== cloudState.errorMessage &&
+          (!remoteLogoutNotice || remoteLogoutNotice.message !== cloudState.errorMessage) && (() => {
+            const isPausedBanner = cloudState.status === 'paused' || Boolean(cloudState.connectionPaused);
+            const isSparkBanner = Boolean(
+              cloudState.quotaExceeded &&
+                /spark|blaze|thanh toán|billing/i.test(cloudState.errorMessage || '')
+            );
+            return (
+              <div
+                className={`px-3 sm:px-6 py-2 text-xs flex items-start sm:items-center justify-between gap-2 border-t ${
+                  cloudState.quotaExceeded || isPausedBanner
+                    ? 'bg-amber-950/95 border-amber-700/90 text-amber-100'
+                    : 'bg-rose-950/95 border-rose-800 text-rose-200'
+                }`}
+              >
+                <div className="flex items-start sm:items-center gap-2 min-w-0">
+                  {cloudState.quotaExceeded || isPausedBanner ? (
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                  ) : (
+                    <CloudOff className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 sm:mt-0" />
+                  )}
+                  <span className="leading-relaxed break-words">
+                    <strong className="mr-1.5">
+                      {isSparkBanner
+                        ? t('cloudPausedSparkPrefix')
+                        : isPausedBanner
+                          ? t('cloudPausedPrefix')
+                          : cloudState.quotaExceeded
+                            ? `${t('cloudQuotaExceeded')}:`
+                            : t('cloudErrorPrefix')}
+                    </strong>
+                    {t(cloudState.errorMessage)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {isPausedBanner && (
+                    <button
+                      type="button"
+                      onClick={handleUnifiedSync}
+                      disabled={isSyncing || isConnectingCloud || isCheckingSync}
+                      className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
+                    >
+                      {t('cloudReconnectNow')}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setDismissedCloudErrorMsg(cloudState.errorMessage)}
+                    className="p-1 rounded-lg hover:bg-white/10 transition shrink-0"
+                    title={t('closeNotification')}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
       </header>
 
       <LoginModal isOpen={isLoginModalOpen} onClose={() => setIsLoginModalOpen(false)} />

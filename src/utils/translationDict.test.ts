@@ -97,7 +97,15 @@ test('dynamic pattern rules translate interpolated system UI strings and preserv
       'Successfully imported 3 inbound receipts (42 items)! Automatically added 5 new materials.'
     ],
     ['(gồm 4 mục vật tư ảnh hưởng)?', '(including 4 affected material items)?'],
-    ['2. Kiểm tra dữ liệu (128 mặt hàng)', '2. Review Data (128 items)']
+    ['2. Kiểm tra dữ liệu (128 mặt hàng)', '2. Review Data (128 items)'],
+    [
+      'Tạm dừng kết nối Cloud vì lý do: Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud. Vui lòng nhấn nút "Đồng Bộ Cloud" để chủ động kết nối lại.',
+      'Paused Cloud sync due to: Connection/sync timed out (> 2 minutes) due to slow mobile network or unreachable Cloud server. Click "Cloud Sync" to manually reconnect.'
+    ],
+    [
+      'Tạm dừng kết nối Cloud vì lý do: Thiết bị đang mất kết nối mạng Internet (ngoại tuyến). Vui lòng nhấn nút "Đồng Bộ Cloud" để chủ động kết nối lại.',
+      'Paused Cloud sync due to: Device is offline (no Internet connection). Click "Cloud Sync" to manually reconnect.'
+    ]
   ];
 
   for (const [input, expected] of cases) {

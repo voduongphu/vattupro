@@ -92,29 +92,42 @@ export const auth = createResilientAuth();
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-export function markPendingGoogleRedirectLogin(forceLogoutOtherDevice = false): void {
+export function markPendingGoogleRedirectLogin(
+  forceLogoutOtherDevice = false,
+  mode: 'login' | 'cloud_connect' = 'login'
+): void {
   if (typeof window === 'undefined') return;
   try {
     window.sessionStorage.setItem(
       PENDING_REDIRECT_LOGIN_KEY,
-      JSON.stringify({ at: Date.now(), forceLogoutOtherDevice })
+      JSON.stringify({ at: Date.now(), forceLogoutOtherDevice, mode })
     );
   } catch {
     // ignore
   }
 }
 
-export function consumePendingGoogleRedirectLogin(): { forceLogoutOtherDevice: boolean } | null {
+export function consumePendingGoogleRedirectLogin(): {
+  forceLogoutOtherDevice: boolean;
+  mode: 'login' | 'cloud_connect';
+} | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.sessionStorage.getItem(PENDING_REDIRECT_LOGIN_KEY);
     if (!raw) return null;
     window.sessionStorage.removeItem(PENDING_REDIRECT_LOGIN_KEY);
-    const parsed = JSON.parse(raw) as { at?: number; forceLogoutOtherDevice?: boolean };
+    const parsed = JSON.parse(raw) as {
+      at?: number;
+      forceLogoutOtherDevice?: boolean;
+      mode?: 'login' | 'cloud_connect';
+    };
     if (!parsed?.at || Date.now() - parsed.at > 5 * 60 * 1000) {
       return null;
     }
-    return { forceLogoutOtherDevice: Boolean(parsed.forceLogoutOtherDevice) };
+    return {
+      forceLogoutOtherDevice: Boolean(parsed.forceLogoutOtherDevice),
+      mode: parsed.mode === 'cloud_connect' ? 'cloud_connect' : 'login'
+    };
   } catch {
     return null;
   }
@@ -197,12 +210,13 @@ export function signInWithGooglePopup(forceSelectAccount = true) {
 
 export async function signInWithGoogleRedirectFallback(
   forceSelectAccount = true,
-  forceLogoutOtherDevice = false
+  forceLogoutOtherDevice = false,
+  mode: 'login' | 'cloud_connect' = 'login'
 ): Promise<boolean> {
   if (typeof window === 'undefined' || isInIframe()) {
     return false;
   }
-  markPendingGoogleRedirectLogin(forceLogoutOtherDevice);
+  markPendingGoogleRedirectLogin(forceLogoutOtherDevice, mode);
   await signInWithRedirect(
     auth,
     buildGoogleAuthProvider(forceSelectAccount),

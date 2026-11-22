@@ -1,6 +1,6 @@
 import { StorageService } from './storage';
 import { FirestoreSyncService, type CloudSyncSnapshotState } from './firestoreSync';
-import { getLastFirestoreQuotaMessage } from './firebase';
+import { getLastFirestoreQuotaMessage, isLikelyMobileDevice } from './firebase';
 import type {
   User,
   Warehouse,
@@ -36,7 +36,8 @@ import {
   shouldQueueReconcileDuringAuthTransition,
   shouldRunLocalBridgeAfterCloud,
   shouldUpdateLastSyncTimestamp,
-  evaluatePreSyncCheck
+  evaluatePreSyncCheck,
+  shouldSkipAutoCloudActivity
 } from '../utils/cloudSyncHelpers';
 
 export {
@@ -102,6 +103,8 @@ export interface LoginServerResult {
 export interface SyncResult {
   success: boolean;
   message: string;
+  redirected?: boolean;
+  paused?: boolean;
   isOffline?: boolean;
   cloudSynced?: boolean;
   localSynced?: boolean;
@@ -1446,6 +1449,23 @@ async function reconcileInternal(options?: {
     pushDebounceTimer = null;
   }
 
+  if (
+    shouldSkipAutoCloudActivity({
+      connectionPaused: FirestoreSyncService.isConnectionPaused(),
+      isManualTrigger: options?.trigger === 'manual'
+    })
+  ) {
+    clearStartupRetryTimer();
+    pendingReconcile = false;
+    pendingRemoteReconcile = false;
+    pendingForceManifestRefresh = false;
+    return {
+      cloudSuccess: false,
+      localSuccess: false,
+      error: FirestoreSyncService.getState().errorMessage || undefined
+    };
+  }
+
   // Chỉ chạy đồng bộ khi người dùng đã đăng nhập (tránh việc thiết bị vừa xóa cache chưa login đẩy data rỗng)
   if (!getStoredUnifiedSession() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
     return {
@@ -1503,9 +1523,10 @@ async function reconcileInternal(options?: {
   if (
     (options?.trigger === 'startup' || options?.trigger === 'manual') &&
     (!FirestoreSyncService.getState().authReady || Boolean(bootSess?.session.sessionToken.startsWith('cloud.'))) &&
-    !FirestoreSyncService.isCloudConnected()
+    !FirestoreSyncService.isCloudConnected() &&
+    !FirestoreSyncService.isConnectionPaused()
   ) {
-    await FirestoreSyncService.ensureReadyForAuth(5000);
+    await FirestoreSyncService.ensureReadyForAuth(isLikelyMobileDevice() ? 8000 : 5000);
   }
 
   if (authTransitionCount > 0) {
@@ -1607,7 +1628,8 @@ async function reconcileInternal(options?: {
       ) {
         const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed({
           forceManifestRefresh: Boolean(options?.forceManifestRefresh),
-          onWorkDetected: activateSpinner
+          onWorkDetected: activateSpinner,
+          isManualTrigger: options?.trigger === 'manual'
         });
         cloudSuccess = cloudRes.ok;
         pulledChanges = Boolean(cloudRes.pulledChanges);
@@ -1693,7 +1715,9 @@ async function reconcileInternal(options?: {
         notifySyncState(false);
       }
 
+      const isPausedNow = FirestoreSyncService.isConnectionPaused();
       const shouldRunFollowUp =
+        !isPausedNow &&
         (pendingReconcile || (pendingRemoteReconcile && FirestoreSyncService.hasUnappliedRemoteChanges())) &&
         (options?.followUpDepth || 0) < 2;
 
@@ -1719,29 +1743,35 @@ async function reconcileInternal(options?: {
         pendingRemoteReconcile = false;
         pendingForceManifestRefresh = false;
 
-        const isCloudSessionRecoveryNeeded =
-          isCloudActive &&
-          !cloudSuccess &&
-          !cloudQuotaExceeded &&
-          (options?.trigger === 'startup' || options?.trigger === 'manual' || options?.trigger === 'remote') &&
-          (typeof navigator === 'undefined' || navigator.onLine) &&
-          Boolean(getStoredUnifiedSession() || FirestoreSyncService.hasAuthenticatedCloudUser());
-
-        if (isCloudSessionRecoveryNeeded && startupRetryAttempt < 2) {
-          const retryDelays = [2500, 6000];
-          const delayMs = retryDelays[startupRetryAttempt] ?? 6000;
-          startupRetryAttempt += 1;
+        if (isPausedNow) {
           clearStartupRetryTimer();
-          startupRetryTimer = setTimeout(() => {
-            startupRetryTimer = null;
-            void reconcileInternal({
-              trigger: 'startup',
-              skipLocalServer: options?.skipLocalServer,
-              forceManifestRefresh: true
-            });
-          }, delayMs);
-        } else if (cloudSuccess) {
           startupRetryAttempt = 0;
+        } else {
+          const isCloudSessionRecoveryNeeded =
+            isCloudActive &&
+            !cloudSuccess &&
+            !cloudQuotaExceeded &&
+            (options?.trigger === 'startup' || options?.trigger === 'manual' || options?.trigger === 'remote') &&
+            (typeof navigator === 'undefined' || navigator.onLine) &&
+            Boolean(getStoredUnifiedSession() || FirestoreSyncService.hasAuthenticatedCloudUser());
+
+          if (isCloudSessionRecoveryNeeded && startupRetryAttempt < 1) {
+            const delayMs = 3000;
+            startupRetryAttempt += 1;
+            clearStartupRetryTimer();
+            startupRetryTimer = setTimeout(() => {
+              startupRetryTimer = null;
+              if (!FirestoreSyncService.isConnectionPaused()) {
+                void reconcileInternal({
+                  trigger: 'startup',
+                  skipLocalServer: options?.skipLocalServer,
+                  forceManifestRefresh: true
+                });
+              }
+            }, delayMs);
+          } else if (cloudSuccess) {
+            startupRetryAttempt = 0;
+          }
         }
       }
     }
@@ -1762,6 +1792,10 @@ async function reconcileInternal(options?: {
 
 function schedulePush(delayMs = 350): void {
   if (pushDebounceTimer) clearTimeout(pushDebounceTimer);
+  if (FirestoreSyncService.isConnectionPaused()) {
+    pushDebounceTimer = null;
+    return;
+  }
   pushDebounceTimer = setTimeout(() => {
     void reconcileInternal({ trigger: 'mutation' });
   }, delayMs);
@@ -1844,6 +1878,18 @@ function setupBroadcastChannel(): void {
 
 function connectWebSocket(force = false): void {
   if (typeof window === 'undefined') return;
+  const currentSess = getStoredUnifiedSession();
+  if (
+    FirestoreSyncService.isCloudConnected() ||
+    FirestoreSyncService.hasAuthenticatedCloudUser() ||
+    FirestoreSyncService.isConnectionPaused() ||
+    Boolean(currentSess?.session.sessionToken.startsWith('cloud.'))
+  ) {
+    return;
+  }
+  if (!force && wsFailCount >= 3) {
+    return;
+  }
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -1995,8 +2041,13 @@ function connectWebSocket(force = false): void {
     socket.onclose = () => {
       ws = null;
       wsFailCount++;
+      if (wsFailCount >= 3) {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        return;
+      }
       // Giãn cách thông minh cho môi trường Serverless (Vercel) không mở cổng WebSocket
-      const delayMs = wsFailCount <= 1 ? 3000 : wsFailCount === 2 ? 10000 : 45000;
+      const delayMs = wsFailCount <= 1 ? 3000 : 10000;
       nextWsAllowedAtMs = Date.now() + delayMs;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(() => connectWebSocket(true), delayMs);
@@ -2011,7 +2062,12 @@ function connectWebSocket(force = false): void {
     };
   } catch {
     wsFailCount++;
-    const delayMs = wsFailCount <= 1 ? 4000 : 30000;
+    if (wsFailCount >= 3) {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      return;
+    }
+    const delayMs = wsFailCount <= 1 ? 4000 : 12000;
     nextWsAllowedAtMs = Date.now() + delayMs;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => connectWebSocket(true), delayMs);
@@ -2125,9 +2181,12 @@ export const SyncService = {
         } catch {
           // ignore
         }
-        if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+        if (
+          !FirestoreSyncService.isConnectionPaused() &&
+          (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())
+        ) {
           void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
-        } else {
+        } else if (!FirestoreSyncService.isConnectionPaused()) {
           schedulePush(350);
         }
         return;
@@ -2151,6 +2210,9 @@ export const SyncService = {
 
     if (typeof window !== 'undefined') {
       const wakeCheck = () => {
+        if (FirestoreSyncService.isConnectionPaused()) {
+          return;
+        }
         const current = getStoredUnifiedSession();
         const isCloudMode =
           FirestoreSyncService.isCloudConnected() ||
@@ -2193,8 +2255,11 @@ export const SyncService = {
       window.addEventListener('pageshow', wakeCheck);
       window.addEventListener('online', () => {
         updateNetworkStatus(true);
+        // Nếu Cloud đang tạm dừng thì không tự nối lại: người dùng chủ động nhấn nút "Đồng Bộ Cloud"
+        if (FirestoreSyncService.isConnectionPaused()) {
+          return;
+        }
         wakeCheck();
-        // Chỉ đồng bộ khi vừa có mạng trở lại sau thời gian ngoại tuyến
         void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
       });
       window.addEventListener('offline', () => {
@@ -2455,7 +2520,8 @@ export const SyncService = {
       return {
         success: false,
         isOffline: true,
-        message: 'Thiết bị đang ngoại tuyến. Vui lòng kiểm tra kết nối mạng và thử lại.',
+        paused: FirestoreSyncService.isConnectionPaused(),
+        message: 'Thiết bị đang ngoại tuyến. Vui lòng kiểm tra kết nối mạng và nhấn nút "Đồng Bộ Cloud" để thử lại.',
         osdCount: StorageService.getOsdReceipts().length
       };
     }
@@ -2464,6 +2530,8 @@ export const SyncService = {
       clearTimeout(pushDebounceTimer);
       pushDebounceTimer = null;
     }
+    clearStartupRetryTimer();
+    startupRetryAttempt = 0;
 
     // Cho phép thử kết nối lại ngay khi người dùng bấm nút Đồng Bộ Cloud thủ công
     FirestoreSyncService.resetCircuitForManualRetry();
@@ -2471,13 +2539,23 @@ export const SyncService = {
     if (!FirestoreSyncService.isCloudConnected() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
       const connRes = await this.connectCloudSync({
         reuseExistingIfAvailable: true,
-        forceSelectAccount: false
+        forceSelectAccount: false,
+        redirectMode: getStoredUnifiedSession() ? 'cloud_connect' : 'login'
       });
+      if (connRes.redirected) {
+        return {
+          success: false,
+          redirected: true,
+          cloudSynced: false,
+          message: connRes.message || 'Đang chuyển hướng sang trang đăng nhập Google...'
+        };
+      }
       if (!connRes.success) {
         const hitQuota = FirestoreSyncService.isQuotaExhausted();
         const quotaMsg = getLastFirestoreQuotaMessage();
         return {
           success: false,
+          paused: Boolean(connRes.paused || FirestoreSyncService.isConnectionPaused()),
           quotaExceeded: hitQuota,
           cloudSynced: false,
           message: hitQuota ? quotaMsg : connRes.message,
@@ -2488,6 +2566,7 @@ export const SyncService = {
         const quotaMsg = getLastFirestoreQuotaMessage();
         return {
           success: false,
+          paused: FirestoreSyncService.isConnectionPaused(),
           quotaExceeded: true,
           cloudSynced: false,
           message: quotaMsg,
@@ -2515,6 +2594,7 @@ export const SyncService = {
         const quotaMsg = getLastFirestoreQuotaMessage();
         return {
           success: false,
+          paused: FirestoreSyncService.isConnectionPaused(),
           quotaExceeded: true,
           cloudSynced: false,
           localSynced: reconRes.localSuccess,
@@ -2529,6 +2609,7 @@ export const SyncService = {
         'Chưa thể đồng bộ với Google Cloud Firestore. Vui lòng thử lại.';
       return {
         success: false,
+        paused: FirestoreSyncService.isConnectionPaused(),
         cloudSynced: false,
         localSynced: reconRes.localSuccess,
         error: errMsg,
@@ -2639,7 +2720,14 @@ export const SyncService = {
   async connectCloudSync(options?: {
     reuseExistingIfAvailable?: boolean;
     forceSelectAccount?: boolean;
-  }): Promise<{ success: boolean; message: string; email?: string | null }> {
+    redirectMode?: 'login' | 'cloud_connect';
+  }): Promise<{
+    success: boolean;
+    redirected?: boolean;
+    paused?: boolean;
+    message: string;
+    email?: string | null;
+  }> {
     notifySyncState(true);
     try {
       const res = await FirestoreSyncService.connectGoogleAccount(options);
@@ -2653,6 +2741,30 @@ export const SyncService = {
     } finally {
       notifySyncState(false);
     }
+  },
+
+  async resumePendingCloudConnectRedirectIfAny(): Promise<{
+    handled: boolean;
+    success?: boolean;
+    message?: string;
+  }> {
+    if (!FirestoreSyncService.hasPendingGoogleRedirect()) {
+      return { handled: false };
+    }
+    const redirectRes = await FirestoreSyncService.consumePendingGoogleRedirect();
+    if (!redirectRes.hasResult || !redirectRes.fbUser || !redirectRes.fbUser.email) {
+      return { handled: false };
+    }
+    const connRes = await this.connectCloudSync({
+      reuseExistingIfAvailable: true,
+      forceSelectAccount: false,
+      redirectMode: 'cloud_connect'
+    });
+    return {
+      handled: true,
+      success: connRes.success,
+      message: connRes.message
+    };
   },
 
   async syncUsersToCloudImmediately(): Promise<{ success: boolean; message: string; count?: number }> {
@@ -2805,14 +2917,15 @@ export const SyncService = {
       const deviceId = getDeviceId();
       const deviceLabel = getDeviceLabel();
 
-      // 1. Ưu tiên cấp phiên tốc độ cao trên Cloud Firestore (giới hạn 6s để không bao giờ treo khi gói Spark hạn chế Cloud)
+      // 1. Ưu tiên cấp phiên tốc độ cao trên Cloud Firestore (điện thoại 12s, máy tính 6s để không treo nếu gói Spark hạn chế)
+      const cloudAuthTimeoutMs = isLikelyMobileDevice() ? 12000 : 6000;
       if (authRes.cloudReady && authRes.fbUser && !FirestoreSyncService.isQuotaExhausted()) {
         let cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
           authRes.fbUser,
           deviceId,
           deviceLabel,
           forceFlag,
-          6000
+          cloudAuthTimeoutMs
         );
 
         if (
@@ -2827,7 +2940,7 @@ export const SyncService = {
             deviceId,
             deviceLabel,
             true,
-            6000
+            cloudAuthTimeoutMs
           );
         }
 
@@ -3107,12 +3220,13 @@ export const SyncService = {
       const deviceId = getDeviceId();
       const deviceLabel = getDeviceLabel();
 
+      const cloudAuthTimeoutMs = isLikelyMobileDevice() ? 12000 : 6000;
       let cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
         fbUser,
         deviceId,
         deviceLabel,
         forceFlag,
-        6000
+        cloudAuthTimeoutMs
       );
       if (
         cloudRes.handled &&
@@ -3126,7 +3240,7 @@ export const SyncService = {
           deviceId,
           deviceLabel,
           true,
-          6000
+          cloudAuthTimeoutMs
         );
       }
 
