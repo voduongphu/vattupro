@@ -1,4 +1,4 @@
-import { OsdReceipt, OsdItemDetail } from '../types/inventory';
+import type { OsdReceipt, OsdItemDetail } from '../types/inventory.ts';
 
 function normKey(raw: string | undefined | null): string {
   return (raw || '').trim().toUpperCase();

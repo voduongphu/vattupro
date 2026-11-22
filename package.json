@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "DEV_SERVER=true tsx server.ts",
-    "build": "vite build && node -e \"if (!process.env.VERCEL) import('node:child_process').then(cp => cp.execSync('npx esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=server.mjs', { stdio: 'inherit' }))\"",
-    "start": "NODE_ENV=production node server.mjs",
+    "build": "vite build",
+    "start": "node server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js server.mjs",
     "lint": "tsc --noEmit"

@@ -465,14 +465,22 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
   async function ensureInitialized(): Promise<void> {
     if (initPromise) return initPromise;
     initPromise = (async () => {
-      await fsp.mkdir(inboundDir, { recursive: true });
-      await fsp.mkdir(outboundDir, { recursive: true });
-
-      // Nếu chạy trên Serverless (Vercel /tmp), nạp dữ liệu gốc từ .sync_data trước (bỏ qua activeSessions tĩnh) rồi hợp nhất /tmp lên trên
-      if (dataDir !== seedDir && fs.existsSync(seedDir)) {
-        await loadDirIntoStore(seedDir, true);
+      try {
+        await fsp.mkdir(inboundDir, { recursive: true });
+        await fsp.mkdir(outboundDir, { recursive: true });
+      } catch (err) {
+        console.error('Failed to prepare sync directories:', err);
       }
-      await loadDirIntoStore(dataDir, false);
+
+      try {
+        // Nếu chạy trên Serverless (Vercel /tmp), nạp dữ liệu gốc từ .sync_data trước (bỏ qua activeSessions tĩnh) rồi hợp nhất /tmp lên trên
+        if (dataDir !== seedDir && fs.existsSync(seedDir)) {
+          await loadDirIntoStore(seedDir, true);
+        }
+        await loadDirIntoStore(dataDir, false);
+      } catch (err) {
+        console.error('Failed to load initial sync store:', err);
+      }
 
       if (store.users.length === 0) {
         store.users = [ROOT_ADMIN_FALLBACK];
@@ -813,6 +821,11 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       }
     }
     jsonParser(req, res, next);
+  });
+
+  // Health checks for Cloud Run startup/liveness probes (never block on disk I/O)
+  app.get(['/health', '/healthz', '/api/health'], (_req, res) => {
+    res.status(200).json({ ok: true });
   });
 
   // Đảm bảo dữ liệu đã được nạp trước khi xử lý mọi API

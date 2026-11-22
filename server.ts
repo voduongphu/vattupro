@@ -25,8 +25,6 @@ async function startServer() {
     onBroadcastRaw: broadcastRaw
   });
 
-  await backend.ensureInitialized();
-
   const app = backend.app;
   const store = backend.store;
   const httpServer = http.createServer(app);
@@ -103,10 +101,19 @@ async function startServer() {
     });
   });
 
+  const distCandidates = [
+    path.join(process.cwd(), 'dist'),
+    path.resolve(import.meta.dirname || process.cwd(), 'dist')
+  ];
+  const distPath =
+    distCandidates.find((dir) => fs.existsSync(path.join(dir, 'index.html'))) || distCandidates[0];
+  const hasBuiltDist = fs.existsSync(path.join(distPath, 'index.html'));
+  const isCloudRun = Boolean(process.env.K_SERVICE || process.env.K_REVISION || process.env.CLOUD_RUN_JOB);
+
   const isDev =
-    process.env.DEV_SERVER === 'true' ||
-    (process.env.NODE_ENV !== 'production' &&
-      !fs.existsSync(path.join(process.cwd(), 'dist', 'index.html')));
+    !isCloudRun &&
+    (process.env.DEV_SERVER === 'true' ||
+      (process.env.NODE_ENV !== 'production' && !hasBuiltDist));
 
   httpServer.on('upgrade', (req, socket, head) => {
     const pathname = (req.url || '').split('?')[0];
@@ -139,15 +146,27 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexHtml = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexHtml)) {
+        res.sendFile(indexHtml);
+      } else {
+        res.status(200).send('OK');
+      }
     });
   }
 
+  httpServer.on('error', (err) => {
+    console.error('HTTP server error:', err);
+  });
+
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Inventory Sync Server listening on http://0.0.0.0:${PORT}`);
+  });
+
+  void backend.ensureInitialized().catch((err) => {
+    console.error('Background store initialization error:', err);
   });
 }
 
