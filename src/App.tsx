@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider, useLanguage } from './context/LanguageContext';
 import { ModalProvider } from './context/ModalContext';
@@ -49,6 +49,21 @@ const MainLayout: React.FC = () => {
     { id: 'users', label: t('quickTabUsers'), icon: Users }
   ];
 
+  const mainRef = useRef<HTMLElement | null>(null);
+
+  const scrollViewportToTop = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }
+    if (typeof document !== 'undefined') {
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    }
+    if (mainRef.current) {
+      mainRef.current.scrollTop = 0;
+    }
+  }, []);
+
   useEffect(() => {
     if (!replacedOtherDeviceAlert) return;
     const timer = setTimeout(() => {
@@ -56,6 +71,16 @@ const MainLayout: React.FC = () => {
     }, 15000);
     return () => clearTimeout(timer);
   }, [replacedOtherDeviceAlert, clearReplacedOtherDeviceAlert]);
+
+  // Luôn đưa cuộn trang về đầu mỗi khi chuyển tab để không giữ vị trí cuộn của tab trước
+  useLayoutEffect(() => {
+    scrollViewportToTop();
+    if (typeof window === 'undefined') return;
+    const rafId = window.requestAnimationFrame(() => {
+      scrollViewportToTop();
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [activeTab, scrollViewportToTop]);
 
   // Hiển thị màn hình đăng nhập nếu người dùng chưa xác thực
   if (!currentUser) {
@@ -65,6 +90,12 @@ const MainLayout: React.FC = () => {
   const handleSelectTab = (tab: string) => {
     setActiveTab(tab);
     setIsMobileMenuOpen(false);
+    scrollViewportToTop();
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => {
+        scrollViewportToTop();
+      });
+    }
   };
 
   const renderContent = () => {
@@ -155,7 +186,7 @@ const MainLayout: React.FC = () => {
           onCloseMobile={() => setIsMobileMenuOpen(false)}
         />
 
-        <main className="flex-1 min-w-0 p-3 sm:p-5 lg:p-6">
+        <main ref={mainRef} className="flex-1 min-w-0 p-3 sm:p-5 lg:p-6">
           {renderContent()}
         </main>
       </div>

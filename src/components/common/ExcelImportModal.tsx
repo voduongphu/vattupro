@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useLayoutEffect } from 'react';
 import { 
   FileSpreadsheet, 
   Upload, 
@@ -63,6 +63,13 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   const [previewPageSize, setPreviewPageSize] = useState(50);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bodyScrollRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (bodyScrollRef.current) {
+      bodyScrollRef.current.scrollTop = 0;
+    }
+  }, [activeTab]);
 
   const availableWarehouses = warehouses !== undefined ? warehouses : StorageService.getWarehouses();
 
@@ -362,7 +369,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         )}
 
         {/* Content Body */}
-        <div className="p-3.5 sm:p-6 overflow-y-auto overscroll-contain flex-1">
+        <div ref={bodyScrollRef} className="p-3.5 sm:p-6 overflow-y-auto overscroll-contain flex-1">
           {activeTab === 'upload' ? (
             <div className="space-y-6">
               {/* Drop area */}
