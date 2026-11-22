@@ -1061,14 +1061,14 @@ export const OsdManager: React.FC<OsdManagerProps> = ({ quickSearchSignal = null
           </div>
 
           {/* Filter Status */}
-          <div>
+          <div className="min-w-0">
             <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
               Trạng thái xử lý
             </label>
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value as any)}
-              className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none"
+              className="w-full min-w-0 max-w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none truncate"
             >
               <option value="all">Tất cả ({authorizedOsdList.length})</option>
               <option value="open">Đang Mở ({stats.openCount})</option>
@@ -1077,14 +1077,14 @@ export const OsdManager: React.FC<OsdManagerProps> = ({ quickSearchSignal = null
           </div>
 
           {/* Filter OSD Type */}
-          <div>
+          <div className="min-w-0">
             <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
               Phân loại OSD
             </label>
             <select
               value={filterType}
               onChange={(e) => setFilterType(e.target.value as any)}
-              className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none"
+              className="w-full min-w-0 max-w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none truncate"
             >
               <option value="all">Tất cả loại OSD</option>
               <option value="shortage">Thiếu (Shortage)</option>
@@ -1094,14 +1094,14 @@ export const OsdManager: React.FC<OsdManagerProps> = ({ quickSearchSignal = null
           </div>
 
           {/* Filter Warehouse */}
-          <div>
+          <div className="min-w-0">
             <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
               Kho bãi tiếp nhận
             </label>
             <select
               value={filterWarehouse}
               onChange={(e) => setFilterWarehouse(e.target.value)}
-              className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none"
+              className="w-full min-w-0 max-w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none truncate"
             >
               <option value="all">Tất cả kho ({authorizedWarehouses.length})</option>
               {authorizedWarehouses.map((w) => (

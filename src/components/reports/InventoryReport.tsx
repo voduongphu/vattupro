@@ -320,12 +320,12 @@ export const InventoryReport: React.FC = () => {
         {/* Grid các điều kiện cụ thể */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
           {/* Kho bãi */}
-          <div>
+          <div className="min-w-0">
             <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">Kho bãi</label>
             <select
               value={warehouseId}
               onChange={(e) => setWarehouseId(e.target.value)}
-              className="w-full px-2.5 py-2 sm:py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none min-h-[38px] sm:min-h-0"
+              className="w-full min-w-0 max-w-full px-2.5 py-2 sm:py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none min-h-[38px] sm:min-h-0 truncate"
             >
               <option value="all">Tất cả kho ({authorizedWarehouses.length})</option>
               {authorizedWarehouses.map(w => (

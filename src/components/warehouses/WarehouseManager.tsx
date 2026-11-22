@@ -238,8 +238,8 @@ export const WarehouseManager: React.FC = () => {
       </div>
 
       {/* Filter and stats */}
-      <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-sm flex flex-col sm:flex-row items-center gap-3">
-        <div className="relative flex-1 w-full">
+      <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-sm flex flex-col sm:flex-row sm:items-center gap-3 min-w-0 max-w-full overflow-hidden">
+        <div className="relative flex-1 w-full min-w-0">
           <input
             type="text"
             data-quick-search="primary"
@@ -256,12 +256,12 @@ export const WarehouseManager: React.FC = () => {
           )}
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <label className="text-xs font-medium text-slate-500 whitespace-nowrap">Loại hình:</label>
+        <div className="flex items-center gap-2 w-full sm:w-auto sm:max-w-[280px] min-w-0">
+          <label className="text-xs font-medium text-slate-500 whitespace-nowrap shrink-0">Loại hình:</label>
           <select
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
-            className="flex-1 sm:flex-initial px-3 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
+            className="flex-1 min-w-0 w-full max-w-full sm:w-auto px-3 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px] truncate"
           >
             <option value="all">Tất cả kho bãi ({visibleWarehouses.length})</option>
             <option value="covered">Kho kín tiêu chuẩn</option>

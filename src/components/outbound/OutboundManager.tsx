@@ -1695,8 +1695,8 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       )}
 
       {/* Filters */}
-      <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-sm flex flex-col md:flex-row items-center gap-3">
-        <div className="relative flex-1 w-full">
+      <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-sm flex flex-col md:flex-row md:items-center gap-3 min-w-0 max-w-full overflow-hidden">
+        <div className="relative flex-1 w-full min-w-0">
           <input
             type="text"
             data-quick-search="primary"
@@ -1713,11 +1713,11 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto flex-wrap">
+        <div className="flex items-center gap-2 w-full md:w-auto flex-wrap min-w-0 max-w-full">
           <select
             value={filterWarehouse}
             onChange={(e) => setFilterWarehouse(e.target.value)}
-            className="w-full sm:w-auto px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[40px]"
+            className="w-full sm:w-auto sm:max-w-[240px] min-w-0 max-w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[40px] truncate"
           >
             <option value="all">Tất cả kho xuất ({authorizedWarehouses.length})</option>
             {authorizedWarehouses.map((w) => (
@@ -1727,27 +1727,27 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
             ))}
           </select>
 
-          <div className="flex-1 sm:flex-initial flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs min-h-[40px]">
+          <div className="flex-1 sm:flex-initial min-w-0 flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs min-h-[40px]">
             <span className="text-slate-400 shrink-0">Từ:</span>
             <input
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              className="w-full bg-transparent text-slate-700 outline-none text-xs"
+              className="w-full min-w-0 bg-transparent text-slate-700 outline-none text-xs"
             />
           </div>
 
-          <div className="flex-1 sm:flex-initial flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs min-h-[40px]">
+          <div className="flex-1 sm:flex-initial min-w-0 flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs min-h-[40px]">
             <span className="text-slate-400 shrink-0">Đến:</span>
             <input
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              className="w-full bg-transparent text-slate-700 outline-none text-xs"
+              className="w-full min-w-0 bg-transparent text-slate-700 outline-none text-xs"
             />
           </div>
 
-          <div className="flex-1 sm:flex-initial flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs min-h-[40px]">
+          <div className="flex-1 sm:flex-initial min-w-0 max-w-full flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs min-h-[40px]">
             <ArrowUpDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
             <span className="text-slate-500 font-medium shrink-0">Sắp xếp:</span>
             <select
@@ -1758,7 +1758,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                 setSortOrder(o);
                 setCurrentPage(1);
               }}
-              className="bg-transparent text-slate-800 font-semibold outline-none cursor-pointer text-xs"
+              className="flex-1 min-w-0 max-w-full bg-transparent text-slate-800 font-semibold outline-none cursor-pointer text-xs truncate"
             >
               <option value="date_desc">Ngày: Mới nhất trước (Mặc định)</option>
               <option value="date_asc">Ngày: Cũ nhất trước</option>
@@ -2798,14 +2798,14 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 sm:top-2.5" />
               </div>
-              <div className="w-full sm:w-72">
+              <div className="w-full sm:w-72 min-w-0">
                 <select
                   value={stockPickerWarehouseFilter}
                   onChange={(e) => {
                     setStockPickerWarehouseFilter(e.target.value);
                     setStockPage(1);
                   }}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full min-w-0 max-w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none truncate"
                 >
                   <option value="all">
                     {isAdmin

@@ -266,7 +266,7 @@ const MainLayout: React.FC = () => {
   };
 
   return (
-    <div className="min-h-dvh w-full bg-slate-100/70 flex flex-col font-sans">
+    <div className="min-h-dvh w-full max-w-full overflow-x-clip bg-slate-100/70 flex flex-col font-sans">
       <StickyTableHeadersController />
       <Navbar
         onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
