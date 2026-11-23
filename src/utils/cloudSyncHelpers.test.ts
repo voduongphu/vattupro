@@ -54,6 +54,9 @@ import {
   formatCloudPauseNotice,
   shouldPauseCloudOnFailure,
   shouldSkipAutoCloudActivity,
+  formatSyncByteSize,
+  mergeSyncTransferProgress,
+  createSyncTransferTracker,
   type ManifestSnapshotLike
 } from './cloudSyncHelpers.ts';
 import {
@@ -1415,6 +1418,72 @@ describe('cloudSyncHelpers', () => {
     assert.equal(shouldSkipAutoCloudActivity({ connectionPaused: true, isManualTrigger: true }), false);
     assert.equal(shouldSkipAutoCloudActivity({ connectionPaused: false, isManualTrigger: false }), false);
   });
+
+  it('formats sync byte sizes concisely and tracks nested transfer sessions cleanly', () => {
+    assert.equal(formatSyncByteSize(0), '0 B');
+    assert.equal(formatSyncByteSize(-10), '0 B');
+    assert.equal(formatSyncByteSize(Number.NaN), '0 B');
+    assert.equal(formatSyncByteSize(512), '512 B');
+    assert.equal(formatSyncByteSize(1024), '1.0 KB');
+    assert.equal(formatSyncByteSize(4.25 * 1024), '4.3 KB');
+    assert.equal(formatSyncByteSize(128 * 1024), '128 KB');
+    assert.equal(formatSyncByteSize(1.45 * 1024 * 1024), '1.45 MB');
+    assert.equal(formatSyncByteSize(25.4 * 1024 * 1024), '25.4 MB');
+    assert.equal(formatSyncByteSize(1.25 * 1024 * 1024 * 1024), '1.25 GB');
+
+    let fakeNow = 1000;
+    const tracker = createSyncTransferTracker({ throttleMs: 50, nowFn: () => fakeNow });
+    const events: Array<{ active: boolean; totalBytes: number }> = [];
+    const unsub = tracker.subscribe((p) => events.push({ active: p.active, totalBytes: p.totalBytes }));
+
+    // Ignore transfers recorded while idle
+    tracker.recordDownload(999);
+    assert.equal(tracker.getSnapshot().totalBytes, 0);
+
+    // Nested sessions reset only on outermost begin and deactivate only on outermost end
+    tracker.begin();
+    assert.equal(tracker.isActive(), true);
+    tracker.recordDownload(2048);
+    tracker.begin();
+    fakeNow += 60;
+    tracker.recordUpload(1024);
+    tracker.end();
+    assert.equal(tracker.isActive(), true);
+    assert.deepEqual(tracker.getSnapshot(), {
+      active: true,
+      totalBytes: 3072,
+      downloadedBytes: 2048,
+      uploadedBytes: 1024
+    });
+
+    tracker.end();
+    assert.deepEqual(tracker.getSnapshot(), {
+      active: false,
+      totalBytes: 3072,
+      downloadedBytes: 2048,
+      uploadedBytes: 1024
+    });
+
+    tracker.resetIfIdle();
+    assert.deepEqual(tracker.getSnapshot(), {
+      active: false,
+      totalBytes: 0,
+      downloadedBytes: 0,
+      uploadedBytes: 0
+    });
+
+    const merged = mergeSyncTransferProgress(
+      { active: true, totalBytes: 300, downloadedBytes: 200, uploadedBytes: 100 },
+      { active: false, totalBytes: 700, downloadedBytes: 500, uploadedBytes: 200 }
+    );
+    assert.deepEqual(merged, {
+      active: true,
+      totalBytes: 1000,
+      downloadedBytes: 700,
+      uploadedBytes: 300
+    });
+
+    assert.ok(events.length >= 4);
+    unsub();
+  });
 });
-
-

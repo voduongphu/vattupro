@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { SyncService } from '../../services/syncService';
+import { SyncService, type SyncTransferProgress } from '../../services/syncService';
+import { formatSyncByteSize } from '../../utils/cloudSyncHelpers';
 import {
   Boxes,
   LogOut,
@@ -41,6 +42,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<SyncTransferProgress>(() =>
+    SyncService.getSyncProgress()
+  );
   const [isCheckingSync, setIsCheckingSync] = useState(false);
   const [isConnectingCloud, setIsConnectingCloud] = useState(false);
   const [isForcingRemoteLogout, setIsForcingRemoteLogout] = useState(false);
@@ -53,7 +57,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
   const [dismissedCloudErrorMsg, setDismissedCloudErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    return SyncService.subscribeSyncState(setIsSyncing);
+    const unsubState = SyncService.subscribeSyncState(setIsSyncing);
+    const unsubProgress = SyncService.subscribeSyncProgress(setSyncProgress);
+    return () => {
+      unsubState();
+      unsubProgress();
+    };
   }, []);
 
   useEffect(() => {
@@ -186,7 +195,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
 
             {(() => {
               const isPaused = cloudState.status === 'paused' || Boolean(cloudState.connectionPaused);
-              const busy = (isSyncing || isConnectingCloud || cloudState.status === 'connecting') && !isPaused;
+              const busy =
+                (isSyncing ||
+                  isConnectingCloud ||
+                  isCheckingSync ||
+                  cloudState.status === 'connecting') &&
+                !isPaused;
               const quotaExceeded = Boolean(cloudState.quotaExceeded);
               const isSparkPaused = Boolean(
                 quotaExceeded &&
@@ -195,6 +209,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
               );
               const hasError = cloudState.status === 'error' || isPaused;
               const connected = cloudState.status === 'connected' && !hasError;
+              const syncSizeLabel = formatSyncByteSize(syncProgress.totalBytes);
+              const downloadSizeLabel = formatSyncByteSize(syncProgress.downloadedBytes);
+              const uploadSizeLabel = formatSyncByteSize(syncProgress.uploadedBytes);
 
               return (
                 <button
@@ -202,15 +219,17 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                   onClick={handleUnifiedSync}
                   disabled={isSyncing || isConnectingCloud || isCheckingSync}
                   title={
-                    isPaused
-                      ? cloudState.errorMessage || t('cloudPausedReconnectTooltip')
-                      : quotaExceeded
-                        ? cloudState.errorMessage || t('cloudQuotaExceeded')
-                        : hasError && cloudState.errorMessage
-                          ? cloudState.errorMessage
-                          : connected
-                            ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
-                            : t('cloudConnectTooltip')
+                    busy
+                      ? `${t('syncingTooltipPrefix')} (${syncSizeLabel} — ${t('syncDownloadShort')}: ${downloadSizeLabel}, ${t('syncUploadShort')}: ${uploadSizeLabel})`
+                      : isPaused
+                        ? cloudState.errorMessage || t('cloudPausedReconnectTooltip')
+                        : quotaExceeded
+                          ? cloudState.errorMessage || t('cloudQuotaExceeded')
+                          : hasError && cloudState.errorMessage
+                            ? cloudState.errorMessage
+                            : connected
+                              ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
+                              : t('cloudConnectTooltip')
                   }
                   className={`min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition disabled:opacity-75 shrink-0 ${
                     quotaExceeded || isPaused
@@ -233,17 +252,29 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                   ) : (
                     <CloudUpload className="w-4 h-4 text-blue-400 shrink-0" />
                   )}
-                  <span className="hidden sm:inline">
-                    {busy
-                      ? t('syncing')
-                      : isSparkPaused
+                  {busy ? (
+                    <>
+                      <span className="sm:hidden font-mono tabular-nums text-[10px] font-bold text-emerald-100 leading-none">
+                        {syncSizeLabel}
+                      </span>
+                      <span className="hidden sm:inline-flex items-center gap-1.5">
+                        <span>{t('syncing')}</span>
+                        <span className="font-mono tabular-nums text-[11px] font-bold px-1.5 py-0.5 rounded-md bg-white/10 text-emerald-100 leading-none">
+                          {syncSizeLabel}
+                        </span>
+                      </span>
+                    </>
+                  ) : (
+                    <span className="hidden sm:inline">
+                      {isSparkPaused
                         ? t('cloudPausedSparkShort')
                         : quotaExceeded
                           ? t('cloudQuotaExceededShort')
                           : isPaused
                             ? t('cloudPausedShort')
                             : t('cloudSync')}
-                  </span>
+                    </span>
+                  )}
                 </button>
               );
             })()}

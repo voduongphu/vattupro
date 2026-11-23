@@ -104,6 +104,8 @@ import {
   isRetryableCloudReadError,
   retryAsyncWithBackoff,
   runWithConcurrencyLimit,
+  estimateUtf8ByteLength,
+  estimateFirestoreValueBytes,
   estimateStagedWritePayloadBytes,
   deduplicateStagedWritesByPath,
   partitionStagedWritesIntoBatches,
@@ -118,6 +120,8 @@ import {
   formatCloudPauseNotice,
   shouldPauseCloudOnFailure,
   shouldSkipAutoCloudActivity,
+  createSyncTransferTracker,
+  type SyncTransferProgress,
   type SyncDeadlineController,
   type CloudPendingOutbox,
   type TouchedManifestDomains,
@@ -225,6 +229,7 @@ let cloudConnectionPaused = false;
 let cloudPauseReason: string | null = null;
 let activeCloudWatchdog: SyncDeadlineController | null = null;
 let consecutiveCloudFailures = 0;
+const cloudTransferTracker = createSyncTransferTracker({ throttleMs: 80 });
 
 function getCloudFetchConfig() {
   return getAdaptiveCloudFetchConfig(isLikelyMobileDevice());
@@ -945,6 +950,12 @@ async function safeGetDoc(
       }
     );
     clearFirestoreQuotaExhaustedFlag();
+    if (cloudTransferTracker.isActive()) {
+      const readBytes = snap.exists()
+        ? estimateFirestoreValueBytes(snap.data()) + estimateUtf8ByteLength(pathLabel) + 64
+        : estimateUtf8ByteLength(pathLabel) + 64;
+      cloudTransferTracker.recordDownload(readBytes);
+    }
     if (snap.exists()) {
       knownExistingPaths.add(ref.path);
     } else {
@@ -988,6 +999,11 @@ async function writeSingleProtectedDoc(
         updatedAt: serverTimestamp()
       });
       clearFirestoreQuotaExhaustedFlag();
+      if (cloudTransferTracker.isActive()) {
+        cloudTransferTracker.recordUpload(
+          estimateStagedWritePayloadBytes(ref.path, immutableCreateFields, mutableFields)
+        );
+      }
       return;
     } catch (err) {
       if (isNotFoundError(err)) {
@@ -1013,6 +1029,11 @@ async function writeSingleProtectedDoc(
       updatedAt: serverTimestamp()
     });
     clearFirestoreQuotaExhaustedFlag();
+    if (cloudTransferTracker.isActive()) {
+      cloudTransferTracker.recordUpload(
+        estimateStagedWritePayloadBytes(ref.path, immutableCreateFields, mutableFields)
+      );
+    }
     knownExistingPaths.add(ref.path);
     return;
   } catch (err) {
@@ -1194,6 +1215,10 @@ async function commitManifestWithTransaction(params: {
     );
 
     clearFirestoreQuotaExhaustedFlag();
+    if (cloudTransferTracker.isActive()) {
+      cloudTransferTracker.recordDownload(estimateFirestoreValueBytes(committed) + 128);
+      cloudTransferTracker.recordUpload(estimateFirestoreValueBytes(committed) + 192);
+    }
     knownExistingPaths.add(wsRef.path);
     cachedWsManifest = { data: committed, atMs: Date.now() };
     lastAppliedCloudServerRev = committed.serverRevision;
@@ -1284,6 +1309,18 @@ async function commitBatchChunk(
       }
     );
     clearFirestoreQuotaExhaustedFlag();
+    if (cloudTransferTracker.isActive()) {
+      let chunkBytes = 0;
+      for (let i = 0; i < chunk.length; i++) {
+        const w = chunk[i];
+        chunkBytes += estimateStagedWritePayloadBytes(
+          w.ref.path,
+          w.immutableCreateFields,
+          w.mutableFields
+        );
+      }
+      cloudTransferTracker.recordUpload(chunkBytes);
+    }
     for (let i = 0; i < chunk.length; i++) {
       knownExistingPaths.add(chunk[i].ref.path);
     }
@@ -2036,6 +2073,9 @@ async function ensureWorkspaceReady(
       }
       try {
         await batch.commit();
+        if (cloudTransferTracker.isActive()) {
+          cloudTransferTracker.recordUpload(estimateFirestoreValueBytes(initManifest) + 512);
+        }
         knownExistingPaths.add(wsRef.path);
         knownExistingPaths.add(memberRef.path);
         cachedWsManifest = { data: initManifest, atMs: Date.now() };
@@ -3907,6 +3947,18 @@ export const FirestoreSyncService = {
     rememberRevokedCloudToken(sessionToken);
   },
 
+  getTransferProgress(): SyncTransferProgress {
+    return cloudTransferTracker.getSnapshot();
+  },
+
+  resetTransferProgressIfIdle(): void {
+    cloudTransferTracker.resetIfIdle();
+  },
+
+  subscribeTransferProgress(listener: (progress: SyncTransferProgress) => void): () => void {
+    return cloudTransferTracker.subscribe(listener);
+  },
+
   subscribeState(listener: (state: CloudSyncSnapshotState) => void): () => void {
     stateListeners.add(listener);
     listener(currentState);
@@ -4282,6 +4334,7 @@ export const FirestoreSyncService = {
       }
     });
     activeCloudWatchdog = watchdog;
+    cloudTransferTracker.begin();
 
     try {
       const tokenOk = await ensureValidFirebaseAuthToken(
@@ -4378,6 +4431,7 @@ export const FirestoreSyncService = {
         message: pausedMsg
       };
     } finally {
+      cloudTransferTracker.end();
       if (activeCloudWatchdog === watchdog) {
         activeCloudWatchdog = null;
       }
@@ -5731,6 +5785,7 @@ export const FirestoreSyncService = {
     };
 
     reconcileInFlightPromise = (async () => {
+      cloudTransferTracker.begin();
       let anyPulled = false;
       let anyPushed = false;
       let passCount = 0;
@@ -5792,6 +5847,7 @@ export const FirestoreSyncService = {
           errorMessage: lastRes.errorMessage
         };
       } finally {
+        cloudTransferTracker.end();
         isCloudReconciling = false;
         reconcileInFlightPromise = null;
         activeWorkDetectedCallbacks.clear();
@@ -7163,6 +7219,7 @@ export const FirestoreSyncService = {
       };
     }
 
+    cloudTransferTracker.begin();
     try {
       this.resetCircuitForManualRetry();
       emitCloudState({ status: 'connecting', quotaExceeded: false, errorMessage: null });
@@ -7351,6 +7408,8 @@ export const FirestoreSyncService = {
         success: false,
         message: `Đồng bộ lên Cloud Firestore thất bại: ${err?.message || String(err)}`
       };
+    } finally {
+      cloudTransferTracker.end();
     }
   }
 };

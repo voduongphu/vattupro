@@ -1885,5 +1885,179 @@ export function shouldSkipAutoCloudActivity(params: {
   return Boolean(params.connectionPaused && !params.isManualTrigger);
 }
 
+export interface SyncTransferProgress {
+  active: boolean;
+  totalBytes: number;
+  downloadedBytes: number;
+  uploadedBytes: number;
+}
 
+export function formatSyncByteSize(bytes: number): string {
+  const safe = Number(bytes);
+  if (!Number.isFinite(safe) || safe <= 0) {
+    return '0 B';
+  }
+  if (safe < 1024) {
+    return `${Math.round(safe)} B`;
+  }
+  const kb = safe / 1024;
+  if (kb < 1024) {
+    return kb < 10 ? `${kb.toFixed(1)} KB` : `${Math.round(kb)} KB`;
+  }
+  const mb = kb / 1024;
+  if (mb < 1024) {
+    return mb < 10 ? `${mb.toFixed(2)} MB` : `${mb.toFixed(1)} MB`;
+  }
+  const gb = mb / 1024;
+  return `${gb.toFixed(2)} GB`;
+}
 
+export function mergeSyncTransferProgress(
+  primary: SyncTransferProgress,
+  secondary: SyncTransferProgress
+): SyncTransferProgress {
+  const downloadedBytes = Math.max(0, primary.downloadedBytes) + Math.max(0, secondary.downloadedBytes);
+  const uploadedBytes = Math.max(0, primary.uploadedBytes) + Math.max(0, secondary.uploadedBytes);
+  return {
+    active: Boolean(primary.active || secondary.active),
+    downloadedBytes,
+    uploadedBytes,
+    totalBytes: downloadedBytes + uploadedBytes
+  };
+}
+
+export interface SyncTransferTracker {
+  begin: () => void;
+  end: () => void;
+  resetIfIdle: () => void;
+  isActive: () => boolean;
+  recordDownload: (bytes: number) => void;
+  recordUpload: (bytes: number) => void;
+  getSnapshot: () => SyncTransferProgress;
+  subscribe: (listener: (progress: SyncTransferProgress) => void) => () => void;
+}
+
+export function createSyncTransferTracker(options?: {
+  throttleMs?: number;
+  nowFn?: () => number;
+}): SyncTransferTracker {
+  const throttleMs = Math.max(0, Math.floor(Number(options?.throttleMs ?? 80) || 0));
+  const nowFn = options?.nowFn ?? Date.now;
+  const listeners = new Set<(progress: SyncTransferProgress) => void>();
+
+  let depth = 0;
+  let downloadedBytes = 0;
+  let uploadedBytes = 0;
+  let lastEmitAtMs = 0;
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const getSnapshot = (): SyncTransferProgress => ({
+    active: depth > 0,
+    totalBytes: downloadedBytes + uploadedBytes,
+    downloadedBytes,
+    uploadedBytes
+  });
+
+  const clearPendingTimer = () => {
+    if (pendingTimer !== null) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+    }
+  };
+
+  const emitNow = () => {
+    clearPendingTimer();
+    lastEmitAtMs = nowFn();
+    const snap = getSnapshot();
+    listeners.forEach((cb) => {
+      try {
+        cb(snap);
+      } catch {
+        // ignore listener errors
+      }
+    });
+  };
+
+  const scheduleEmit = (forceImmediate: boolean) => {
+    if (listeners.size === 0) return;
+    if (forceImmediate || throttleMs <= 0) {
+      emitNow();
+      return;
+    }
+    const elapsed = nowFn() - lastEmitAtMs;
+    if (elapsed >= throttleMs) {
+      emitNow();
+      return;
+    }
+    if (pendingTimer === null) {
+      const waitMs = Math.max(10, throttleMs - elapsed);
+      pendingTimer = setTimeout(() => {
+        pendingTimer = null;
+        emitNow();
+      }, waitMs);
+    }
+  };
+
+  return {
+    begin() {
+      const wasIdle = depth === 0;
+      depth += 1;
+      if (wasIdle) {
+        downloadedBytes = 0;
+        uploadedBytes = 0;
+        emitNow();
+      }
+    },
+    end() {
+      if (depth <= 0) {
+        depth = 0;
+        return;
+      }
+      depth -= 1;
+      if (depth === 0) {
+        emitNow();
+      }
+    },
+    resetIfIdle() {
+      if (depth > 0) return;
+      if (downloadedBytes === 0 && uploadedBytes === 0) return;
+      downloadedBytes = 0;
+      uploadedBytes = 0;
+      emitNow();
+    },
+    isActive() {
+      return depth > 0;
+    },
+    recordDownload(bytes: number) {
+      if (depth <= 0) return;
+      const clean = Math.max(0, Math.round(Number(bytes) || 0));
+      if (clean <= 0) return;
+      const wasZero = downloadedBytes + uploadedBytes === 0;
+      downloadedBytes += clean;
+      scheduleEmit(wasZero);
+    },
+    recordUpload(bytes: number) {
+      if (depth <= 0) return;
+      const clean = Math.max(0, Math.round(Number(bytes) || 0));
+      if (clean <= 0) return;
+      const wasZero = downloadedBytes + uploadedBytes === 0;
+      uploadedBytes += clean;
+      scheduleEmit(wasZero);
+    },
+    getSnapshot,
+    subscribe(listener: (progress: SyncTransferProgress) => void) {
+      listeners.add(listener);
+      try {
+        listener(getSnapshot());
+      } catch {
+        // ignore
+      }
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          clearPendingTimer();
+        }
+      };
+    }
+  };
+}

@@ -37,7 +37,11 @@ import {
   shouldRunLocalBridgeAfterCloud,
   shouldUpdateLastSyncTimestamp,
   evaluatePreSyncCheck,
-  shouldSkipAutoCloudActivity
+  shouldSkipAutoCloudActivity,
+  createSyncTransferTracker,
+  estimateUtf8ByteLength,
+  mergeSyncTransferProgress,
+  type SyncTransferProgress
 } from '../utils/cloudSyncHelpers';
 
 export {
@@ -46,7 +50,8 @@ export {
   incrementVersionVector,
   resolveConcurrentOsd,
   type VersionVector,
-  type VectorComparison
+  type VectorComparison,
+  type SyncTransferProgress
 };
 
 interface ManifestReceiptEntry {
@@ -235,6 +240,7 @@ function writeStoredLastSyncTimestamp(ts: number): void {
 let pendingInvalidation: SessionInvalidationInfo | null = null;
 
 const syncStateListeners = new Set<(syncing: boolean) => void>();
+const localTransferTracker = createSyncTransferTracker({ throttleMs: 80 });
 const sessionInvalidatedListeners = new Set<(info: SessionInvalidationInfo) => void>();
 const networkStatusListeners = new Set<(online: boolean) => void>();
 const osdUpdateListeners = new Set<(osdList: OsdReceipt[]) => void>();
@@ -774,6 +780,16 @@ async function fetchJson<T>(
 
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} on ${url}`);
+  }
+  if (localTransferTracker.isActive() && url.startsWith('/api/sync')) {
+    if (typeof requestInit.body === 'string' && requestInit.body.length > 0) {
+      localTransferTracker.recordUpload(estimateUtf8ByteLength(requestInit.body));
+    }
+    const rawText = await res.text();
+    if (rawText.length > 0) {
+      localTransferTracker.recordDownload(estimateUtf8ByteLength(rawText));
+    }
+    return (rawText ? JSON.parse(rawText) : {}) as T;
   }
   return (await res.json()) as T;
 }
@@ -1609,6 +1625,8 @@ async function reconcileInternal(options?: {
   }
 
   const runPromise = (async () => {
+    FirestoreSyncService.resetTransferProgressIfIdle();
+    localTransferTracker.begin();
     let cloudSuccess = false;
     let localSuccess = false;
     let pulledChanges = false;
@@ -1709,6 +1727,7 @@ async function reconcileInternal(options?: {
       syncError = err instanceof Error ? err.message : String(err);
       console.warn('Background sync skipped or deferred:', err);
     } finally {
+      localTransferTracker.end();
       isReconciling = false;
       activeReconcilePromise = null;
       if (spinnerActivated) {
@@ -2365,6 +2384,8 @@ export const SyncService = {
       pushDebounceTimer = null;
     }
 
+    FirestoreSyncService.resetTransferProgressIfIdle();
+    localTransferTracker.begin();
     try {
       // Đảm bảo commit toàn bộ hàng đợi ghi IndexedDB trước khi phân tán luồng đồng bộ
       await StorageService.flush();
@@ -2508,6 +2529,7 @@ export const SyncService = {
         osdCount: StorageService.getOsdReceipts().length
       };
     } finally {
+      localTransferTracker.end();
       if (isSpinnerActive && !isReconciling) {
         notifySyncState(false);
       }
@@ -4290,6 +4312,38 @@ export const SyncService = {
     }
     return () => {
       syncStateListeners.delete(listener);
+    };
+  },
+
+  getSyncProgress(): SyncTransferProgress {
+    return mergeSyncTransferProgress(
+      FirestoreSyncService.getTransferProgress(),
+      localTransferTracker.getSnapshot()
+    );
+  },
+
+  subscribeSyncProgress(listener: (progress: SyncTransferProgress) => void): () => void {
+    let latestCloud = FirestoreSyncService.getTransferProgress();
+    let latestLocal = localTransferTracker.getSnapshot();
+    const emitMerged = () => {
+      try {
+        listener(mergeSyncTransferProgress(latestCloud, latestLocal));
+      } catch {
+        // ignore
+      }
+    };
+    const unsubCloud = FirestoreSyncService.subscribeTransferProgress((p) => {
+      latestCloud = p;
+      emitMerged();
+    });
+    const unsubLocal = localTransferTracker.subscribe((p) => {
+      latestLocal = p;
+      emitMerged();
+    });
+    emitMerged();
+    return () => {
+      unsubCloud();
+      unsubLocal();
     };
   },
 
