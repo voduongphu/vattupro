@@ -77,6 +77,23 @@ function summarizeReceiptStorageLocations(items: InboundItemDetail[]): string {
   return seen.size > 0 ? Array.from(seen).join(' | ') : '';
 }
 
+function isPlaceholderMetaValue(raw: string | undefined | null): boolean {
+  const s = (raw || '').trim();
+  if (!s) return true;
+  const lower = s.toLowerCase();
+  return (
+    lower === 'n/a' ||
+    lower === 'na' ||
+    lower === '-' ||
+    lower === '--' ||
+    lower === 'đang cập nhật' ||
+    lower === 'theo phiếu nhập' ||
+    lower === 'đơn vị giao hàng' ||
+    lower === 'nhiều nhà cung cấp' ||
+    lower === 'nhiều nhà sản xuất'
+  );
+}
+
 export interface InboundManagerProps {
   autoOpenCreateToken?: number;
   onAutoOpenCreateConsumed?: (token: number) => void;
@@ -151,6 +168,8 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     date: string;
     origWhId: string;
   } | null>(null);
+  const initialEditSupplierRef = useRef<string>('');
+  const initialEditManufacturerRef = useRef<string>('');
 
   // Danh sách dòng vật tư trong phiếu + tìm kiếm/phân trang cho phiếu lớn
   const [formItems, setFormItems] = useState<InboundItemDetail[]>([]);
@@ -263,6 +282,42 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'vi')).slice(0, 200);
   }, [receipts]);
+
+  const availableManufacturers = useMemo(() => {
+    const set = new Set<string>();
+    for (let i = 0; i < receipts.length; i++) {
+      const rMaker = (receipts[i].manufacturer || '').trim();
+      if (!isPlaceholderMetaValue(rMaker)) set.add(rMaker);
+      const items = receipts[i].items || [];
+      for (let j = 0; j < items.length; j++) {
+        const m = (items[j]?.manufacturer || '').trim();
+        if (!isPlaceholderMetaValue(m)) set.add(m);
+      }
+    }
+    for (let i = 0; i < materials.length; i++) {
+      const m = (materials[i].manufacturer || '').trim();
+      if (!isPlaceholderMetaValue(m)) set.add(m);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'vi')).slice(0, 200);
+  }, [receipts, materials]);
+
+  const availableSuppliers = useMemo(() => {
+    const set = new Set<string>();
+    for (let i = 0; i < receipts.length; i++) {
+      const rSup = (receipts[i].supplier || '').trim();
+      if (!isPlaceholderMetaValue(rSup)) set.add(rSup);
+      const items = receipts[i].items || [];
+      for (let j = 0; j < items.length; j++) {
+        const s = (items[j]?.supplier || '').trim();
+        if (!isPlaceholderMetaValue(s)) set.add(s);
+      }
+    }
+    for (let i = 0; i < materials.length; i++) {
+      const s = (materials[i].supplier || '').trim();
+      if (!isPlaceholderMetaValue(s)) set.add(s);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'vi')).slice(0, 200);
+  }, [receipts, materials]);
 
   const createBlankInboundItem = (idxOffset = 0): InboundItemDetail => ({
     id: `item-${Date.now()}-${idxOffset}-${Math.random().toString(36).substring(2, 6)}`,
@@ -534,6 +589,8 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
 
     setFormSupplier('');
     setFormManufacturer('');
+    initialEditSupplierRef.current = '';
+    initialEditManufacturerRef.current = '';
     setFormShipment('');
     setFormPackingListNo('');
     setFormDriverVehicle('');
@@ -644,12 +701,31 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     setFormAmountInWords(rcp.amountInWords || '');
     setFormAttachedDocs(rcp.attachedDocs || '');
 
-    setFormSupplier(
-      rcp.supplier && rcp.supplier !== 'Đơn vị giao hàng' && rcp.supplier !== 'Theo phiếu nhập'
-        ? rcp.supplier
-        : ''
+    const distinctEditSuppliers = new Set(
+      (rcp.items || [])
+        .map((it) => (it.supplier || '').trim())
+        .filter((s) => !isPlaceholderMetaValue(s))
     );
-    setFormManufacturer(rcp.manufacturer && rcp.manufacturer !== 'N/A' ? rcp.manufacturer : '');
+    const resolvedEditSupplier = !isPlaceholderMetaValue(rcp.supplier)
+      ? (rcp.supplier || '').trim()
+      : distinctEditSuppliers.size === 1
+        ? Array.from(distinctEditSuppliers)[0]
+        : '';
+    const distinctEditManufacturers = new Set(
+      (rcp.items || [])
+        .map((it) => (it.manufacturer || '').trim())
+        .filter((m) => !isPlaceholderMetaValue(m))
+    );
+    const resolvedEditManufacturer = !isPlaceholderMetaValue(rcp.manufacturer)
+      ? (rcp.manufacturer || '').trim()
+      : distinctEditManufacturers.size === 1
+        ? Array.from(distinctEditManufacturers)[0]
+        : '';
+
+    setFormSupplier(resolvedEditSupplier);
+    setFormManufacturer(resolvedEditManufacturer);
+    initialEditSupplierRef.current = resolvedEditSupplier;
+    initialEditManufacturerRef.current = resolvedEditManufacturer;
     setFormShipment(
       rcp.shipment && rcp.shipment !== 'N/A' && rcp.shipment !== 'SHP-EXCEL' ? rcp.shipment : ''
     );
@@ -1183,10 +1259,25 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         : '');
     const headerShp =
       formShipment.trim() || editingReceipt?.shipment || 'N/A';
+    const trimmedFormSup = formSupplier.trim();
+    const trimmedFormMaker = formManufacturer.trim();
+    const supplierEdited = Boolean(editingReceipt) && trimmedFormSup !== initialEditSupplierRef.current;
+    const manufacturerEdited =
+      Boolean(editingReceipt) && trimmedFormMaker !== initialEditManufacturerRef.current;
+
     const headerSup =
-      formSupplier.trim() || formDeliverer.trim() || editingReceipt?.supplier || 'N/A';
+      trimmedFormSup ||
+      formDeliverer.trim() ||
+      (!supplierEdited && !isPlaceholderMetaValue(editingReceipt?.supplier)
+        ? (editingReceipt?.supplier || '').trim()
+        : '') ||
+      'N/A';
     const headerMaker =
-      formManufacturer.trim() || editingReceipt?.manufacturer || 'N/A';
+      trimmedFormMaker ||
+      (!manufacturerEdited && !isPlaceholderMetaValue(editingReceipt?.manufacturer)
+        ? (editingReceipt?.manufacturer || '').trim()
+        : '') ||
+      'N/A';
 
     const materialCodeResolver = createInboundMaterialCodeResolver({
       materials: StorageService.getMaterials(),
@@ -1232,6 +1323,38 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         }
       }
 
+      const rawItemSup = (it.supplier || '').trim();
+      const itemSupMatchesOldHeader =
+        supplierEdited &&
+        ((initialEditSupplierRef.current &&
+          normUserKey(rawItemSup) === normUserKey(initialEditSupplierRef.current)) ||
+          (editingReceipt?.supplier &&
+            normUserKey(rawItemSup) === normUserKey(editingReceipt.supplier)));
+      const resolvedItemSup =
+        supplierEdited && trimmedFormSup
+          ? isPlaceholderMetaValue(rawItemSup) || itemSupMatchesOldHeader
+            ? trimmedFormSup
+            : rawItemSup
+          : isPlaceholderMetaValue(rawItemSup) || itemSupMatchesOldHeader
+            ? headerSup
+            : rawItemSup;
+
+      const rawItemMaker = (it.manufacturer || '').trim();
+      const itemMakerMatchesOldHeader =
+        manufacturerEdited &&
+        ((initialEditManufacturerRef.current &&
+          normUserKey(rawItemMaker) === normUserKey(initialEditManufacturerRef.current)) ||
+          (editingReceipt?.manufacturer &&
+            normUserKey(rawItemMaker) === normUserKey(editingReceipt.manufacturer)));
+      const resolvedItemMaker =
+        manufacturerEdited && trimmedFormMaker
+          ? isPlaceholderMetaValue(rawItemMaker) || itemMakerMatchesOldHeader
+            ? trimmedFormMaker
+            : rawItemMaker
+          : isPlaceholderMetaValue(rawItemMaker) || itemMakerMatchesOldHeader
+            ? headerMaker
+            : rawItemMaker;
+
       return {
         ...it,
         materialCode: resolvedMaterialCode,
@@ -1242,8 +1365,8 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         packageName: it.packageName?.trim() || (explicitPkg ? `Kiện ${explicitPkg}` : batch ? `Lô ${batch}` : ''),
         packingListNo: resolvedPl || '',
         shipment: resolvedShp || 'N/A',
-        supplier: it.supplier?.trim() || headerSup,
-        manufacturer: it.manufacturer?.trim() || headerMaker,
+        supplier: resolvedItemSup,
+        manufacturer: resolvedItemMaker,
         category: it.category?.trim() || formNotes.trim() || 'Vật tư dự án',
         drawingNo: it.drawingNo?.trim() || 'N/A',
         warehouseName: wh?.name || it.warehouseName || 'Kho Dự Án',
@@ -1274,14 +1397,14 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         amountInWords: formAmountInWords.trim(),
         attachedDocs: formAttachedDocs.trim(),
         supplier:
-          formSupplier.trim() ||
+          trimmedFormSup ||
           formDeliverer.trim() ||
-          editingReceipt.supplier ||
+          (!supplierEdited ? editingReceipt.supplier : '') ||
           'Đơn vị giao hàng',
-        manufacturer: formManufacturer.trim(),
+        manufacturer: trimmedFormMaker,
         shipment: headerShp,
         packingListNo: headerPl,
-        delivererName: formDeliverer.trim() || formSupplier.trim(),
+        delivererName: formDeliverer.trim() || trimmedFormSup,
         receiverName: editingReceipt.receiverName || editorName,
         driverVehicleNo: formDriverVehicle.trim(),
         notes: formNotes.trim(),
@@ -2566,41 +2689,81 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                   </div>
                 </div>
 
-                {/* Vị trí lưu kho/bãi mặc định cho phiếu & gợi ý */}
-                <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-lg p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                    <label className="block font-semibold text-emerald-900 uppercase">
-                      Vị trí lưu kho/bãi (mặc định cho phiếu)
-                    </label>
-                    {formStorageLocation.trim() && formItems.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const targetLoc = formStorageLocation.trim();
-                          setFormItems((prev) =>
-                            prev.map((it) => ({ ...it, storageLocation: targetLoc }))
-                          );
-                          showToast(`Đã áp dụng vị trí "${targetLoc}" cho tất cả dòng vật tư.`);
-                        }}
-                        className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-white border border-emerald-300 hover:bg-emerald-50 px-2.5 py-0.5 rounded-md transition"
-                      >
-                        Áp dụng cho tất cả dòng
-                      </button>
-                    )}
+                {/* Vị trí lưu kho/bãi, Nhà sản xuất, Nhà cung cấp trên cùng 1 dòng */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1">
+                      <label className="block font-semibold text-emerald-800 uppercase">
+                        Vị trí lưu kho/bãi
+                      </label>
+                      {formStorageLocation.trim() && formItems.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const targetLoc = formStorageLocation.trim();
+                            setFormItems((prev) =>
+                              prev.map((it) => ({ ...it, storageLocation: targetLoc }))
+                            );
+                            showToast(`Đã áp dụng vị trí "${targetLoc}" cho tất cả dòng vật tư.`);
+                          }}
+                          className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 px-2 py-0.5 rounded-md transition"
+                        >
+                          Áp dụng tất cả
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      list="inbound-storage-location-list"
+                      value={formStorageLocation}
+                      onChange={(e) => setFormStorageLocation(e.target.value)}
+                      placeholder="VD: Bãi A - Khu 01, K1 - Kệ B2..."
+                      className="w-full px-2.5 py-1.5 bg-emerald-50/40 border border-emerald-300 rounded-lg font-medium text-slate-800 outline-none focus:border-emerald-500"
+                    />
+                    <datalist id="inbound-storage-location-list">
+                      {availableStorageLocations.map((loc) => (
+                        <option key={loc} value={loc} />
+                      ))}
+                    </datalist>
                   </div>
-                  <input
-                    type="text"
-                    list="inbound-storage-location-list"
-                    value={formStorageLocation}
-                    onChange={(e) => setFormStorageLocation(e.target.value)}
-                    placeholder="VD: Bãi A - Khu 01 - Hàng 03, Kho kín K1 - Kệ B2... (có thể sửa riêng từng dòng bên dưới)"
-                    className="w-full px-2.5 py-1.5 bg-white border border-emerald-300 rounded-lg font-medium text-slate-800 outline-none focus:border-emerald-500"
-                  />
-                  <datalist id="inbound-storage-location-list">
-                    {availableStorageLocations.map((loc) => (
-                      <option key={loc} value={loc} />
-                    ))}
-                  </datalist>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 uppercase mb-1">
+                      Nhà sản xuất
+                    </label>
+                    <input
+                      type="text"
+                      list="inbound-manufacturer-list"
+                      value={formManufacturer}
+                      onChange={(e) => setFormManufacturer(e.target.value)}
+                      placeholder="VD: Siemens, Posco, ABB..."
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-medium text-slate-800 outline-none focus:border-blue-500"
+                    />
+                    <datalist id="inbound-manufacturer-list">
+                      {availableManufacturers.map((maker) => (
+                        <option key={maker} value={maker} />
+                      ))}
+                    </datalist>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 uppercase mb-1">
+                      Nhà cung cấp
+                    </label>
+                    <input
+                      type="text"
+                      list="inbound-supplier-list"
+                      value={formSupplier}
+                      onChange={(e) => setFormSupplier(e.target.value)}
+                      placeholder="VD: Hòa Phát, PetroSteel..."
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-medium text-slate-800 outline-none focus:border-blue-500"
+                    />
+                    <datalist id="inbound-supplier-list">
+                      {availableSuppliers.map((sup) => (
+                        <option key={sup} value={sup} />
+                      ))}
+                    </datalist>
+                  </div>
                 </div>
 
                 {/* Thông tin chứng từ & Logistics bổ trợ (tùy chọn) */}
