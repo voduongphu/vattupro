@@ -48,6 +48,8 @@ const MainLayout: React.FC = () => {
   const [isQuickNewVoucherOpen, setIsQuickNewVoucherOpen] = useState<boolean>(false);
   const [inboundCreateToken, setInboundCreateToken] = useState<number>(0);
   const [outboundCreateToken, setOutboundCreateToken] = useState<number>(0);
+  const inboundCreateSeqRef = useRef<number>(0);
+  const outboundCreateSeqRef = useRef<number>(0);
   const [quickSearchTarget, setQuickSearchTarget] = useState<{
     tab: QuickSearchSelection['tab'];
     query: string;
@@ -101,7 +103,7 @@ const MainLayout: React.FC = () => {
     return () => window.cancelAnimationFrame(rafId);
   }, [activeTab, scrollViewportToTop]);
 
-  const handleSelectTab = useCallback(
+  const selectTabInternal = useCallback(
     (tab: string) => {
       setActiveTab(tab);
       setIsMobileMenuOpen(false);
@@ -115,34 +117,58 @@ const MainLayout: React.FC = () => {
     [scrollViewportToTop]
   );
 
+  const handleSelectTab = useCallback(
+    (tab: string) => {
+      setInboundCreateToken(0);
+      setOutboundCreateToken(0);
+      setQuickSearchTarget(null);
+      selectTabInternal(tab);
+    },
+    [selectTabInternal]
+  );
+
+  const handleConsumeInboundCreateToken = useCallback((consumedToken: number) => {
+    setInboundCreateToken((prev) => (prev === consumedToken ? 0 : prev));
+  }, []);
+
+  const handleConsumeOutboundCreateToken = useCallback((consumedToken: number) => {
+    setOutboundCreateToken((prev) => (prev === consumedToken ? 0 : prev));
+  }, []);
+
   const triggerCreateInbound = useCallback(() => {
     setIsQuickSearchOpen(false);
     setIsQuickNewVoucherOpen(false);
+    setOutboundCreateToken(0);
     if (activeTab !== 'inbound') {
-      handleSelectTab('inbound');
+      selectTabInternal('inbound');
     }
-    setInboundCreateToken((prev) => prev + 1);
-  }, [activeTab, handleSelectTab]);
+    inboundCreateSeqRef.current += 1;
+    setInboundCreateToken(inboundCreateSeqRef.current);
+  }, [activeTab, selectTabInternal]);
 
   const triggerCreateOutbound = useCallback(() => {
     setIsQuickSearchOpen(false);
     setIsQuickNewVoucherOpen(false);
+    setInboundCreateToken(0);
     if (activeTab !== 'outbound') {
-      handleSelectTab('outbound');
+      selectTabInternal('outbound');
     }
-    setOutboundCreateToken((prev) => prev + 1);
-  }, [activeTab, handleSelectTab]);
+    outboundCreateSeqRef.current += 1;
+    setOutboundCreateToken(outboundCreateSeqRef.current);
+  }, [activeTab, selectTabInternal]);
 
   const handleGlobalSearchSelect = useCallback(
     (selection: QuickSearchSelection) => {
-      handleSelectTab(selection.tab);
+      setInboundCreateToken(0);
+      setOutboundCreateToken(0);
+      selectTabInternal(selection.tab);
       setQuickSearchTarget({
         tab: selection.tab,
         query: selection.query,
         token: Date.now() + Math.random()
       });
     },
-    [handleSelectTab]
+    [selectTabInternal]
   );
 
   // Phím tắt toàn cục: Ctrl+K (Tìm kiếm nhanh), Ctrl+Space (Lập phiếu nhập/xuất kho mới)
@@ -216,6 +242,7 @@ const MainLayout: React.FC = () => {
         return (
           <InboundManager
             autoOpenCreateToken={inboundCreateToken}
+            onAutoOpenCreateConsumed={handleConsumeInboundCreateToken}
             quickSearchSignal={
               quickSearchTarget?.tab === 'inbound'
                 ? { query: quickSearchTarget.query, token: quickSearchTarget.token }
@@ -227,6 +254,7 @@ const MainLayout: React.FC = () => {
         return (
           <OutboundManager
             autoOpenCreateToken={outboundCreateToken}
+            onAutoOpenCreateConsumed={handleConsumeOutboundCreateToken}
             quickSearchSignal={
               quickSearchTarget?.tab === 'outbound'
                 ? { query: quickSearchTarget.query, token: quickSearchTarget.token }

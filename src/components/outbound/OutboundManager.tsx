@@ -141,11 +141,13 @@ function buildOutboundItemFromStock(st: InventoryStockRecord, idxOffset = 0): Ou
 
 export interface OutboundManagerProps {
   autoOpenCreateToken?: number;
+  onAutoOpenCreateConsumed?: (token: number) => void;
   quickSearchSignal?: { query: string; token: number } | null;
 }
 
 export const OutboundManager: React.FC<OutboundManagerProps> = ({
   autoOpenCreateToken = 0,
+  onAutoOpenCreateConsumed,
   quickSearchSignal = null
 }) => {
   const { currentUser, isAdmin } = useAuth();
@@ -442,11 +444,12 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
   useEffect(() => {
     if (autoOpenCreateToken > 0 && autoOpenCreateToken !== lastAutoOpenTokenRef.current) {
       lastAutoOpenTokenRef.current = autoOpenCreateToken;
+      onAutoOpenCreateConsumed?.(autoOpenCreateToken);
       if (!isCreateModalOpen) {
         openCreateModalRef.current();
       }
     }
-  }, [autoOpenCreateToken, isCreateModalOpen]);
+  }, [autoOpenCreateToken, isCreateModalOpen, onAutoOpenCreateConsumed]);
 
   useEffect(() => {
     if (quickSearchSignal && quickSearchSignal.token !== lastQuickSearchTokenRef.current) {

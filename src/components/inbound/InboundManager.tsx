@@ -79,11 +79,13 @@ function summarizeReceiptStorageLocations(items: InboundItemDetail[]): string {
 
 export interface InboundManagerProps {
   autoOpenCreateToken?: number;
+  onAutoOpenCreateConsumed?: (token: number) => void;
   quickSearchSignal?: { query: string; token: number } | null;
 }
 
 export const InboundManager: React.FC<InboundManagerProps> = ({
   autoOpenCreateToken = 0,
+  onAutoOpenCreateConsumed,
   quickSearchSignal = null
 }) => {
   const { currentUser, isAdmin } = useAuth();
@@ -574,11 +576,12 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
   useEffect(() => {
     if (autoOpenCreateToken > 0 && autoOpenCreateToken !== lastAutoOpenTokenRef.current) {
       lastAutoOpenTokenRef.current = autoOpenCreateToken;
+      onAutoOpenCreateConsumed?.(autoOpenCreateToken);
       if (!isCreateModalOpen) {
         openCreateModalRef.current();
       }
     }
-  }, [autoOpenCreateToken, isCreateModalOpen]);
+  }, [autoOpenCreateToken, isCreateModalOpen, onAutoOpenCreateConsumed]);
 
   useEffect(() => {
     if (quickSearchSignal && quickSearchSignal.token !== lastQuickSearchTokenRef.current) {
