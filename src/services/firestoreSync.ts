@@ -262,7 +262,7 @@ function getSyncAbortOptions(): {
       if (activeCloudWatchdog?.didTimeOut()) {
         const msg =
           activeCloudWatchdog.getAbortReason() ||
-          'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
+          'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút) do mạng phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
         return new SyncAbortedError(msg, { reason: msg, timedOut: true });
       }
       const msg =
@@ -950,6 +950,9 @@ async function safeGetDoc(
       }
     );
     clearFirestoreQuotaExhaustedFlag();
+    if (!snap.metadata?.fromCache) {
+      activeCloudWatchdog?.markConnected();
+    }
     if (cloudTransferTracker.isActive()) {
       const readBytes = snap.exists()
         ? estimateFirestoreValueBytes(snap.data()) + estimateUtf8ByteLength(pathLabel) + 64
@@ -999,6 +1002,7 @@ async function writeSingleProtectedDoc(
         updatedAt: serverTimestamp()
       });
       clearFirestoreQuotaExhaustedFlag();
+      activeCloudWatchdog?.markConnected();
       if (cloudTransferTracker.isActive()) {
         cloudTransferTracker.recordUpload(
           estimateStagedWritePayloadBytes(ref.path, immutableCreateFields, mutableFields)
@@ -1029,6 +1033,7 @@ async function writeSingleProtectedDoc(
       updatedAt: serverTimestamp()
     });
     clearFirestoreQuotaExhaustedFlag();
+    activeCloudWatchdog?.markConnected();
     if (cloudTransferTracker.isActive()) {
       cloudTransferTracker.recordUpload(
         estimateStagedWritePayloadBytes(ref.path, immutableCreateFields, mutableFields)
@@ -1215,6 +1220,7 @@ async function commitManifestWithTransaction(params: {
     );
 
     clearFirestoreQuotaExhaustedFlag();
+    activeCloudWatchdog?.markConnected();
     if (cloudTransferTracker.isActive()) {
       cloudTransferTracker.recordDownload(estimateFirestoreValueBytes(committed) + 128);
       cloudTransferTracker.recordUpload(estimateFirestoreValueBytes(committed) + 192);
@@ -1309,6 +1315,7 @@ async function commitBatchChunk(
       }
     );
     clearFirestoreQuotaExhaustedFlag();
+    activeCloudWatchdog?.markConnected();
     if (cloudTransferTracker.isActive()) {
       let chunkBytes = 0;
       for (let i = 0; i < chunk.length; i++) {
@@ -2073,6 +2080,7 @@ async function ensureWorkspaceReady(
       }
       try {
         await batch.commit();
+        activeCloudWatchdog?.markConnected();
         if (cloudTransferTracker.isActive()) {
           cloudTransferTracker.recordUpload(estimateFirestoreValueBytes(initManifest) + 512);
         }
@@ -5715,10 +5723,12 @@ export const FirestoreSyncService = {
           };
         }
 
+        const hasConnectedToCloud = Boolean(activeCloudWatchdog?.isConnected());
+        const elapsedMs = Date.now() - reconcileStartedAt;
         const timedOut2m =
           Boolean(activeCloudWatchdog?.didTimeOut()) ||
           (err instanceof SyncAbortedError && Boolean(err.timedOut)) ||
-          Date.now() - reconcileStartedAt >= CLOUD_SYNC_HARD_TIMEOUT_MS;
+          (!hasConnectedToCloud && elapsedMs >= CLOUD_SYNC_HARD_TIMEOUT_MS);
 
         if (isSyncAbortedError(err) || cloudConnectionPaused || timedOut2m) {
           const pausedMsg = cloudConnectionPaused
@@ -5735,15 +5745,15 @@ export const FirestoreSyncService = {
         }
 
         consecutiveCloudFailures += 1;
-        const elapsedMs = Date.now() - reconcileStartedAt;
         const errMsg = err instanceof Error ? err.message : String(err);
         const shouldPause = shouldPauseCloudOnFailure({
           elapsedMs,
           maxDurationMs: CLOUD_SYNC_HARD_TIMEOUT_MS,
           consecutiveFailures: consecutiveCloudFailures,
+          hasConnectedToCloud,
           quotaExceeded: false,
           offline: typeof navigator !== 'undefined' && !navigator.onLine,
-          timedOutOver2Min: elapsedMs >= CLOUD_SYNC_HARD_TIMEOUT_MS,
+          timedOutOver2Min: !hasConnectedToCloud && elapsedMs >= CLOUD_SYNC_HARD_TIMEOUT_MS,
           nonRetryableError:
             isPermissionError(err) ||
             isFirestoreBillingOrPlanError(err) ||
@@ -5754,7 +5764,7 @@ export const FirestoreSyncService = {
         if (shouldPause) {
           const pausedMsg = pauseCloudConnection(err, {
             isOnline: typeof navigator === 'undefined' || navigator.onLine,
-            timedOutOver2Min: elapsedMs >= CLOUD_SYNC_HARD_TIMEOUT_MS
+            timedOutOver2Min: !hasConnectedToCloud && elapsedMs >= CLOUD_SYNC_HARD_TIMEOUT_MS
           });
           return {
             ok: false,

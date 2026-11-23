@@ -1313,6 +1313,57 @@ describe('cloudSyncHelpers', () => {
     );
     deadline.dispose();
 
+    // Once connected to Cloud server (markConnected), 2-minute limit is disarmed so large data sync runs to completion
+    let connectedNow = 50_000;
+    let connectedTimeoutFired = 0;
+    const connectedDeadline = createSyncDeadline(CLOUD_SYNC_HARD_TIMEOUT_MS, {
+      nowFn: () => connectedNow,
+      onTimeout: () => {
+        connectedTimeoutFired += 1;
+      }
+    });
+    assert.equal(connectedDeadline.isConnected(), false);
+    connectedNow += 3_000;
+    connectedDeadline.markConnected();
+    assert.equal(connectedDeadline.isConnected(), true);
+    // Simulate a 10-minute large dataset sync after connecting
+    connectedNow += 600_000;
+    assert.equal(connectedDeadline.isAborted(), false);
+    assert.equal(connectedDeadline.isExpired(), false);
+    assert.equal(connectedDeadline.didTimeOut(), false);
+    assert.equal(connectedDeadline.remainingMs(), Number.POSITIVE_INFINITY);
+    assert.equal(getEffectiveStepTimeoutMs(15_000, connectedDeadline.remainingMs()), 15_000);
+    assert.doesNotThrow(() => connectedDeadline.throwIfAborted());
+    assert.equal(connectedTimeoutFired, 0);
+
+    // retryAsyncWithBackoff must keep retrying (not abort) when remainingMs is Infinity
+    let connectedRetryAttempts = 0;
+    const retryOutcome = await retryAsyncWithBackoff(
+      async () => {
+        connectedRetryAttempts += 1;
+        if (connectedRetryAttempts < 2) {
+          throw Object.assign(new Error('transient'), { code: 'unavailable' });
+        }
+        return 'ok-after-retry';
+      },
+      {
+        maxRetries: 2,
+        baseDelayMs: 1,
+        sleepFn: async () => {},
+        isAborted: () => connectedDeadline.isAborted(),
+        getRemainingMs: () => connectedDeadline.remainingMs()
+      }
+    );
+    assert.equal(retryOutcome, 'ok-after-retry');
+    assert.equal(connectedRetryAttempts, 2);
+
+    // Explicit abort (e.g. quota exceeded / offline) still stops a connected sync cleanly
+    connectedDeadline.abort('offline', false);
+    assert.equal(connectedDeadline.isAborted(), true);
+    assert.equal(connectedDeadline.didTimeOut(), false);
+    assert.equal(connectedDeadline.remainingMs(), 0);
+    connectedDeadline.dispose();
+
     // retryAsyncWithBackoff stops immediately without retrying once aborted
     let retryAttempts = 0;
     let abortedFlag = false;
@@ -1381,9 +1432,20 @@ describe('cloudSyncHelpers', () => {
       shouldPauseCloudOnFailure({
         elapsedMs: 120_000,
         maxDurationMs: 120_000,
-        consecutiveFailures: 1
+        consecutiveFailures: 1,
+        hasConnectedToCloud: false
       }),
       true
+    );
+    assert.equal(
+      shouldPauseCloudOnFailure({
+        elapsedMs: 600_000,
+        maxDurationMs: 120_000,
+        consecutiveFailures: 1,
+        hasConnectedToCloud: true,
+        isManualTrigger: false
+      }),
+      false
     );
     assert.equal(
       shouldPauseCloudOnFailure({

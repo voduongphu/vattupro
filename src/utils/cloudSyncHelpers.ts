@@ -1122,7 +1122,7 @@ export async function retryAsyncWithBackoff<T>(
       const delayMs = baseDelayMs * Math.pow(2, attempt);
       if (options?.getRemainingMs) {
         const rem = options.getRemainingMs();
-        if (!Number.isFinite(rem) || rem <= 0 || delayMs >= rem) {
+        if (Number.isFinite(rem) && (rem <= 0 || delayMs >= rem)) {
           throw buildAbortErr();
         }
       }
@@ -1632,14 +1632,15 @@ export function resolveConvergedCheckpointDigests(
   };
 }
 
-export const CLOUD_SYNC_HARD_TIMEOUT_MS = 120_000;
+export const CLOUD_SYNC_CONNECT_TIMEOUT_MS = 120_000;
+export const CLOUD_SYNC_HARD_TIMEOUT_MS = CLOUD_SYNC_CONNECT_TIMEOUT_MS;
 
 export class SyncAbortedError extends Error {
   reason: string;
   timedOut: boolean;
 
   constructor(
-    message = 'Đã tạm dừng đồng bộ Cloud do quá thời gian chờ.',
+    message = 'Đã tạm dừng kết nối Cloud do quá thời gian chờ kết nối máy chủ.',
     options?: { reason?: string; timedOut?: boolean }
   ) {
     super(message);
@@ -1656,6 +1657,8 @@ export function isSyncAbortedError(err: unknown): boolean {
 export interface SyncDeadlineController {
   readonly startedAtMs: number;
   readonly deadlineMs: number;
+  isConnected: () => boolean;
+  markConnected: () => void;
   isAborted: () => boolean;
   isExpired: () => boolean;
   remainingMs: () => number;
@@ -1668,16 +1671,17 @@ export interface SyncDeadlineController {
 }
 
 export function createSyncDeadline(
-  timeoutMs = CLOUD_SYNC_HARD_TIMEOUT_MS,
+  timeoutMs = CLOUD_SYNC_CONNECT_TIMEOUT_MS,
   options?: {
     nowFn?: () => number;
     onTimeout?: () => void;
   }
 ): SyncDeadlineController {
   const nowFn = options?.nowFn ?? Date.now;
-  const effectiveTimeoutMs = Math.max(1000, Math.floor(Number(timeoutMs) || CLOUD_SYNC_HARD_TIMEOUT_MS));
+  const effectiveTimeoutMs = Math.max(1000, Math.floor(Number(timeoutMs) || CLOUD_SYNC_CONNECT_TIMEOUT_MS));
   const startedAtMs = nowFn();
   const deadlineMs = startedAtMs + effectiveTimeoutMs;
+  let connected = false;
   let aborted = false;
   let timedOut = false;
   let abortReason: string | null = null;
@@ -1685,13 +1689,13 @@ export function createSyncDeadline(
   let notifiedTimeout = false;
 
   const triggerTimeout = () => {
-    if (disposed) return;
+    if (disposed || connected) return;
     if (!aborted) {
       aborted = true;
       timedOut = true;
       abortReason =
         abortReason ||
-        'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
+        'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút) do mạng phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
     }
     clearTimeout(timer);
     if (!notifiedTimeout) {
@@ -1705,12 +1709,13 @@ export function createSyncDeadline(
   };
 
   const timer = setTimeout(() => {
-    if (disposed || aborted) return;
+    if (disposed || aborted || connected) return;
     triggerTimeout();
   }, effectiveTimeoutMs);
 
   const checkExpired = (): boolean => {
     if (aborted) return true;
+    if (connected) return false;
     if (nowFn() >= deadlineMs) {
       triggerTimeout();
       return true;
@@ -1721,9 +1726,19 @@ export function createSyncDeadline(
   return {
     startedAtMs,
     deadlineMs,
+    isConnected: () => connected,
+    markConnected: () => {
+      if (disposed || aborted || connected) return;
+      connected = true;
+      clearTimeout(timer);
+    },
     isAborted: () => checkExpired(),
     isExpired: () => checkExpired(),
-    remainingMs: () => Math.max(0, deadlineMs - nowFn()),
+    remainingMs: () => {
+      if (aborted) return 0;
+      if (connected) return Number.POSITIVE_INFINITY;
+      return Math.max(0, deadlineMs - nowFn());
+    },
     elapsedMs: () => Math.max(0, nowFn() - startedAtMs),
     getAbortReason: () => {
       checkExpired();
@@ -1743,7 +1758,7 @@ export function createSyncDeadline(
     throwIfAborted: () => {
       if (checkExpired()) {
         throw new SyncAbortedError(
-          abortReason || 'Quá thời gian chờ kết nối/đồng bộ Cloud (> 2 phút).',
+          abortReason || 'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút).',
           { reason: abortReason || undefined, timedOut }
         );
       }
@@ -1763,10 +1778,10 @@ export function getEffectiveStepTimeoutMs(
   if (!Number.isFinite(remainingMs)) return req;
   if (remainingMs <= 0) {
     throw new SyncAbortedError(
-      'Quá thời gian chờ kết nối/đồng bộ Cloud (> 2 phút).',
+      'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút).',
       {
         reason:
-          'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud',
+          'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút) do mạng phản hồi chậm hoặc không thể liên hệ máy chủ Cloud',
         timedOut: true
       }
     );
@@ -1785,7 +1800,7 @@ export function classifyCloudPauseReason(
     ctx?.timedOutOver2Min ||
     (errOrMsg instanceof SyncAbortedError && errOrMsg.timedOut)
   ) {
-    return 'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
+    return 'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút) do mạng phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
   }
   if (isFirestoreBillingOrPlanError(errOrMsg)) {
     return 'Dự án Firebase đang ở gói Spark hoặc dịch vụ Cloud Firestore chưa bật thanh toán Blaze';
@@ -1806,7 +1821,7 @@ export function classifyCloudPauseReason(
     lower.includes('2 phút') ||
     lower.includes('quá thời gian chờ kết nối')
   ) {
-    return 'Quá thời gian chờ kết nối/đồng bộ (> 2 phút) do mạng di động phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
+    return 'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút) do mạng phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
   }
   if (
     code === 'auth/popup-blocked' ||
@@ -1865,6 +1880,7 @@ export function shouldPauseCloudOnFailure(params: {
   elapsedMs: number;
   maxDurationMs: number;
   consecutiveFailures: number;
+  hasConnectedToCloud?: boolean;
   quotaExceeded?: boolean;
   offline?: boolean;
   timedOutOver2Min?: boolean;
@@ -1872,7 +1888,7 @@ export function shouldPauseCloudOnFailure(params: {
   isManualTrigger?: boolean;
 }): boolean {
   if (params.timedOutOver2Min) return true;
-  if (params.elapsedMs >= params.maxDurationMs) return true;
+  if (!params.hasConnectedToCloud && params.elapsedMs >= params.maxDurationMs) return true;
   if (params.quotaExceeded || params.offline || params.nonRetryableError) return true;
   if (params.isManualTrigger && params.consecutiveFailures >= 1) return true;
   return params.consecutiveFailures >= 2;
