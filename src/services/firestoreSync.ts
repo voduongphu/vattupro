@@ -236,6 +236,7 @@ let activeInteractiveAuthAttemptId = 0;
 let cloudConnectionPaused = initialManualCloudPaused;
 let manualSyncPaused = initialManualCloudPaused;
 let cloudPauseReason: string | null = initialManualPauseNotice;
+let cloudControlEpoch = 0;
 let activeCloudWatchdog: SyncDeadlineController | null = null;
 let consecutiveCloudFailures = 0;
 const cloudTransferTracker = createSyncTransferTracker({ throttleMs: 80 });
@@ -264,24 +265,27 @@ function getSyncAbortOptions(): {
   isAborted: () => boolean;
   getAbortError: () => Error;
   getRemainingMs: () => number;
+  onAbort?: (cb: () => void) => () => void;
 } {
+  const watchdog = activeCloudWatchdog;
   return {
-    isAborted: () => cloudConnectionPaused || Boolean(activeCloudWatchdog?.isAborted()),
+    isAborted: () => cloudConnectionPaused || Boolean(watchdog?.isAborted()),
     getAbortError: () => {
-      if (activeCloudWatchdog?.didTimeOut()) {
+      if (watchdog?.didTimeOut()) {
         const msg =
-          activeCloudWatchdog.getAbortReason() ||
+          watchdog.getAbortReason() ||
           'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút) do mạng phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
         return new SyncAbortedError(msg, { reason: msg, timedOut: true });
       }
       const msg =
         cloudPauseReason ||
-        activeCloudWatchdog?.getAbortReason() ||
+        watchdog?.getAbortReason() ||
         'Đã tạm dừng kết nối Cloud.';
       return new SyncAbortedError(msg, { reason: msg });
     },
     getRemainingMs: () =>
-      activeCloudWatchdog ? activeCloudWatchdog.remainingMs() : Number.POSITIVE_INFINITY
+      watchdog ? watchdog.remainingMs() : Number.POSITIVE_INFINITY,
+    onAbort: watchdog ? (cb: () => void) => watchdog.onAbort(cb) : undefined
   };
 }
 let adminPiiLoadedForMetaRev = -1;
@@ -743,14 +747,21 @@ function pauseCloudConnection(
 
 function pauseCloudConnectionManually(): string {
   const notice = formatManualCloudPauseNotice();
+  cloudControlEpoch += 1;
   cloudConnectionPaused = true;
   manualSyncPaused = true;
   writeManualCloudPauseFlag(true);
   cloudPauseReason = notice;
 
-  if (activeCloudWatchdog) {
-    activeCloudWatchdog.abort(notice, false);
+  const prevWatchdog = activeCloudWatchdog;
+  activeCloudWatchdog = null;
+  if (prevWatchdog) {
+    prevWatchdog.abort(notice, false);
+    prevWatchdog.dispose();
   }
+  isCloudReconciling = false;
+  reconcileInFlightPromise = null;
+  activeWorkDetectedCallbacks.clear();
   workspaceReadyPromise = null;
   workspaceReadyUid = null;
   pendingCloudReconcile = false;
@@ -771,6 +782,7 @@ function pauseCloudConnectionManually(): string {
 }
 
 function unpauseForManualRetry(): void {
+  cloudControlEpoch += 1;
   cloudConnectionPaused = false;
   manualSyncPaused = false;
   writeManualCloudPauseFlag(false);
@@ -976,12 +988,14 @@ async function safeGetDoc(
   const effectiveRetries = maxRetries ?? cfg.maxReadRetries;
 
   try {
+    const abortOpts = getSyncAbortOptions();
     const snap = await retryAsyncWithBackoff(
       () =>
         withAsyncTimeout(
           getDoc(ref),
           getDeadlineStepTimeout(effectiveTimeoutMs),
-          'Kết nối Cloud Firestore phản hồi quá chậm. Vui lòng kiểm tra mạng và thử lại.'
+          'Kết nối Cloud Firestore phản hồi quá chậm. Vui lòng kiểm tra mạng và thử lại.',
+          abortOpts
         ),
       {
         maxRetries: effectiveRetries,
@@ -991,7 +1005,7 @@ async function safeGetDoc(
           !isQuotaExceededError(err) &&
           !isPermissionError(err) &&
           isRetryableCloudReadError(err),
-        ...getSyncAbortOptions()
+        ...abortOpts
       }
     );
     clearFirestoreQuotaExhaustedFlag();
@@ -4398,8 +4412,10 @@ export const FirestoreSyncService = {
       };
     }
 
+    const myControlEpoch = cloudControlEpoch;
     const watchdog = createSyncDeadline(CLOUD_SYNC_HARD_TIMEOUT_MS, {
       onTimeout: () => {
+        if (myControlEpoch !== cloudControlEpoch) return;
         pauseCloudConnection('timeout_2min', { timedOutOver2Min: true });
       }
     });
@@ -4411,6 +4427,15 @@ export const FirestoreSyncService = {
         authRes.fbUser,
         getDeadlineStepTimeout(isLikelyMobileDevice() ? 15_000 : 10_000)
       );
+      if (myControlEpoch !== cloudControlEpoch) {
+        return {
+          success: false,
+          paused: cloudConnectionPaused,
+          email: authRes.email,
+          displayName: authRes.displayName,
+          message: cloudPauseReason || formatManualCloudPauseNotice()
+        };
+      }
       if (!tokenOk) {
         const pausedMsg = pauseCloudConnection('auth/user-token-expired');
         return {
@@ -4429,8 +4454,18 @@ export const FirestoreSyncService = {
           maxRetries: isLikelyMobileDevice() ? 1 : 2
         }),
         getDeadlineStepTimeout(isLikelyMobileDevice() ? 45_000 : 25_000),
-        'Quá thời gian chờ kết nối không gian làm việc Google Cloud Firestore.'
+        'Quá thời gian chờ kết nối không gian làm việc Google Cloud Firestore.',
+        getSyncAbortOptions()
       );
+      if (myControlEpoch !== cloudControlEpoch) {
+        return {
+          success: false,
+          paused: cloudConnectionPaused,
+          email: authRes.email,
+          displayName: authRes.displayName,
+          message: cloudPauseReason || formatManualCloudPauseNotice()
+        };
+      }
       if (!wsOk) {
         workspaceReadyPromise = null;
         workspaceReadyUid = null;
@@ -4460,6 +4495,15 @@ export const FirestoreSyncService = {
         forceManifestRefresh: true,
         isManualTrigger: true
       });
+      if (myControlEpoch !== cloudControlEpoch) {
+        return {
+          success: false,
+          paused: cloudConnectionPaused,
+          email: authRes.email,
+          displayName: authRes.displayName,
+          message: cloudPauseReason || formatManualCloudPauseNotice()
+        };
+      }
       if (!syncRes.ok) {
         const failReason =
           syncRes.errorMessage ||
@@ -4467,7 +4511,7 @@ export const FirestoreSyncService = {
             ? getLastFirestoreQuotaMessage()
             : 'Chưa thể đồng bộ dữ liệu từ Google Cloud Firestore.');
         const pausedMsg = cloudConnectionPaused
-          ? currentState.errorMessage || failReason
+          ? currentState.errorMessage || currentState.pauseReason || failReason
           : pauseCloudConnection(failReason, {
               quotaExceeded: Boolean(syncRes.quotaExceeded || isFirestoreQuotaExhausted()),
               timedOutOver2Min: watchdog.didTimeOut()
@@ -4481,6 +4525,15 @@ export const FirestoreSyncService = {
         };
       }
     } catch (err) {
+      if (myControlEpoch !== cloudControlEpoch) {
+        return {
+          success: false,
+          paused: cloudConnectionPaused,
+          email: authRes.email,
+          displayName: authRes.displayName,
+          message: cloudPauseReason || formatManualCloudPauseNotice()
+        };
+      }
       const hitQuota = isQuotaExceededError(err) || isFirestoreQuotaExhausted();
       if (hitQuota) {
         notifyFirestoreQuotaExceeded(300_000, err);
@@ -4488,7 +4541,7 @@ export const FirestoreSyncService = {
       const timedOut2m =
         watchdog.didTimeOut() || (err instanceof SyncAbortedError && Boolean(err.timedOut));
       const pausedMsg = cloudConnectionPaused
-        ? currentState.errorMessage || (err instanceof Error ? err.message : String(err))
+        ? currentState.errorMessage || currentState.pauseReason || (err instanceof Error ? err.message : String(err))
         : pauseCloudConnection(err, {
             quotaExceeded: hitQuota,
             timedOutOver2Min: timedOut2m
@@ -4516,6 +4569,7 @@ export const FirestoreSyncService = {
   },
 
   async disconnectGoogleAccount(): Promise<void> {
+    cloudControlEpoch += 1;
     detachAllListeners();
     cloudConnectionPaused = false;
     manualSyncPaused = false;
@@ -4696,11 +4750,13 @@ export const FirestoreSyncService = {
     }
 
     isCloudReconciling = true;
+    const myControlEpoch = cloudControlEpoch;
     const initialForceRefresh = Boolean(options?.forceManifestRefresh);
     let ownedWatchdog: SyncDeadlineController | null = null;
     if (!activeCloudWatchdog) {
       ownedWatchdog = createSyncDeadline(CLOUD_SYNC_HARD_TIMEOUT_MS, {
         onTimeout: () => {
+          if (myControlEpoch !== cloudControlEpoch) return;
           pauseCloudConnection('timeout_2min', { timedOutOver2Min: true });
         }
       });
@@ -4709,7 +4765,7 @@ export const FirestoreSyncService = {
     const reconcileStartedAt = Date.now();
 
     const notifyWorkDetected = () => {
-      if (cloudConnectionPaused) return;
+      if (cloudConnectionPaused || myControlEpoch !== cloudControlEpoch) return;
       if (currentState.status === 'error' && !currentState.quotaExceeded) {
         emitCloudState({ status: 'connecting', errorMessage: null });
       }
@@ -5746,6 +5802,15 @@ export const FirestoreSyncService = {
         persistKnownExistingPaths(fbUser.uid);
 
         await StorageService.flush();
+        if (myControlEpoch !== cloudControlEpoch || cloudConnectionPaused) {
+          return {
+            ok: false,
+            pulledChanges,
+            pushedChanges,
+            paused: cloudConnectionPaused,
+            errorMessage: cloudPauseReason || undefined
+          };
+        }
         deferredRemoteChangeDuringAuth = false;
         consecutiveCloudFailures = 0;
         emitCloudState({
@@ -5758,6 +5823,15 @@ export const FirestoreSyncService = {
         }
         return { ok: true, pulledChanges, pushedChanges };
       } catch (err) {
+        if (myControlEpoch !== cloudControlEpoch) {
+          return {
+            ok: false,
+            pulledChanges,
+            pushedChanges,
+            paused: cloudConnectionPaused,
+            errorMessage: cloudPauseReason || undefined
+          };
+        }
         if (
           err instanceof ManifestConflictError &&
           !cloudConnectionPaused &&
@@ -5797,7 +5871,7 @@ export const FirestoreSyncService = {
 
         if (isSyncAbortedError(err) || cloudConnectionPaused || timedOut2m) {
           const pausedMsg = cloudConnectionPaused
-            ? currentState.errorMessage || (err instanceof Error ? err.message : String(err))
+            ? currentState.errorMessage || currentState.pauseReason || (err instanceof Error ? err.message : String(err))
             : pauseCloudConnection(err, { timedOutOver2Min: timedOut2m });
           return {
             ok: false,
@@ -5859,7 +5933,8 @@ export const FirestoreSyncService = {
       }
     };
 
-    reconcileInFlightPromise = (async () => {
+    let thisReconcilePromise: typeof reconcileInFlightPromise = null;
+    thisReconcilePromise = (async () => {
       cloudTransferTracker.begin();
       let anyPulled = false;
       let anyPushed = false;
@@ -5897,6 +5972,7 @@ export const FirestoreSyncService = {
             !pendingCloudReconcile ||
             passCount >= 2 ||
             cloudConnectionPaused ||
+            myControlEpoch !== cloudControlEpoch ||
             Boolean(activeCloudWatchdog?.isAborted())
           ) {
             pendingCloudReconcile = false;
@@ -5923,9 +5999,11 @@ export const FirestoreSyncService = {
         };
       } finally {
         cloudTransferTracker.end();
-        isCloudReconciling = false;
-        reconcileInFlightPromise = null;
-        activeWorkDetectedCallbacks.clear();
+        if (reconcileInFlightPromise === thisReconcilePromise) {
+          isCloudReconciling = false;
+          reconcileInFlightPromise = null;
+          activeWorkDetectedCallbacks.clear();
+        }
         if (ownedWatchdog) {
           if (activeCloudWatchdog === ownedWatchdog) {
             activeCloudWatchdog = null;
@@ -5935,7 +6013,8 @@ export const FirestoreSyncService = {
       }
     })();
 
-    return await reconcileInFlightPromise;
+    reconcileInFlightPromise = thisReconcilePromise;
+    return await thisReconcilePromise;
   },
 
   // ==========================================================================

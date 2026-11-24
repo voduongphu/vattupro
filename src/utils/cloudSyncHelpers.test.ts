@@ -1646,5 +1646,80 @@ describe('cloudSyncHelpers', () => {
       }),
       'connect'
     );
+
+    // Toggle while actively syncing (even if status was error/disconnected/connecting) -> 'pause'
+    for (const status of ['connected', 'connecting', 'error', 'disconnected'] as const) {
+      assert.equal(
+        determineCloudSyncToggleAction({
+          isPaused: false,
+          status,
+          hasAuthenticatedCloudUser: true,
+          isSyncing: true,
+          hasError: status === 'error'
+        }),
+        'pause'
+      );
+    }
+
+    // Repeated rapid Pause -> Resume -> Pause -> Resume toggle sequence always alternates cleanly
+    let simPaused = false;
+    let simSyncing = false;
+    const sequence: Array<'pause' | 'resume' | 'connect'> = [];
+    for (let i = 0; i < 6; i++) {
+      const action = determineCloudSyncToggleAction({
+        isPaused: simPaused,
+        status: simPaused ? 'paused' : simSyncing ? 'connecting' : 'connected',
+        hasAuthenticatedCloudUser: true,
+        isSyncing: simSyncing
+      });
+      sequence.push(action);
+      if (action === 'pause') {
+        simPaused = true;
+        simSyncing = false;
+      } else {
+        simPaused = false;
+        simSyncing = true; // Next click occurs mid-sync while still connecting/syncing
+      }
+    }
+    assert.deepEqual(sequence, ['pause', 'resume', 'pause', 'resume', 'pause', 'resume']);
+  });
+
+  it('rejects in-flight withAsyncTimeout immediately when SyncDeadlineController.abort() is called manually', async () => {
+    const deadline = createSyncDeadline(60_000);
+    let neverResolvesTimer: ReturnType<typeof setTimeout> | null = null;
+    const slowWork = new Promise<string>((resolve) => {
+      neverResolvesTimer = setTimeout(() => resolve('late-data'), 30_000);
+    });
+
+    const startedAt = Date.now();
+    const abortTimer = setTimeout(() => {
+      deadline.abort('Người dùng đã tạm dừng đồng bộ Cloud.');
+    }, 20);
+
+    try {
+      await assert.rejects(
+        () =>
+          withAsyncTimeout(slowWork, 15_000, 'read-step', {
+            isAborted: () => deadline.isAborted(),
+            getAbortError: () =>
+              new SyncAbortedError(deadline.getAbortReason() || 'Aborted', {
+                timedOut: deadline.didTimeOut()
+              }),
+            onAbort: (listener) => deadline.onAbort(listener)
+          }),
+        (err: unknown) => {
+          assert.equal(isSyncAbortedError(err), true);
+          assert.ok(err instanceof SyncAbortedError);
+          assert.match(err.message, /tạm dừng đồng bộ Cloud/i);
+          return true;
+        }
+      );
+      const elapsedMs = Date.now() - startedAt;
+      assert.ok(elapsedMs < 2000, `Expected immediate abort (<2000ms), got ${elapsedMs}ms`);
+    } finally {
+      clearTimeout(abortTimer);
+      if (neverResolvesTimer) clearTimeout(neverResolvesTimer);
+      deadline.dispose();
+    }
   });
 });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { SyncService, type SyncTransferProgress } from '../../services/syncService';
 import { formatSyncByteSize } from '../../utils/cloudSyncHelpers';
@@ -49,6 +49,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
   const [isCheckingSync, setIsCheckingSync] = useState(false);
   const [isConnectingCloud, setIsConnectingCloud] = useState(false);
   const [isForcingRemoteLogout, setIsForcingRemoteLogout] = useState(false);
+  const toggleSeqRef = useRef(0);
   const [remoteLogoutNotice, setRemoteLogoutNotice] = useState<{
     success: boolean;
     paused?: boolean;
@@ -82,12 +83,22 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
   }, [remoteLogoutNotice]);
 
   const handleUnifiedSync = async () => {
-    if (isCheckingSync || isConnectingCloud) return;
+    if (isConnectingCloud) return;
+    const mySeq = ++toggleSeqRef.current;
     setIsUserMenuOpen(false);
     setDismissedCloudErrorMsg(null);
-    setIsCheckingSync(true);
+    const currentlyPaused =
+      cloudState.status === 'paused' || Boolean(cloudState.connectionPaused);
+    const shouldShowPending =
+      currentlyPaused ||
+      (!isSyncing &&
+        (cloudState.status === 'disconnected' ||
+          cloudState.status === 'error' ||
+          Boolean(cloudState.quotaExceeded)));
+    setIsCheckingSync(shouldShowPending);
     try {
       const res = await SyncService.toggleCloudSync();
+      if (toggleSeqRef.current !== mySeq) return;
       setRemoteLogoutNotice({
         success: res.success,
         paused: res.paused,
@@ -96,22 +107,27 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
         message: res.message
       });
     } catch (err: any) {
+      if (toggleSeqRef.current !== mySeq) return;
       setRemoteLogoutNotice({
         success: false,
         message: `Lỗi đồng bộ: ${err?.message || String(err)}`
       });
     } finally {
-      setIsCheckingSync(false);
+      if (toggleSeqRef.current === mySeq) {
+        setIsCheckingSync(false);
+      }
     }
   };
 
   const handleResumeCloudSync = async () => {
-    if (isCheckingSync || isConnectingCloud) return;
+    if (isConnectingCloud) return;
+    const mySeq = ++toggleSeqRef.current;
     setIsUserMenuOpen(false);
     setDismissedCloudErrorMsg(null);
     setIsCheckingSync(true);
     try {
       const res = await SyncService.syncCloudChangesOnly();
+      if (toggleSeqRef.current !== mySeq) return;
       setRemoteLogoutNotice({
         success: res.success,
         paused: res.paused,
@@ -120,12 +136,15 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
         message: res.message
       });
     } catch (err: any) {
+      if (toggleSeqRef.current !== mySeq) return;
       setRemoteLogoutNotice({
         success: false,
         message: `Lỗi đồng bộ: ${err?.message || String(err)}`
       });
     } finally {
-      setIsCheckingSync(false);
+      if (toggleSeqRef.current === mySeq) {
+        setIsCheckingSync(false);
+      }
     }
   };
 
@@ -246,7 +265,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                 <button
                   type="button"
                   onClick={handleUnifiedSync}
-                  disabled={isConnectingCloud || isCheckingSync}
+                  disabled={isConnectingCloud}
                   title={
                     busy
                       ? `${t('syncingTooltipPrefix')} (${syncSizeLabel} — ${t('syncDownloadShort')}: ${downloadSizeLabel}, ${t('syncUploadShort')}: ${uploadSizeLabel}) — ${t('cloudPauseSyncHint')}`
@@ -448,7 +467,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                 <button
                   type="button"
                   onClick={handleResumeCloudSync}
-                  disabled={isConnectingCloud || isCheckingSync}
+                  disabled={isConnectingCloud}
                   className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
                 >
                   {t('cloudResumeNow')}
@@ -459,7 +478,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                   <button
                     type="button"
                     onClick={handleResumeCloudSync}
-                    disabled={isSyncing || isConnectingCloud || isCheckingSync}
+                    disabled={isConnectingCloud}
                     className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
                   >
                     {t('cloudReconnectNow')}
@@ -521,7 +540,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                     <button
                       type="button"
                       onClick={handleResumeCloudSync}
-                      disabled={isSyncing || isConnectingCloud || isCheckingSync}
+                      disabled={isConnectingCloud}
                       className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
                     >
                       {t('cloudReconnectNow')}

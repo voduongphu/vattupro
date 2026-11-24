@@ -144,6 +144,7 @@ const PULL_MATERIAL_PAGE_SIZE = 3500;
 let isStarted = false;
 let isReconciling = false;
 let isSpinnerActive = false;
+let syncControlEpoch = 0;
 let pendingReconcile = false;
 let pendingRemoteReconcile = false;
 let pendingForceManifestRefresh = false;
@@ -1615,8 +1616,12 @@ async function reconcileInternal(options?: {
   pendingRemoteReconcile = false;
   pendingForceManifestRefresh = false;
   isReconciling = true;
+  const mySyncControlEpoch = syncControlEpoch;
   let spinnerActivated = false;
   const activateSpinner = () => {
+    if (mySyncControlEpoch !== syncControlEpoch || FirestoreSyncService.isConnectionPaused()) {
+      return;
+    }
     if (!spinnerActivated) {
       spinnerActivated = true;
       notifySyncState(true);
@@ -1626,7 +1631,8 @@ async function reconcileInternal(options?: {
     activateSpinner();
   }
 
-  const runPromise = (async () => {
+  let runPromise: typeof activeReconcilePromise = null;
+  runPromise = (async () => {
     FirestoreSyncService.resetTransferProgressIfIdle();
     localTransferTracker.begin();
     let cloudSuccess = false;
@@ -1730,68 +1736,76 @@ async function reconcileInternal(options?: {
       console.warn('Background sync skipped or deferred:', err);
     } finally {
       localTransferTracker.end();
-      isReconciling = false;
-      activeReconcilePromise = null;
-      if (spinnerActivated) {
-        notifySyncState(false);
+      const isCurrentRun = activeReconcilePromise === runPromise;
+      if (isCurrentRun) {
+        isReconciling = false;
+        activeReconcilePromise = null;
+        if (spinnerActivated) {
+          notifySyncState(false);
+        }
       }
 
+      const isSuperseded = mySyncControlEpoch !== syncControlEpoch;
       const isPausedNow = FirestoreSyncService.isConnectionPaused();
-      const shouldRunFollowUp =
-        !isPausedNow &&
-        (pendingReconcile || (pendingRemoteReconcile && FirestoreSyncService.hasUnappliedRemoteChanges())) &&
-        (options?.followUpDepth || 0) < 2;
+      if (isSuperseded) {
+        // Bị thay thế bởi thao tác Bật/Tắt đồng bộ mới hơn -> không ghi đè trạng thái hay đặt lịch chạy tiếp
+      } else {
+        const shouldRunFollowUp =
+          !isPausedNow &&
+          (pendingReconcile || (pendingRemoteReconcile && FirestoreSyncService.hasUnappliedRemoteChanges())) &&
+          (options?.followUpDepth || 0) < 2;
 
-      if (shouldRunFollowUp) {
-        const followUpForce = pendingForceManifestRefresh;
-        if (authTransitionCount === 0) {
+        if (shouldRunFollowUp) {
+          const followUpForce = pendingForceManifestRefresh;
+          if (authTransitionCount === 0) {
+            pendingReconcile = false;
+            pendingRemoteReconcile = false;
+            pendingForceManifestRefresh = false;
+            void reconcileInternal({
+              forceManifestRefresh: followUpForce,
+              skipLocalServer: options?.skipLocalServer,
+              followUpDepth: (options?.followUpDepth || 0) + 1
+            });
+          } else {
+            pendingRemoteReconcile = false;
+            if (pendingReconcile) {
+              schedulePush(180);
+            }
+          }
+        } else {
           pendingReconcile = false;
           pendingRemoteReconcile = false;
           pendingForceManifestRefresh = false;
-          void reconcileInternal({
-            forceManifestRefresh: followUpForce,
-            skipLocalServer: options?.skipLocalServer,
-            followUpDepth: (options?.followUpDepth || 0) + 1
-          });
-        } else {
-          pendingRemoteReconcile = false;
-          if (pendingReconcile) {
-            schedulePush(180);
-          }
-        }
-      } else {
-        pendingReconcile = false;
-        pendingRemoteReconcile = false;
-        pendingForceManifestRefresh = false;
 
-        if (isPausedNow) {
-          clearStartupRetryTimer();
-          startupRetryAttempt = 0;
-        } else {
-          const isCloudSessionRecoveryNeeded =
-            isCloudActive &&
-            !cloudSuccess &&
-            !cloudQuotaExceeded &&
-            (options?.trigger === 'startup' || options?.trigger === 'manual' || options?.trigger === 'remote') &&
-            (typeof navigator === 'undefined' || navigator.onLine) &&
-            Boolean(getStoredUnifiedSession() || FirestoreSyncService.hasAuthenticatedCloudUser());
-
-          if (isCloudSessionRecoveryNeeded && startupRetryAttempt < 1) {
-            const delayMs = 3000;
-            startupRetryAttempt += 1;
+          if (isPausedNow) {
             clearStartupRetryTimer();
-            startupRetryTimer = setTimeout(() => {
-              startupRetryTimer = null;
-              if (!FirestoreSyncService.isConnectionPaused()) {
-                void reconcileInternal({
-                  trigger: 'startup',
-                  skipLocalServer: options?.skipLocalServer,
-                  forceManifestRefresh: true
-                });
-              }
-            }, delayMs);
-          } else if (cloudSuccess) {
             startupRetryAttempt = 0;
+          } else {
+            const isCloudSessionRecoveryNeeded =
+              isCloudActive &&
+              !cloudSuccess &&
+              !cloudQuotaExceeded &&
+              (options?.trigger === 'startup' || options?.trigger === 'manual' || options?.trigger === 'remote') &&
+              (typeof navigator === 'undefined' || navigator.onLine) &&
+              Boolean(getStoredUnifiedSession() || FirestoreSyncService.hasAuthenticatedCloudUser());
+
+            if (isCloudSessionRecoveryNeeded && startupRetryAttempt < 1) {
+              const delayMs = 3000;
+              startupRetryAttempt += 1;
+              clearStartupRetryTimer();
+              startupRetryTimer = setTimeout(() => {
+                startupRetryTimer = null;
+                if (!FirestoreSyncService.isConnectionPaused()) {
+                  void reconcileInternal({
+                    trigger: 'startup',
+                    skipLocalServer: options?.skipLocalServer,
+                    forceManifestRefresh: true
+                  });
+                }
+              }, delayMs);
+            } else if (cloudSuccess) {
+              startupRetryAttempt = 0;
+            }
           }
         }
       }
@@ -2539,6 +2553,7 @@ export const SyncService = {
   },
 
   pauseCloudSync(): SyncResult {
+    syncControlEpoch += 1;
     if (pushDebounceTimer) {
       clearTimeout(pushDebounceTimer);
       pushDebounceTimer = null;
@@ -2548,6 +2563,9 @@ export const SyncService = {
     pendingReconcile = false;
     pendingRemoteReconcile = false;
     pendingForceManifestRefresh = false;
+    isReconciling = false;
+    activeReconcilePromise = null;
+    notifySyncState(false);
 
     const notice = FirestoreSyncService.pauseManually();
     return {
@@ -2567,6 +2585,7 @@ export const SyncService = {
         cloudSnap.status === 'paused' ||
         Boolean(cloudSnap.connectionPaused) ||
         FirestoreSyncService.isConnectionPaused(),
+      isSyncing: isSpinnerActive || isReconciling,
       status: cloudSnap.status,
       hasAuthenticatedCloudUser:
         FirestoreSyncService.hasAuthenticatedCloudUser() ||
@@ -2594,6 +2613,7 @@ export const SyncService = {
       };
     }
 
+    const mySyncControlEpoch = ++syncControlEpoch;
     const wasManualPaused = FirestoreSyncService.isManualPaused();
 
     if (pushDebounceTimer) {
@@ -2612,6 +2632,16 @@ export const SyncService = {
         forceSelectAccount: false,
         redirectMode: getStoredUnifiedSession() ? 'cloud_connect' : 'login'
       });
+      if (mySyncControlEpoch !== syncControlEpoch) {
+        return {
+          success: true,
+          paused: FirestoreSyncService.isConnectionPaused(),
+          manualPaused: FirestoreSyncService.isManualPaused(),
+          cloudSynced: false,
+          message: FirestoreSyncService.getState().pauseReason || '',
+          osdCount: StorageService.getOsdReceipts().length
+        };
+      }
       if (connRes.redirected) {
         return {
           success: false,
@@ -2658,6 +2688,16 @@ export const SyncService = {
       trigger: 'manual'
     });
     const osdCount = StorageService.getOsdReceipts().length;
+    if (mySyncControlEpoch !== syncControlEpoch) {
+      return {
+        success: true,
+        paused: FirestoreSyncService.isConnectionPaused(),
+        manualPaused: FirestoreSyncService.isManualPaused(),
+        cloudSynced: false,
+        message: FirestoreSyncService.getState().pauseReason || '',
+        osdCount
+      };
+    }
     if (!reconRes.cloudSuccess) {
       const cloudState = FirestoreSyncService.getState();
       if (reconRes.cloudQuotaExceeded || cloudState.quotaExceeded || FirestoreSyncService.isQuotaExhausted()) {

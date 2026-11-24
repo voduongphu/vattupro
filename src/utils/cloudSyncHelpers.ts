@@ -921,31 +921,73 @@ export function resolveManifestTransactionUpdate(params: {
 export function withAsyncTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
-  timeoutMessage: string
+  timeoutMessage: string,
+  abortController?: {
+    isAborted: () => boolean;
+    getAbortError: () => Error;
+    onAbort?: (cb: () => void) => () => void;
+  }
 ): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+  if (abortController?.isAborted()) {
+    return Promise.reject(abortController.getAbortError());
+  }
+  const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
+  if (!hasTimeout && !abortController?.onAbort) {
     return promise;
   }
   return new Promise<T>((resolve, reject) => {
     let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      const err = new Error(timeoutMessage);
-      err.name = 'LocalTimeoutError';
-      reject(err);
-    }, timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let unsubAbort: (() => void) | null = null;
+
+    const cleanup = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (unsubAbort) {
+        unsubAbort();
+        unsubAbort = null;
+      }
+    };
+
+    if (hasTimeout) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        const err = new Error(timeoutMessage);
+        err.name = 'LocalTimeoutError';
+        reject(err);
+      }, timeoutMs);
+    }
+
+    if (abortController?.onAbort) {
+      unsubAbort = abortController.onAbort(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(abortController.getAbortError());
+      });
+      if (abortController.isAborted() && !settled) {
+        settled = true;
+        cleanup();
+        reject(abortController.getAbortError());
+        return;
+      }
+    }
+
     promise.then(
       (value) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cleanup();
         resolve(value);
       },
       (err) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cleanup();
         reject(err);
       }
     );
@@ -1665,6 +1707,7 @@ export interface SyncDeadlineController {
   elapsedMs: () => number;
   getAbortReason: () => string | null;
   didTimeOut: () => boolean;
+  onAbort: (listener: () => void) => () => void;
   abort: (reason?: string, timedOut?: boolean) => void;
   throwIfAborted: () => void;
   dispose: () => void;
@@ -1687,6 +1730,20 @@ export function createSyncDeadline(
   let abortReason: string | null = null;
   let disposed = false;
   let notifiedTimeout = false;
+  const abortListeners = new Set<() => void>();
+
+  const notifyAbortListeners = () => {
+    if (abortListeners.size === 0) return;
+    const list = Array.from(abortListeners);
+    abortListeners.clear();
+    for (const cb of list) {
+      try {
+        cb();
+      } catch {
+        // ignore listener error
+      }
+    }
+  };
 
   const triggerTimeout = () => {
     if (disposed || connected) return;
@@ -1698,6 +1755,7 @@ export function createSyncDeadline(
         'Quá thời gian chờ kết nối máy chủ Cloud (> 2 phút) do mạng phản hồi chậm hoặc không thể liên hệ máy chủ Cloud';
     }
     clearTimeout(timer);
+    notifyAbortListeners();
     if (!notifiedTimeout) {
       notifiedTimeout = true;
       try {
@@ -1748,12 +1806,27 @@ export function createSyncDeadline(
       checkExpired();
       return timedOut;
     },
+    onAbort: (listener: () => void) => {
+      if (checkExpired()) {
+        try {
+          listener();
+        } catch {
+          // ignore
+        }
+        return () => {};
+      }
+      abortListeners.add(listener);
+      return () => {
+        abortListeners.delete(listener);
+      };
+    },
     abort: (reason?: string, isTimeout = false) => {
       if (aborted) return;
       aborted = true;
       timedOut = Boolean(isTimeout);
       abortReason = reason || 'Đã tạm dừng kết nối Cloud.';
       clearTimeout(timer);
+      notifyAbortListeners();
     },
     throwIfAborted: () => {
       if (checkExpired()) {
@@ -1766,6 +1839,7 @@ export function createSyncDeadline(
     dispose: () => {
       disposed = true;
       clearTimeout(timer);
+      abortListeners.clear();
     }
   };
 }
@@ -1940,6 +2014,7 @@ export type CloudSyncToggleAction = 'pause' | 'resume' | 'connect';
 
 export function determineCloudSyncToggleAction(params: {
   isPaused: boolean;
+  isSyncing?: boolean;
   status: string;
   hasAuthenticatedCloudUser: boolean;
   hasError?: boolean;
@@ -1947,6 +2022,9 @@ export function determineCloudSyncToggleAction(params: {
 }): CloudSyncToggleAction {
   if (params.isPaused) {
     return 'resume';
+  }
+  if (params.isSyncing) {
+    return 'pause';
   }
   if (params.quotaExceeded || params.hasError || params.status === 'error') {
     return 'resume';
