@@ -14,6 +14,7 @@ import {
   Cloud,
   CloudOff,
   CloudUpload,
+  PauseCircle,
   LogIn,
   ChevronDown,
   Menu,
@@ -51,6 +52,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
   const [remoteLogoutNotice, setRemoteLogoutNotice] = useState<{
     success: boolean;
     paused?: boolean;
+    manualPaused?: boolean;
     redirected?: boolean;
     message: string;
   } | null>(null);
@@ -80,7 +82,31 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
   }, [remoteLogoutNotice]);
 
   const handleUnifiedSync = async () => {
-    if (isCheckingSync || isSyncing || isConnectingCloud) return;
+    if (isCheckingSync || isConnectingCloud) return;
+    setIsUserMenuOpen(false);
+    setDismissedCloudErrorMsg(null);
+    setIsCheckingSync(true);
+    try {
+      const res = await SyncService.toggleCloudSync();
+      setRemoteLogoutNotice({
+        success: res.success,
+        paused: res.paused,
+        manualPaused: res.manualPaused,
+        redirected: res.redirected,
+        message: res.message
+      });
+    } catch (err: any) {
+      setRemoteLogoutNotice({
+        success: false,
+        message: `Lỗi đồng bộ: ${err?.message || String(err)}`
+      });
+    } finally {
+      setIsCheckingSync(false);
+    }
+  };
+
+  const handleResumeCloudSync = async () => {
+    if (isCheckingSync || isConnectingCloud) return;
     setIsUserMenuOpen(false);
     setDismissedCloudErrorMsg(null);
     setIsCheckingSync(true);
@@ -89,6 +115,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
       setRemoteLogoutNotice({
         success: res.success,
         paused: res.paused,
+        manualPaused: res.manualPaused,
         redirected: res.redirected,
         message: res.message
       });
@@ -195,6 +222,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
 
             {(() => {
               const isPaused = cloudState.status === 'paused' || Boolean(cloudState.connectionPaused);
+              const isManualPaused = isPaused && Boolean(cloudState.manualPaused);
+              const isAutoPaused = isPaused && !isManualPaused;
               const busy =
                 (isSyncing ||
                   isConnectingCloud ||
@@ -207,8 +236,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                   cloudState.errorMessage &&
                   /spark|blaze|thanh toán|billing/i.test(cloudState.errorMessage)
               );
-              const hasError = cloudState.status === 'error' || isPaused;
-              const connected = cloudState.status === 'connected' && !hasError;
+              const hasError = cloudState.status === 'error' || isAutoPaused;
+              const connected = cloudState.status === 'connected' && !isPaused && !hasError;
               const syncSizeLabel = formatSyncByteSize(syncProgress.totalBytes);
               const downloadSizeLabel = formatSyncByteSize(syncProgress.downloadedBytes);
               const uploadSizeLabel = formatSyncByteSize(syncProgress.uploadedBytes);
@@ -217,33 +246,39 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                 <button
                   type="button"
                   onClick={handleUnifiedSync}
-                  disabled={isSyncing || isConnectingCloud || isCheckingSync}
+                  disabled={isConnectingCloud || isCheckingSync}
                   title={
                     busy
-                      ? `${t('syncingTooltipPrefix')} (${syncSizeLabel} — ${t('syncDownloadShort')}: ${downloadSizeLabel}, ${t('syncUploadShort')}: ${uploadSizeLabel})`
-                      : isPaused
-                        ? cloudState.errorMessage || t('cloudPausedReconnectTooltip')
-                        : quotaExceeded
-                          ? cloudState.errorMessage || t('cloudQuotaExceeded')
-                          : hasError && cloudState.errorMessage
-                            ? cloudState.errorMessage
-                            : connected
-                              ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
-                              : t('cloudConnectTooltip')
+                      ? `${t('syncingTooltipPrefix')} (${syncSizeLabel} — ${t('syncDownloadShort')}: ${downloadSizeLabel}, ${t('syncUploadShort')}: ${uploadSizeLabel}) — ${t('cloudPauseSyncHint')}`
+                      : isManualPaused
+                        ? t('cloudManualPausedTooltip')
+                        : isAutoPaused
+                          ? cloudState.errorMessage || t('cloudPausedReconnectTooltip')
+                          : quotaExceeded
+                            ? cloudState.errorMessage || t('cloudQuotaExceeded')
+                            : hasError && cloudState.errorMessage
+                              ? cloudState.errorMessage
+                              : connected
+                                ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
+                                : t('cloudConnectTooltip')
                   }
                   className={`min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition disabled:opacity-75 shrink-0 ${
-                    quotaExceeded || isPaused
-                      ? 'text-amber-200 hover:text-white bg-amber-950/85 hover:bg-amber-900/90 border-amber-600/70 shadow-xs'
-                      : hasError
-                        ? 'text-rose-200 hover:text-white bg-rose-950/85 hover:bg-rose-900/90 border-rose-700/70 shadow-xs'
-                        : connected
-                          ? 'text-emerald-200 hover:text-white bg-emerald-950/75 hover:bg-emerald-900/80 border-emerald-700/60 shadow-xs'
-                          : 'text-blue-200 hover:text-white bg-blue-950/80 hover:bg-blue-900/80 border-blue-700/60 shadow-xs'
+                    isManualPaused
+                      ? 'text-amber-200 hover:text-white bg-slate-800/95 hover:bg-slate-700/95 border-amber-500/65 shadow-xs'
+                      : quotaExceeded || isAutoPaused
+                        ? 'text-amber-200 hover:text-white bg-amber-950/85 hover:bg-amber-900/90 border-amber-600/70 shadow-xs'
+                        : hasError
+                          ? 'text-rose-200 hover:text-white bg-rose-950/85 hover:bg-rose-900/90 border-rose-700/70 shadow-xs'
+                          : connected
+                            ? 'text-emerald-200 hover:text-white bg-emerald-950/75 hover:bg-emerald-900/80 border-emerald-700/60 shadow-xs'
+                            : 'text-blue-200 hover:text-white bg-blue-950/80 hover:bg-blue-900/80 border-blue-700/60 shadow-xs'
                   }`}
                 >
                   {busy ? (
                     <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin shrink-0" />
-                  ) : quotaExceeded || isPaused ? (
+                  ) : isManualPaused ? (
+                    <PauseCircle className="w-4 h-4 text-amber-300 shrink-0" />
+                  ) : quotaExceeded || isAutoPaused ? (
                     <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
                   ) : hasError ? (
                     <CloudOff className="w-4 h-4 text-rose-400 shrink-0" />
@@ -270,9 +305,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                         ? t('cloudPausedSparkShort')
                         : quotaExceeded
                           ? t('cloudQuotaExceededShort')
-                          : isPaused
-                            ? t('cloudPausedShort')
-                            : t('cloudSync')}
+                          : isManualPaused
+                            ? t('cloudManualPausedShort')
+                            : isAutoPaused
+                              ? t('cloudPausedShort')
+                              : t('cloudSync')}
                     </span>
                   )}
                 </button>
@@ -381,17 +418,21 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
         {remoteLogoutNotice && (
           <div
             className={`px-3 sm:px-6 py-2 text-xs flex items-start sm:items-center justify-between gap-2 border-t ${
-              remoteLogoutNotice.success
-                ? 'bg-emerald-950/95 border-emerald-800 text-emerald-200'
-                : remoteLogoutNotice.redirected
-                  ? 'bg-blue-950/95 border-blue-800 text-blue-100'
-                  : cloudState.quotaExceeded || remoteLogoutNotice.paused || cloudState.connectionPaused
-                    ? 'bg-amber-950/95 border-amber-700 text-amber-100'
-                    : 'bg-rose-950/95 border-rose-800 text-rose-200'
+              remoteLogoutNotice.manualPaused
+                ? 'bg-slate-800/95 border-amber-500/50 text-amber-100'
+                : remoteLogoutNotice.success
+                  ? 'bg-emerald-950/95 border-emerald-800 text-emerald-200'
+                  : remoteLogoutNotice.redirected
+                    ? 'bg-blue-950/95 border-blue-800 text-blue-100'
+                    : cloudState.quotaExceeded || remoteLogoutNotice.paused || cloudState.connectionPaused
+                      ? 'bg-amber-950/95 border-amber-700 text-amber-100'
+                      : 'bg-rose-950/95 border-rose-800 text-rose-200'
             }`}
           >
             <div className="flex items-start sm:items-center gap-2 min-w-0">
-              {remoteLogoutNotice.success ? (
+              {remoteLogoutNotice.manualPaused ? (
+                <PauseCircle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5 sm:mt-0" />
+              ) : remoteLogoutNotice.success ? (
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5 sm:mt-0" />
               ) : remoteLogoutNotice.redirected ? (
                 <RefreshCw className="w-4 h-4 text-blue-400 animate-spin shrink-0 mt-0.5 sm:mt-0" />
@@ -403,15 +444,27 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
               <span className="leading-relaxed break-words">{t(remoteLogoutNotice.message)}</span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              {(remoteLogoutNotice.paused || cloudState.connectionPaused) && !remoteLogoutNotice.success && (
+              {remoteLogoutNotice.manualPaused ? (
                 <button
                   type="button"
-                  onClick={handleUnifiedSync}
-                  disabled={isSyncing || isConnectingCloud || isCheckingSync}
+                  onClick={handleResumeCloudSync}
+                  disabled={isConnectingCloud || isCheckingSync}
                   className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
                 >
-                  {t('cloudReconnectNow')}
+                  {t('cloudResumeNow')}
                 </button>
+              ) : (
+                (remoteLogoutNotice.paused || cloudState.connectionPaused) &&
+                !remoteLogoutNotice.success && (
+                  <button
+                    type="button"
+                    onClick={handleResumeCloudSync}
+                    disabled={isSyncing || isConnectingCloud || isCheckingSync}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
+                  >
+                    {t('cloudReconnectNow')}
+                  </button>
+                )
               )}
               <button
                 type="button"
@@ -467,7 +520,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                   {isPausedBanner && (
                     <button
                       type="button"
-                      onClick={handleUnifiedSync}
+                      onClick={handleResumeCloudSync}
                       disabled={isSyncing || isConnectingCloud || isCheckingSync}
                       className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
                     >

@@ -38,6 +38,7 @@ import {
   shouldUpdateLastSyncTimestamp,
   evaluatePreSyncCheck,
   shouldSkipAutoCloudActivity,
+  determineCloudSyncToggleAction,
   createSyncTransferTracker,
   estimateUtf8ByteLength,
   mergeSyncTransferProgress,
@@ -110,6 +111,7 @@ export interface SyncResult {
   message: string;
   redirected?: boolean;
   paused?: boolean;
+  manualPaused?: boolean;
   isOffline?: boolean;
   cloudSynced?: boolean;
   localSynced?: boolean;
@@ -2536,6 +2538,49 @@ export const SyncService = {
     }
   },
 
+  pauseCloudSync(): SyncResult {
+    if (pushDebounceTimer) {
+      clearTimeout(pushDebounceTimer);
+      pushDebounceTimer = null;
+    }
+    clearStartupRetryTimer();
+    startupRetryAttempt = 0;
+    pendingReconcile = false;
+    pendingRemoteReconcile = false;
+    pendingForceManifestRefresh = false;
+
+    const notice = FirestoreSyncService.pauseManually();
+    return {
+      success: true,
+      paused: true,
+      manualPaused: true,
+      cloudSynced: false,
+      message: notice,
+      osdCount: StorageService.getOsdReceipts().length
+    };
+  },
+
+  async toggleCloudSync(): Promise<SyncResult> {
+    const cloudSnap = FirestoreSyncService.getState();
+    const action = determineCloudSyncToggleAction({
+      isPaused:
+        cloudSnap.status === 'paused' ||
+        Boolean(cloudSnap.connectionPaused) ||
+        FirestoreSyncService.isConnectionPaused(),
+      status: cloudSnap.status,
+      hasAuthenticatedCloudUser:
+        FirestoreSyncService.hasAuthenticatedCloudUser() ||
+        FirestoreSyncService.canAttemptCloudAuth(),
+      hasError: cloudSnap.status === 'error',
+      quotaExceeded: Boolean(cloudSnap.quotaExceeded || FirestoreSyncService.isQuotaExhausted())
+    });
+
+    if (action === 'pause') {
+      return this.pauseCloudSync();
+    }
+    return await this.syncCloudChangesOnly();
+  },
+
   async syncCloudChangesOnly(): Promise<SyncResult> {
     const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : this.isOnline();
     if (!isOnline) {
@@ -2543,10 +2588,13 @@ export const SyncService = {
         success: false,
         isOffline: true,
         paused: FirestoreSyncService.isConnectionPaused(),
+        manualPaused: FirestoreSyncService.isManualPaused(),
         message: 'Thiết bị đang ngoại tuyến. Vui lòng kiểm tra kết nối mạng và nhấn nút "Đồng Bộ Cloud" để thử lại.',
         osdCount: StorageService.getOsdReceipts().length
       };
     }
+
+    const wasManualPaused = FirestoreSyncService.isManualPaused();
 
     if (pushDebounceTimer) {
       clearTimeout(pushDebounceTimer);
@@ -2640,6 +2688,14 @@ export const SyncService = {
       };
     }
 
+    const currentSess = getStoredUnifiedSession();
+    if (currentSess && FirestoreSyncService.hasAuthenticatedCloudUser()) {
+      const watchKey = canonicalUserSessionKey(currentSess.user) || currentSess.session.userKey;
+      if (!FirestoreSyncService.isWatchingSession(watchKey)) {
+        FirestoreSyncService.watchActiveSession(watchKey);
+      }
+    }
+
     const hasDelta = Boolean(reconRes.pulledChanges || reconRes.pushedChanges);
     return {
       success: true,
@@ -2648,9 +2704,13 @@ export const SyncService = {
       pulledChanges: reconRes.pulledChanges,
       pushedChanges: reconRes.pushedChanges,
       osdCount,
-      message: hasDelta
-        ? `Đã đồng bộ phần dữ liệu thay đổi lên/từ Cloud Firestore thành công (${StorageService.getMaterials().length} vật tư, ${osdCount} OSD).`
-        : 'Dữ liệu đã khớp với Cloud Firestore (không có thay đổi mới, không phát sinh lượt đồng bộ thừa).'
+      message: wasManualPaused
+        ? hasDelta
+          ? `Đã bật lại tự động đồng bộ Cloud và cập nhật dữ liệu thay đổi thành công (${StorageService.getMaterials().length} vật tư, ${osdCount} OSD).`
+          : 'Đã bật lại tự động đồng bộ Cloud (dữ liệu đã khớp, không có thay đổi mới).'
+        : hasDelta
+          ? `Đã đồng bộ phần dữ liệu thay đổi lên/từ Cloud Firestore thành công (${StorageService.getMaterials().length} vật tư, ${osdCount} OSD).`
+          : 'Dữ liệu đã khớp với Cloud Firestore (không có thay đổi mới, không phát sinh lượt đồng bộ thừa).'
     };
   },
 
@@ -2674,6 +2734,10 @@ export const SyncService = {
           });
         } catch {
           // ignore
+        }
+
+        if (FirestoreSyncService.isConnectionPaused()) {
+          return { success: true };
         }
 
         if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
@@ -2796,6 +2860,14 @@ export const SyncService = {
       pushDebounceTimer = null;
     }
     FirestoreSyncService.markLocalMutation('meta', undefined, { users: true });
+
+    if (FirestoreSyncService.isConnectionPaused()) {
+      return {
+        success: true,
+        count: StorageService.getUsers().length,
+        message: 'Đồng bộ Cloud đang tạm dừng. Thay đổi tài khoản đã lưu tại máy và sẽ đồng bộ khi bạn bật lại "Đồng Bộ Cloud".'
+      };
+    }
 
     if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
       const res = await FirestoreSyncService.forcePushUsersOnlyToCloud();

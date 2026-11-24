@@ -54,6 +54,11 @@ import {
   formatCloudPauseNotice,
   shouldPauseCloudOnFailure,
   shouldSkipAutoCloudActivity,
+  MANUAL_CLOUD_PAUSE_STORAGE_KEY,
+  readManualCloudPauseFlag,
+  writeManualCloudPauseFlag,
+  formatManualCloudPauseNotice,
+  determineCloudSyncToggleAction,
   formatSyncByteSize,
   mergeSyncTransferProgress,
   createSyncTransferTracker,
@@ -1547,5 +1552,99 @@ describe('cloudSyncHelpers', () => {
 
     assert.ok(events.length >= 4);
     unsub();
+  });
+
+  it('persists manual pause preference (default false) and resolves Navbar Cloud Sync toggle actions', () => {
+    const store = new Map<string, string>();
+    const fakeStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      }
+    };
+
+    // Default state: auto-sync is ON (not manually paused)
+    assert.equal(readManualCloudPauseFlag(fakeStorage), false);
+    assert.equal(readManualCloudPauseFlag(null), false);
+
+    // Persists manual pause = true and blocks automatic sync activity
+    writeManualCloudPauseFlag(true, fakeStorage);
+    assert.equal(store.get(MANUAL_CLOUD_PAUSE_STORAGE_KEY), 'true');
+    assert.equal(readManualCloudPauseFlag(fakeStorage), true);
+    assert.equal(shouldSkipAutoCloudActivity({ connectionPaused: true, isManualTrigger: false }), true);
+    assert.equal(shouldSkipAutoCloudActivity({ connectionPaused: true, isManualTrigger: true }), false);
+
+    // Clearing manual pause restores default auto-sync ON
+    writeManualCloudPauseFlag(false, fakeStorage);
+    assert.equal(store.has(MANUAL_CLOUD_PAUSE_STORAGE_KEY), false);
+    assert.equal(readManualCloudPauseFlag(fakeStorage), false);
+
+    // Manual pause notice mentions pausing and clicking button again to resume
+    const pauseNotice = formatManualCloudPauseNotice();
+    assert.ok(pauseNotice.includes('tạm dừng'));
+    assert.ok(pauseNotice.includes('Đồng Bộ Cloud'));
+
+    // Toggle when connected (auto-sync active) -> 'pause'
+    assert.equal(
+      determineCloudSyncToggleAction({
+        isPaused: false,
+        status: 'connected',
+        hasAuthenticatedCloudUser: true
+      }),
+      'pause'
+    );
+
+    // Toggle while connecting / active background sync -> 'pause'
+    assert.equal(
+      determineCloudSyncToggleAction({
+        isPaused: false,
+        status: 'connecting',
+        hasAuthenticatedCloudUser: true
+      }),
+      'pause'
+    );
+
+    // Toggle when paused (manual or auto) -> 'resume'
+    assert.equal(
+      determineCloudSyncToggleAction({
+        isPaused: true,
+        status: 'paused',
+        hasAuthenticatedCloudUser: false
+      }),
+      'resume'
+    );
+
+    // Toggle when error or quota exceeded -> 'resume' (retry sync)
+    assert.equal(
+      determineCloudSyncToggleAction({
+        isPaused: false,
+        status: 'error',
+        hasAuthenticatedCloudUser: true,
+        hasError: true
+      }),
+      'resume'
+    );
+    assert.equal(
+      determineCloudSyncToggleAction({
+        isPaused: false,
+        status: 'connected',
+        hasAuthenticatedCloudUser: true,
+        quotaExceeded: true
+      }),
+      'resume'
+    );
+
+    // Toggle when disconnected and unauthenticated -> 'connect'
+    assert.equal(
+      determineCloudSyncToggleAction({
+        isPaused: false,
+        status: 'disconnected',
+        hasAuthenticatedCloudUser: false
+      }),
+      'connect'
+    );
   });
 });

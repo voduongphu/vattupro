@@ -120,6 +120,9 @@ import {
   formatCloudPauseNotice,
   shouldPauseCloudOnFailure,
   shouldSkipAutoCloudActivity,
+  readManualCloudPauseFlag,
+  writeManualCloudPauseFlag,
+  formatManualCloudPauseNotice,
   createSyncTransferTracker,
   type SyncTransferProgress,
   type SyncDeadlineController,
@@ -147,6 +150,7 @@ export interface CloudSyncSnapshotState {
   errorMessage: string | null;
   quotaExceeded: boolean;
   connectionPaused: boolean;
+  manualPaused: boolean;
   pauseReason: string | null;
   pausedAt: number | null;
 }
@@ -199,6 +203,9 @@ const knownExistingPaths = new Set<string>();
 let knownExistingPathsUid: string | null = null;
 const stateListeners = new Set<(state: CloudSyncSnapshotState) => void>();
 
+const initialManualCloudPaused = readManualCloudPauseFlag();
+const initialManualPauseNotice = initialManualCloudPaused ? formatManualCloudPauseNotice() : null;
+
 let currentState: CloudSyncSnapshotState = {
   authReady: false,
   status: 'initializing',
@@ -208,9 +215,10 @@ let currentState: CloudSyncSnapshotState = {
   lastSyncedAt: null,
   errorMessage: null,
   quotaExceeded: false,
-  connectionPaused: false,
-  pauseReason: null,
-  pausedAt: null
+  connectionPaused: initialManualCloudPaused,
+  manualPaused: initialManualCloudPaused,
+  pauseReason: initialManualPauseNotice,
+  pausedAt: initialManualCloudPaused ? Date.now() : null
 };
 
 let workspaceUnsub: Unsubscribe | null = null;
@@ -225,8 +233,9 @@ let interactiveAuthInFlight = false;
 let deferredRemoteChangeDuringAuth = false;
 let activeInteractiveAuthAttemptId = 0;
 
-let cloudConnectionPaused = false;
-let cloudPauseReason: string | null = null;
+let cloudConnectionPaused = initialManualCloudPaused;
+let manualSyncPaused = initialManualCloudPaused;
+let cloudPauseReason: string | null = initialManualPauseNotice;
 let activeCloudWatchdog: SyncDeadlineController | null = null;
 let consecutiveCloudFailures = 0;
 const cloudTransferTracker = createSyncTransferTracker({ throttleMs: 80 });
@@ -677,6 +686,7 @@ function emitCloudState(patch: Partial<CloudSyncSnapshotState>): void {
     nextPatch.connectionPaused === undefined
   ) {
     nextPatch.connectionPaused = false;
+    nextPatch.manualPaused = false;
     nextPatch.pauseReason = null;
     nextPatch.pausedAt = null;
   }
@@ -705,6 +715,8 @@ function pauseCloudConnection(
   });
   const notice = formatCloudPauseNotice(reason);
   cloudConnectionPaused = true;
+  manualSyncPaused = false;
+  writeManualCloudPauseFlag(false);
   cloudPauseReason = notice;
 
   if (activeCloudWatchdog) {
@@ -720,6 +732,7 @@ function pauseCloudConnection(
   emitCloudState({
     status: 'paused',
     connectionPaused: true,
+    manualPaused: false,
     pauseReason: notice,
     pausedAt: Date.now(),
     quotaExceeded: Boolean(opts?.quotaExceeded || isFirestoreQuotaExhausted()),
@@ -728,8 +741,39 @@ function pauseCloudConnection(
   return notice;
 }
 
+function pauseCloudConnectionManually(): string {
+  const notice = formatManualCloudPauseNotice();
+  cloudConnectionPaused = true;
+  manualSyncPaused = true;
+  writeManualCloudPauseFlag(true);
+  cloudPauseReason = notice;
+
+  if (activeCloudWatchdog) {
+    activeCloudWatchdog.abort(notice, false);
+  }
+  workspaceReadyPromise = null;
+  workspaceReadyUid = null;
+  pendingCloudReconcile = false;
+  pendingForceManifestRefresh = false;
+  deferredRemoteChangeDuringAuth = false;
+  detachAllListeners();
+
+  emitCloudState({
+    status: 'paused',
+    connectionPaused: true,
+    manualPaused: true,
+    pauseReason: notice,
+    pausedAt: Date.now(),
+    quotaExceeded: false,
+    errorMessage: null
+  });
+  return notice;
+}
+
 function unpauseForManualRetry(): void {
   cloudConnectionPaused = false;
+  manualSyncPaused = false;
+  writeManualCloudPauseFlag(false);
   cloudPauseReason = null;
   consecutiveCloudFailures = 0;
   resetFirestoreCircuitForRetry();
@@ -744,6 +788,7 @@ function unpauseForManualRetry(): void {
         : 'connecting'
       : 'disconnected',
     connectionPaused: false,
+    manualPaused: false,
     pauseReason: null,
     pausedAt: null,
     quotaExceeded: false,
@@ -3722,6 +3767,8 @@ export const FirestoreSyncService = {
       if (!fbUser) {
         detachAllListeners();
         cloudConnectionPaused = false;
+        manualSyncPaused = false;
+        writeManualCloudPauseFlag(false);
         cloudPauseReason = null;
         consecutiveCloudFailures = 0;
         resetCloudSessionCaches(false);
@@ -3732,6 +3779,7 @@ export const FirestoreSyncService = {
           cloudDisplayName: null,
           cloudUid: null,
           connectionPaused: false,
+          manualPaused: false,
           pauseReason: null,
           pausedAt: null,
           errorMessage: null
@@ -3742,6 +3790,8 @@ export const FirestoreSyncService = {
       if (currentState.cloudUid && currentState.cloudUid !== fbUser.uid) {
         detachAllListeners();
         cloudConnectionPaused = false;
+        manualSyncPaused = false;
+        writeManualCloudPauseFlag(false);
         cloudPauseReason = null;
         consecutiveCloudFailures = 0;
         resetCloudSessionCaches(false);
@@ -3755,7 +3805,11 @@ export const FirestoreSyncService = {
           status: 'paused',
           cloudEmail: fbUser.email || null,
           cloudDisplayName: fbUser.displayName || null,
-          cloudUid: fbUser.uid
+          cloudUid: fbUser.uid,
+          connectionPaused: true,
+          manualPaused: manualSyncPaused,
+          pauseReason: cloudPauseReason,
+          errorMessage: manualSyncPaused ? null : currentState.errorMessage
         });
         return;
       }
@@ -3848,6 +3902,14 @@ export const FirestoreSyncService = {
 
   resetCircuitForManualRetry(): void {
     unpauseForManualRetry();
+  },
+
+  pauseManually(): string {
+    return pauseCloudConnectionManually();
+  },
+
+  isManualPaused(): boolean {
+    return cloudConnectionPaused && manualSyncPaused;
   },
 
   isConnectionPaused(): boolean {
@@ -4456,6 +4518,8 @@ export const FirestoreSyncService = {
   async disconnectGoogleAccount(): Promise<void> {
     detachAllListeners();
     cloudConnectionPaused = false;
+    manualSyncPaused = false;
+    writeManualCloudPauseFlag(false);
     cloudPauseReason = null;
     consecutiveCloudFailures = 0;
     resetCloudSessionCaches(true);
@@ -4467,6 +4531,7 @@ export const FirestoreSyncService = {
       cloudDisplayName: null,
       cloudUid: null,
       connectionPaused: false,
+      manualPaused: false,
       pauseReason: null,
       pausedAt: null,
       errorMessage: null

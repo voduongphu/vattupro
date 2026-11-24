@@ -21,13 +21,19 @@ const TRANSLATIONS = {
     cloudPausedSparkShort: 'Cloud tạm dừng (Spark)',
     cloudPausedSparkPrefix: 'Cloud Firestore tạm dừng (Gói Spark):',
     cloudPausedShort: 'Cloud tạm dừng',
+    cloudManualPausedShort: 'Tạm dừng Sync',
     cloudPausedPrefix: 'Tạm dừng kết nối Cloud:',
     cloudReconnectNow: 'Kết nối lại',
+    cloudResumeNow: 'Bật lại đồng bộ',
+    cloudPauseSyncHint: 'Bấm để tạm dừng đồng bộ',
     cloudPausedReconnectTooltip: 'Kết nối Cloud đang tạm dừng. Bấm nút Đồng Bộ Cloud để chủ động kết nối lại.',
+    cloudManualPausedTooltip:
+      'Đồng bộ Cloud đang TẠM DỪNG (dữ liệu thay đổi vẫn được lưu tại máy) — Bấm để BẬT LẠI tự động đồng bộ & đồng bộ ngay',
     cloudErrorPrefix: 'Lỗi Cloud Firestore:',
     cloudQuotaExceeded: 'Hết hạn mức Cloud Firestore trong ngày',
     cloudQuotaExceededShort: 'Hết hạn mức Cloud',
-    cloudSyncedTooltip: 'Đã kết nối Google Cloud — Bấm để đồng bộ phần dữ liệu thay đổi với Cloud Firestore',
+    cloudSyncedTooltip:
+      'Tự động đồng bộ Cloud đang BẬT — Bấm để TẠM DỪNG đồng bộ (kiểm soát lưu lượng & số lượt trong ngày)',
     cloudConnectTooltip: 'Bấm để kết nối & chỉ đồng bộ phần dữ liệu thay đổi với Cloud Firestore (tiết kiệm hạn mức đọc)',
     switchGoogleAccount: 'Đổi tài khoản Google khác',
     requestLogoutOther: 'Yêu cầu đăng xuất trên thiết bị kia',
@@ -172,13 +178,19 @@ const TRANSLATIONS = {
     cloudPausedSparkShort: 'Cloud Paused (Spark)',
     cloudPausedSparkPrefix: 'Cloud Firestore Paused (Spark Plan):',
     cloudPausedShort: 'Cloud Paused',
+    cloudManualPausedShort: 'Sync Paused',
     cloudPausedPrefix: 'Cloud Sync Paused:',
     cloudReconnectNow: 'Reconnect',
+    cloudResumeNow: 'Resume Sync',
+    cloudPauseSyncHint: 'Click to pause sync',
     cloudPausedReconnectTooltip: 'Cloud sync is paused. Click Cloud Sync to manually reconnect.',
+    cloudManualPausedTooltip:
+      'Cloud auto-sync is PAUSED (local changes are safely saved) — Click to RESUME auto-sync & sync now',
     cloudErrorPrefix: 'Cloud Firestore Error:',
     cloudQuotaExceeded: 'Daily Cloud Firestore quota exceeded',
     cloudQuotaExceededShort: 'Quota Exceeded',
-    cloudSyncedTooltip: 'Connected to Google Cloud — Click to sync changed data only with Cloud Firestore',
+    cloudSyncedTooltip:
+      'Auto Cloud Sync is ON — Click to PAUSE sync (manage daily traffic & sync count)',
     cloudConnectTooltip: 'Click to connect & sync changed data only with Cloud Firestore (saves daily read quota)',
     switchGoogleAccount: 'Switch Google Account',
     requestLogoutOther: 'Request Logout on Other Device',
@@ -676,7 +688,11 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Firebase Authentication tạm vượt hạn mức. Vui lòng thử lại sau ít phút hoặc kiểm tra hạn mức trên Firebase Console.':
     'Firebase Authentication temporarily exceeded its quota. Please try again shortly or check Firebase Console.',
   'Kết nối mạng bị gián đoạn khi xác thực với Google. Vui lòng kiểm tra Internet và thử lại.':
-    'Network connection interrupted while authenticating with Google. Please check your internet and try again.'
+    'Network connection interrupted while authenticating with Google. Please check your internet and try again.',
+  'Đã tạm dừng tự động đồng bộ Cloud. Các thay đổi dữ liệu vẫn được lưu an toàn tại máy — bấm lại nút "Đồng Bộ Cloud" để bật lại và đồng bộ.':
+    'Auto Cloud sync paused. All local changes remain safely saved on this device — click "Cloud Sync" again to resume and sync.',
+  'Đã bật lại tự động đồng bộ Cloud (dữ liệu đã khớp, không có thay đổi mới).':
+    'Auto Cloud sync resumed (data is already in sync, no new changes).'
 };
 
 // Merge all specialized and comprehensive phrases into one unified dictionary

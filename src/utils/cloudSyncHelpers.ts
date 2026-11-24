@@ -1901,6 +1901,66 @@ export function shouldSkipAutoCloudActivity(params: {
   return Boolean(params.connectionPaused && !params.isManualTrigger);
 }
 
+export const MANUAL_CLOUD_PAUSE_STORAGE_KEY = 'vtp_cloud_manual_sync_paused_v1';
+
+export function readManualCloudPauseFlag(
+  storage?: { getItem: (key: string) => string | null } | null
+): boolean {
+  try {
+    const target = storage === undefined ? (typeof localStorage !== 'undefined' ? localStorage : null) : storage;
+    if (!target) return false;
+    return target.getItem(MANUAL_CLOUD_PAUSE_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function writeManualCloudPauseFlag(
+  paused: boolean,
+  storage?: { setItem: (key: string, value: string) => void; removeItem: (key: string) => void } | null
+): void {
+  try {
+    const target = storage === undefined ? (typeof localStorage !== 'undefined' ? localStorage : null) : storage;
+    if (!target) return;
+    if (paused) {
+      target.setItem(MANUAL_CLOUD_PAUSE_STORAGE_KEY, 'true');
+    } else {
+      target.removeItem(MANUAL_CLOUD_PAUSE_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage quota/security errors
+  }
+}
+
+export function formatManualCloudPauseNotice(): string {
+  return 'Đã tạm dừng tự động đồng bộ Cloud. Các thay đổi dữ liệu vẫn được lưu an toàn tại máy — bấm lại nút "Đồng Bộ Cloud" để bật lại và đồng bộ.';
+}
+
+export type CloudSyncToggleAction = 'pause' | 'resume' | 'connect';
+
+export function determineCloudSyncToggleAction(params: {
+  isPaused: boolean;
+  status: string;
+  hasAuthenticatedCloudUser: boolean;
+  hasError?: boolean;
+  quotaExceeded?: boolean;
+}): CloudSyncToggleAction {
+  if (params.isPaused) {
+    return 'resume';
+  }
+  if (params.quotaExceeded || params.hasError || params.status === 'error') {
+    return 'resume';
+  }
+  if (
+    params.status === 'connected' ||
+    params.status === 'connecting' ||
+    params.hasAuthenticatedCloudUser
+  ) {
+    return 'pause';
+  }
+  return 'connect';
+}
+
 export interface SyncTransferProgress {
   active: boolean;
   totalBytes: number;
