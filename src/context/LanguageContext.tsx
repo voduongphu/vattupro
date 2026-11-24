@@ -126,11 +126,16 @@ const TRANSLATIONS = {
     // ESC Confirm Modal
     escConfirmTitle: 'Xác nhận thoát hộp thoại',
     escConfirmSubtitle: 'Phím ESC vừa được nhấn',
+    closeConfirmSubtitle: 'Dữ liệu phiếu vừa có thay đổi chưa lưu',
     escConfirmCancelTitle: 'Hủy và quay lại hộp thoại (ESC)',
     escConfirmWarning:
       'Mọi thông tin đang nhập dở chưa lưu trong hộp thoại này sẽ bị hủy nếu bạn thoát ra.',
+    confirmModalUnsavedWarning:
+      'Dữ liệu phiếu vừa chỉnh sửa chưa được lưu. Bạn có muốn lưu phiếu trước khi đóng không?',
     escConfirmStay: 'Ở lại tiếp tục',
     escConfirmLeave: 'Xác nhận thoát',
+    confirmModalSave: 'Lưu phiếu',
+    confirmModalDiscard: 'Thoát không lưu',
     closeModalTitle: 'Đóng hộp thoại (ESC)',
     closeModalAria: 'Đóng hộp thoại',
 
@@ -272,11 +277,16 @@ const TRANSLATIONS = {
     // ESC Confirm Modal
     escConfirmTitle: 'Confirm Closing Dialog',
     escConfirmSubtitle: 'ESC key was pressed',
+    closeConfirmSubtitle: 'Unsaved voucher changes detected',
     escConfirmCancelTitle: 'Cancel and return to dialog (ESC)',
     escConfirmWarning:
       'Any unsaved information entered in this dialog will be discarded if you leave.',
+    confirmModalUnsavedWarning:
+      'Your edited voucher data has not been saved yet. Would you like to save before closing?',
     escConfirmStay: 'Stay & Continue',
     escConfirmLeave: 'Confirm Close',
+    confirmModalSave: 'Save Voucher',
+    confirmModalDiscard: 'Exit Without Saving',
     closeModalTitle: 'Close dialog (ESC)',
     closeModalAria: 'Close dialog',
 

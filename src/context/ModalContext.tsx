@@ -7,17 +7,34 @@ import React, {
   useRef,
   useState
 } from 'react';
-import { AlertTriangle, X } from 'lucide-react';
+import { AlertTriangle, Save, X } from 'lucide-react';
 import {
   getTopmostModalEntry,
   removeModalEntry,
   upsertModalEntry,
   type ModalStackEntry
 } from '../utils/modalStackHelpers';
+import { shouldConfirmModalClose } from '../utils/voucherFormDirty';
 import { useLanguage } from './LanguageContext';
 
 interface InternalModalEntry extends ModalStackEntry {
   onClose: () => void;
+  onSave?: () => void;
+}
+
+export interface RequestCloseOptions {
+  title: string;
+  trigger?: 'esc' | 'close';
+  onConfirmClose: () => void;
+  onSave?: () => void;
+}
+
+interface PendingCloseTarget {
+  id?: string;
+  title: string;
+  trigger: 'esc' | 'close';
+  onClose: () => void;
+  onSave?: () => void;
 }
 
 interface ModalContextValue {
@@ -26,25 +43,35 @@ interface ModalContextValue {
     title: string;
     priority?: number;
     confirmOnEsc?: boolean;
+    hasUnsavedChanges?: boolean;
     onClose: () => void;
+    onSave?: () => void;
   }) => void;
   unregisterModal: (id: string) => void;
+  requestClose: (options: RequestCloseOptions) => void;
   activeModalCount: number;
 }
 
 const ModalContext = createContext<ModalContextValue | null>(null);
 
-export const useModal = (): { activeModalCount: number } => {
+export const useModal = (): {
+  activeModalCount: number;
+  requestClose: (options: RequestCloseOptions) => void;
+} => {
   const ctx = useContext(ModalContext);
+  const fallbackRequestClose = useCallback((options: RequestCloseOptions) => {
+    options.onConfirmClose();
+  }, []);
   return {
-    activeModalCount: ctx?.activeModalCount ?? 0
+    activeModalCount: ctx?.activeModalCount ?? 0,
+    requestClose: ctx?.requestClose ?? fallbackRequestClose
   };
 };
 
 export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { language, t } = useLanguage();
   const [modalStack, setModalStack] = useState<InternalModalEntry[]>([]);
-  const [pendingEscTarget, setPendingEscTarget] = useState<InternalModalEntry | null>(null);
+  const [pendingCloseTarget, setPendingCloseTarget] = useState<PendingCloseTarget | null>(null);
   const orderCounterRef = useRef(0);
   const stackRef = useRef<InternalModalEntry[]>([]);
   const stayButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -57,7 +84,9 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       title: string;
       priority?: number;
       confirmOnEsc?: boolean;
+      hasUnsavedChanges?: boolean;
       onClose: () => void;
+      onSave?: () => void;
     }) => {
       setModalStack((prev) => {
         const existing = prev.find((item) => item.id === entry.id);
@@ -67,8 +96,10 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           title: entry.title,
           priority: entry.priority ?? 50,
           confirmOnEsc: Boolean(entry.confirmOnEsc),
+          hasUnsavedChanges: entry.hasUnsavedChanges,
           order,
-          onClose: entry.onClose
+          onClose: entry.onClose,
+          onSave: entry.onSave
         });
       });
     },
@@ -77,11 +108,20 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const unregisterModal = useCallback((id: string) => {
     setModalStack((prev) => removeModalEntry(prev, id));
-    setPendingEscTarget((prev) => (prev && prev.id === id ? null : prev));
+    setPendingCloseTarget((prev) => (prev && prev.id === id ? null : prev));
+  }, []);
+
+  const requestClose = useCallback((options: RequestCloseOptions) => {
+    setPendingCloseTarget({
+      title: options.title,
+      trigger: options.trigger ?? 'close',
+      onClose: options.onConfirmClose,
+      onSave: options.onSave
+    });
   }, []);
 
   // Khóa cuộn chuột ở cửa sổ ứng dụng nền khi có ít nhất 1 hộp thoại đang mở
-  const hasActiveModal = modalStack.length > 0 || pendingEscTarget !== null;
+  const hasActiveModal = modalStack.length > 0 || pendingCloseTarget !== null;
   useEffect(() => {
     if (!hasActiveModal || typeof document === 'undefined' || typeof window === 'undefined') {
       return;
@@ -105,17 +145,17 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [hasActiveModal]);
 
-  // Lắng nghe phím ESC toàn cục: chỉ hỏi xác nhận đối với hộp thoại lập/sửa phiếu (confirmOnEsc=true), các hộp thoại khác tự động đóng ngay
+  // Lắng nghe phím ESC toàn cục: chỉ hỏi xác nhận khi có thay đổi chưa lưu hoặc confirmOnEsc=true (không truyền hasUnsavedChanges), các trường hợp khác tự động đóng ngay
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
 
-      if (pendingEscTarget) {
+      if (pendingCloseTarget) {
         event.preventDefault();
         event.stopPropagation();
-        setPendingEscTarget(null);
+        setPendingCloseTarget(null);
         return;
       }
 
@@ -125,8 +165,20 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       event.preventDefault();
       event.stopPropagation();
 
-      if (topmost.confirmOnEsc) {
-        setPendingEscTarget(topmost);
+      if (
+        shouldConfirmModalClose({
+          confirmOnEsc: topmost.confirmOnEsc,
+          hasUnsavedChanges: topmost.hasUnsavedChanges,
+          trigger: 'esc'
+        })
+      ) {
+        setPendingCloseTarget({
+          id: topmost.id,
+          title: topmost.title,
+          trigger: 'esc',
+          onClose: topmost.onClose,
+          onSave: topmost.onSave
+        });
       } else {
         topmost.onClose();
       }
@@ -136,50 +188,69 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => {
       window.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [pendingEscTarget]);
+  }, [pendingCloseTarget]);
 
-  // Đặt focus an toàn vào nút "Ở lại" khi hộp thoại xác nhận ESC xuất hiện để tránh bấm nhầm Enter làm mất dữ liệu
+  // Đặt focus an toàn vào nút "Ở lại" khi hộp thoại xác nhận xuất hiện để tránh bấm nhầm Enter làm mất dữ liệu
   useEffect(() => {
-    if (pendingEscTarget) {
+    if (pendingCloseTarget) {
       const timer = setTimeout(() => {
         stayButtonRef.current?.focus();
       }, 0);
       return () => clearTimeout(timer);
     }
-  }, [pendingEscTarget]);
+  }, [pendingCloseTarget]);
 
-  const handleCancelEscClose = () => {
-    setPendingEscTarget(null);
+  const handleCancelClose = () => {
+    setPendingCloseTarget(null);
   };
 
-  const handleConfirmEscClose = () => {
-    const target = pendingEscTarget;
-    setPendingEscTarget(null);
+  const handleConfirmClose = () => {
+    const target = pendingCloseTarget;
+    setPendingCloseTarget(null);
     if (!target) return;
-    const liveEntry = stackRef.current.find((item) => item.id === target.id) || target;
-    liveEntry.onClose();
+    const liveEntry = target.id
+      ? stackRef.current.find((item) => item.id === target.id)
+      : undefined;
+    (liveEntry?.onClose ?? target.onClose)();
   };
 
-  const localizedPendingTitle = pendingEscTarget ? t(pendingEscTarget.title) : '';
+  const handleSaveAndClose = () => {
+    const target = pendingCloseTarget;
+    setPendingCloseTarget(null);
+    if (!target) return;
+    const liveEntry = target.id
+      ? stackRef.current.find((item) => item.id === target.id)
+      : undefined;
+    const saveFn = liveEntry?.onSave ?? target.onSave;
+    saveFn?.();
+  };
+
+  const localizedPendingTitle = pendingCloseTarget ? t(pendingCloseTarget.title) : '';
+  const hasSaveAction = Boolean(pendingCloseTarget?.onSave);
 
   return (
     <ModalContext.Provider
       value={{
         registerModal,
         unregisterModal,
+        requestClose,
         activeModalCount: modalStack.length
       }}
     >
       {children}
 
-      {pendingEscTarget && (
+      {pendingCloseTarget && (
         <div
           role="dialog"
           aria-modal="true"
           aria-labelledby="esc-confirm-modal-title"
           className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/65 backdrop-blur-xs p-4 overscroll-contain animate-in fade-in duration-150"
         >
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-150">
+          <div
+            className={`bg-white rounded-2xl shadow-2xl border border-slate-200 w-full ${
+              hasSaveAction ? 'max-w-lg' : 'max-w-md'
+            } overflow-hidden animate-in zoom-in-95 duration-150`}
+          >
             <div className="px-5 py-4 border-b border-slate-100 bg-amber-50/80 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-xl bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center shrink-0">
@@ -193,12 +264,14 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     {t('escConfirmTitle')}
                   </h3>
                   <p className="text-[11px] text-amber-800 font-medium">
-                    {t('escConfirmSubtitle')}
+                    {pendingCloseTarget.trigger === 'close'
+                      ? t('closeConfirmSubtitle')
+                      : t('escConfirmSubtitle')}
                   </p>
                 </div>
               </div>
               <ModalCloseButton
-                onClick={handleCancelEscClose}
+                onClick={handleCancelClose}
                 title={t('escConfirmCancelTitle')}
               />
             </div>
@@ -219,25 +292,35 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 )}
               </p>
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
-                {t('escConfirmWarning')}
+                {hasSaveAction ? t('confirmModalUnsavedWarning') : t('escConfirmWarning')}
               </div>
 
-              <div className="flex items-center justify-end gap-2.5 pt-1">
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
                 <button
                   ref={stayButtonRef}
                   type="button"
-                  onClick={handleCancelEscClose}
-                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs sm:text-sm rounded-xl transition cursor-pointer"
+                  onClick={handleCancelClose}
+                  className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs sm:text-sm rounded-xl transition cursor-pointer"
                 >
                   {t('escConfirmStay')}
                 </button>
                 <button
                   type="button"
-                  onClick={handleConfirmEscClose}
-                  className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-rose-600/20 transition cursor-pointer"
+                  onClick={handleConfirmClose}
+                  className="px-3.5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-rose-600/20 transition cursor-pointer"
                 >
-                  {t('escConfirmLeave')}
+                  {hasSaveAction ? t('confirmModalDiscard') : t('escConfirmLeave')}
                 </button>
+                {hasSaveAction && (
+                  <button
+                    type="button"
+                    onClick={handleSaveAndClose}
+                    className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-blue-600/25 transition cursor-pointer"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{t('confirmModalSave')}</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -250,31 +333,59 @@ export const ModalProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 export const ModalGuard: React.FC<{
   title: string;
   onClose: () => void;
+  onSave?: () => void;
   priority?: number;
   confirmOnEsc?: boolean;
+  hasUnsavedChanges?: boolean;
   isOpen?: boolean;
-}> = ({ title, onClose, priority = 50, confirmOnEsc = false, isOpen = true }) => {
+}> = ({
+  title,
+  onClose,
+  onSave,
+  priority = 50,
+  confirmOnEsc = false,
+  hasUnsavedChanges,
+  isOpen = true
+}) => {
   const ctx = useContext(ModalContext);
   const id = useId();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+  const hasSaveHandler = Boolean(onSave);
 
   const registerModal = ctx?.registerModal;
   const unregisterModal = ctx?.unregisterModal;
 
   useEffect(() => {
-    if (!isOpen || !registerModal || !unregisterModal) return;
+    if (!isOpen || !registerModal) return;
     registerModal({
       id,
       title,
       priority,
       confirmOnEsc,
-      onClose: () => onCloseRef.current()
+      hasUnsavedChanges,
+      onClose: () => onCloseRef.current(),
+      onSave: hasSaveHandler ? () => onSaveRef.current?.() : undefined
     });
+  }, [
+    id,
+    isOpen,
+    title,
+    priority,
+    confirmOnEsc,
+    hasUnsavedChanges,
+    hasSaveHandler,
+    registerModal
+  ]);
+
+  useEffect(() => {
+    if (!isOpen || !unregisterModal) return;
     return () => {
       unregisterModal(id);
     };
-  }, [id, isOpen, title, priority, confirmOnEsc, registerModal, unregisterModal]);
+  }, [id, isOpen, unregisterModal]);
 
   return null;
 };

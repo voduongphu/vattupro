@@ -13,7 +13,11 @@ import { ExcelImportModal } from '../common/ExcelImportModal';
 import { ReceiptPrintModal } from '../common/ReceiptPrintModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { PaginationBar } from '../common/PaginationBar';
-import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
+import { ModalGuard, ModalCloseButton, useModal } from '../../context/ModalContext';
+import {
+  computeOutboundFormSnapshot,
+  hasFormSnapshotChanged
+} from '../../utils/voucherFormDirty';
 import {
   downloadOutboundTemplate,
   exportOutboundReceiptToExcel,
@@ -151,6 +155,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
   quickSearchSignal = null
 }) => {
   const { currentUser, isAdmin } = useAuth();
+  const { requestClose } = useModal();
   const [receipts, setReceipts] = useState<OutboundReceipt[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [stockRecords, setStockRecords] = useState<InventoryStockRecord[]>([]);
@@ -202,6 +207,9 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     date: string;
     origWhId: string;
   } | null>(null);
+  const initialFormSnapshotRef = useRef<string | null>(null);
+  const voucherFormRef = useRef<HTMLFormElement | null>(null);
+  const voucherSubmitBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const [formOutboundType, setFormOutboundType] = useState<'issue' | 'transfer'>('issue');
   const [formItems, setFormItems] = useState<OutboundItemDetail[]>([]);
@@ -409,6 +417,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       return;
     }
     const defaultWhObj = allowedWhList[0] || null;
+    const initialWhId = defaultWhObj?.id || '';
     const todayDate = new Date().toISOString().slice(0, 10);
     lastEditScopeRef.current = null;
     setReceipts(currentReceipts);
@@ -421,7 +430,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       ).map((r) => ({ ...r }))
     );
     setIsCodeManuallyEdited(false);
-    setSelectedWarehouseId(defaultWhObj?.id || '');
+    setSelectedWarehouseId(initialWhId);
     setIssueDate(todayDate);
     setIssueCode(generateNextPxkCode(currentReceipts, todayDate, defaultWhObj));
 
@@ -437,6 +446,20 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     setFormItems([]);
     setQuickStockQuery('');
     setIsQuickStockOpen(false);
+
+    initialFormSnapshotRef.current = computeOutboundFormSnapshot({
+      issueCode: '',
+      issueDate: todayDate,
+      selectedWarehouseId: initialWhId,
+      formDepartmentName: '',
+      recipientName: '',
+      recipientDepartment: '',
+      formRequestNo: '',
+      formNotes: '',
+      formOutboundType: 'issue',
+      formItems: []
+    });
+
     setIsCreateModalOpen(true);
   };
   openCreateModalRef.current = openCreateModal;
@@ -512,6 +535,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     }
     setStockRecords(baseStock);
 
+    const initialCode = rcp.issueCode || '';
     const savedDept =
       rcp.departmentName && rcp.departmentName !== 'DỰ ÁN LTIA-4.9'
         ? rcp.departmentName
@@ -520,26 +544,114 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
             !rcp.projectName.includes('(Import Excel)')
           ? rcp.projectName
           : '';
+    const initialRecipientName = rcp.recipientName || '';
+    const initialRecipientDept = rcp.recipientDepartment || '';
+    const initialRequestNo = rcp.requestNo || '';
+    const initialNotes =
+      rcp.notes && !rcp.notes.startsWith('Import thành công ') ? rcp.notes : '';
+    const initialOutboundType: 'issue' | 'transfer' = rcp.outboundType || 'issue';
+    const initialItems: OutboundItemDetail[] = (rcp.items || []).map((it, idx) => ({
+      ...it,
+      id: it.id || `out-edit-${Date.now()}-${idx}`,
+      note: it.note ?? it.purpose ?? ''
+    }));
+
     setFormDepartmentName(savedDept);
-    setRecipientName(rcp.recipientName || '');
-    setRecipientDepartment(rcp.recipientDepartment || '');
-    setFormRequestNo(rcp.requestNo || '');
-    setFormNotes(rcp.notes && !rcp.notes.startsWith('Import thành công ') ? rcp.notes : '');
-    setFormOutboundType(rcp.outboundType || 'issue');
+    setRecipientName(initialRecipientName);
+    setRecipientDepartment(initialRecipientDept);
+    setFormRequestNo(initialRequestNo);
+    setFormNotes(initialNotes);
+    setFormOutboundType(initialOutboundType);
     setFormError('');
     setFormItemSearch('');
     setFormItemPage(1);
     setQuickStockQuery('');
     setIsQuickStockOpen(false);
+    setFormItems(initialItems);
 
-    setFormItems(
-      (rcp.items || []).map((it, idx) => ({
-        ...it,
-        id: it.id || `out-edit-${Date.now()}-${idx}`,
-        note: it.note ?? it.purpose ?? ''
-      }))
-    );
+    initialFormSnapshotRef.current = computeOutboundFormSnapshot({
+      issueCode: initialCode,
+      issueDate: initialDate,
+      selectedWarehouseId: initialWhId,
+      formDepartmentName: savedDept,
+      recipientName: initialRecipientName,
+      recipientDepartment: initialRecipientDept,
+      formRequestNo: initialRequestNo,
+      formNotes: initialNotes,
+      formOutboundType: initialOutboundType,
+      formItems: initialItems
+    });
+
     setIsCreateModalOpen(true);
+  };
+
+  const currentFormSnapshot = useMemo(() => {
+    if (!isCreateModalOpen) return '';
+    return computeOutboundFormSnapshot({
+      issueCode: editingReceipt || isCodeManuallyEdited ? issueCode : '',
+      issueDate,
+      selectedWarehouseId,
+      formDepartmentName,
+      recipientName,
+      recipientDepartment,
+      formRequestNo,
+      formNotes,
+      formOutboundType,
+      formItems
+    });
+  }, [
+    isCreateModalOpen,
+    editingReceipt,
+    isCodeManuallyEdited,
+    issueCode,
+    issueDate,
+    selectedWarehouseId,
+    formDepartmentName,
+    recipientName,
+    recipientDepartment,
+    formRequestNo,
+    formNotes,
+    formOutboundType,
+    formItems
+  ]);
+
+  const isFormDirty = useMemo(
+    () =>
+      isCreateModalOpen &&
+      hasFormSnapshotChanged(initialFormSnapshotRef.current, currentFormSnapshot),
+    [isCreateModalOpen, currentFormSnapshot]
+  );
+
+  const closeFormModalImmediately = () => {
+    setIsCreateModalOpen(false);
+    setEditingReceipt(null);
+    initialFormSnapshotRef.current = null;
+  };
+
+  const triggerFormSubmit = () => {
+    const formEl = voucherFormRef.current;
+    if (formEl && typeof formEl.requestSubmit === 'function') {
+      formEl.requestSubmit();
+      return;
+    }
+    voucherSubmitBtnRef.current?.click();
+  };
+
+  const formModalGuardTitle = editingReceipt
+    ? `Chỉnh Sửa Phiếu Xuất Kho: ${editingReceipt.issueCode}`
+    : 'Lập Phiếu Xuất Kho Mới';
+
+  const handleRequestCloseFormModal = () => {
+    if (isFormDirty) {
+      requestClose({
+        title: formModalGuardTitle,
+        trigger: 'close',
+        onConfirmClose: closeFormModalImmediately,
+        onSave: triggerFormSubmit
+      });
+      return;
+    }
+    closeFormModalImmediately();
   };
 
   const handleExportReceiptExcel = (rcp: OutboundReceipt) => {
@@ -2108,16 +2220,11 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 lg:p-5 overscroll-contain">
           <ModalGuard
-            title={
-              editingReceipt
-                ? `Chỉnh Sửa Phiếu Xuất Kho: ${editingReceipt.issueCode}`
-                : 'Lập Phiếu Xuất Kho Mới'
-            }
+            title={formModalGuardTitle}
             confirmOnEsc
-            onClose={() => {
-              setIsCreateModalOpen(false);
-              setEditingReceipt(null);
-            }}
+            hasUnsavedChanges={isFormDirty}
+            onClose={closeFormModalImmediately}
+            onSave={triggerFormSubmit}
           />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-[96vw] 2xl:max-w-[1760px] max-h-[94dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
@@ -2146,15 +2253,14 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                   </p>
                 </div>
               </div>
-              <ModalCloseButton
-                onClick={() => {
-                  setIsCreateModalOpen(false);
-                  setEditingReceipt(null);
-                }}
-              />
+              <ModalCloseButton onClick={handleRequestCloseFormModal} />
             </div>
 
-            <form onSubmit={handleSaveCreate} className="overflow-y-auto overscroll-contain flex-1">
+            <form
+              ref={voucherFormRef}
+              onSubmit={handleSaveCreate}
+              className="overflow-y-auto overscroll-contain flex-1"
+            >
               <div className="p-4 sm:p-6 space-y-4">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
@@ -2736,6 +2842,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
 
               <div className="pt-3 flex gap-2">
                 <button
+                  ref={voucherSubmitBtnRef}
                   type="submit"
                   className={`flex-1 py-2.5 text-white font-semibold text-sm rounded-xl transition shadow-md ${
                     editingReceipt
@@ -2747,10 +2854,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsCreateModalOpen(false);
-                    setEditingReceipt(null);
-                  }}
+                  onClick={handleRequestCloseFormModal}
                   className="py-2.5 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition"
                 >
                   Hủy

@@ -4,6 +4,7 @@ export interface ModalStackEntry {
   priority: number;
   order: number;
   confirmOnEsc?: boolean;
+  hasUnsavedChanges?: boolean;
 }
 
 export function upsertModalEntry<T extends ModalStackEntry>(

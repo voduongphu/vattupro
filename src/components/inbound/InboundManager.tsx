@@ -7,7 +7,11 @@ import { ExcelImportModal } from '../common/ExcelImportModal';
 import { ReceiptPrintModal } from '../common/ReceiptPrintModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { PaginationBar } from '../common/PaginationBar';
-import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
+import { ModalGuard, ModalCloseButton, useModal } from '../../context/ModalContext';
+import {
+  computeInboundFormSnapshot,
+  hasFormSnapshotChanged
+} from '../../utils/voucherFormDirty';
 import {
   downloadInboundTemplate,
   exportInboundReceiptToExcel,
@@ -106,6 +110,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
   quickSearchSignal = null
 }) => {
   const { currentUser, isAdmin } = useAuth();
+  const { requestClose } = useModal();
   const [receipts, setReceipts] = useState<InboundReceipt[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [materials, setMaterials] = useState<MaterialItem[]>([]);
@@ -170,6 +175,9 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
   } | null>(null);
   const initialEditSupplierRef = useRef<string>('');
   const initialEditManufacturerRef = useRef<string>('');
+  const initialFormSnapshotRef = useRef<string | null>(null);
+  const voucherFormRef = useRef<HTMLFormElement | null>(null);
+  const voucherSubmitBtnRef = useRef<HTMLButtonElement | null>(null);
 
   // Danh sách dòng vật tư trong phiếu + tìm kiếm/phân trang cho phiếu lớn
   const [formItems, setFormItems] = useState<InboundItemDetail[]>([]);
@@ -567,14 +575,39 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       return;
     }
     const defaultWh = allowedWhList[0] || null;
+    const initialWhId = defaultWh?.id || '';
     const todayDate = new Date().toISOString().slice(0, 10);
+    const initialItems: InboundItemDetail[] = [
+      {
+        id: `item-${Date.now()}`,
+        materialCode: '',
+        materialName: '',
+        unit: 'Ống',
+        batchCode: '',
+        packingListNo: '',
+        shipment: '',
+        packageNo: '',
+        packageName: '',
+        category: '',
+        drawingNo: '',
+        manufacturer: '',
+        supplier: '',
+        weightKg: 0,
+        quantity: 1,
+        unitPrice: 0,
+        totalPrice: 0,
+        storageLocation: '',
+        conditionNote: '',
+        note: ''
+      }
+    ];
     lastEditScopeRef.current = null;
     setReceipts(currentReceipts);
     setWarehouses(whList);
     setEditingReceipt(null);
     setMaterials(mats);
     setIsCodeManuallyEdited(false);
-    setSelectedWarehouseId(defaultWh?.id || '');
+    setSelectedWarehouseId(initialWhId);
     setReceiptDate(todayDate);
     setReceiptCode(generateNextPnkCode(currentReceipts, todayDate, defaultWh));
 
@@ -600,31 +633,28 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     setFormItemPage(1);
     setQuickCatalogQuery('');
     setIsQuickCatalogOpen(false);
+    setFormItems(initialItems);
 
-    setFormItems([
-      {
-        id: `item-${Date.now()}`,
-        materialCode: '',
-        materialName: '',
-        unit: 'Ống',
-        batchCode: '',
-        packingListNo: '',
-        shipment: '',
-        packageNo: '',
-        packageName: '',
-        category: '',
-        drawingNo: '',
-        manufacturer: '',
-        supplier: '',
-        weightKg: 0,
-        quantity: 1,
-        unitPrice: 0,
-        totalPrice: 0,
-        storageLocation: '',
-        conditionNote: '',
-        note: ''
-      }
-    ]);
+    initialFormSnapshotRef.current = computeInboundFormSnapshot({
+      receiptCode: '',
+      receiptDate: todayDate,
+      selectedWarehouseId: initialWhId,
+      formDepartmentName: '',
+      formDeliverer: '',
+      formContractNo: '',
+      formRequestNo: '',
+      formNotes: '',
+      formInboundType: 'new',
+      formAmountInWords: '',
+      formAttachedDocs: '',
+      formSupplier: '',
+      formManufacturer: '',
+      formShipment: '',
+      formPackingListNo: '',
+      formDriverVehicle: '',
+      formStorageLocation: '',
+      formItems: initialItems
+    });
 
     setIsCreateModalOpen(true);
   };
@@ -672,18 +702,9 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       date: initialDate,
       origWhId: initialWhId
     };
-    setReceipts(currentReceipts);
-    setWarehouses(whList);
-    setMaterials(mats);
-    setEditingReceipt(rcp);
-    setIsCodeManuallyEdited(false);
-    setReceiptCode(rcp.receiptCode || '');
-    setReceiptDate(initialDate);
-    setSelectedWarehouseId(initialWhId);
-
-    setFormDepartmentName(
-      rcp.departmentName && rcp.departmentName !== 'DỰ ÁN LTIA-4.9' ? rcp.departmentName : ''
-    );
+    const initialCode = rcp.receiptCode || '';
+    const initialDepartmentName =
+      rcp.departmentName && rcp.departmentName !== 'DỰ ÁN LTIA-4.9' ? rcp.departmentName : '';
     const rawDeliverer =
       rcp.delivererName && rcp.delivererName !== 'Nhập từ File Excel tự động'
         ? rcp.delivererName
@@ -693,13 +714,13 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
             rcp.supplier !== 'Đơn vị giao hàng'
           ? rcp.supplier
           : rcp.delivererName || '';
-    setFormDeliverer(rawDeliverer);
-    setFormContractNo(rcp.contractNo || '');
-    setFormRequestNo(rcp.requestNo || '');
-    setFormNotes(rcp.notes && !rcp.notes.startsWith('Import thành công ') ? rcp.notes : '');
-    setFormInboundType(rcp.inboundType || 'new');
-    setFormAmountInWords(rcp.amountInWords || '');
-    setFormAttachedDocs(rcp.attachedDocs || '');
+    const initialContractNo = rcp.contractNo || '';
+    const initialRequestNo = rcp.requestNo || '';
+    const initialNotes =
+      rcp.notes && !rcp.notes.startsWith('Import thành công ') ? rcp.notes : '';
+    const initialInboundType: 'new' | 'return' = rcp.inboundType || 'new';
+    const initialAmountInWords = rcp.amountInWords || '';
+    const initialAttachedDocs = rcp.attachedDocs || '';
 
     const distinctEditSuppliers = new Set(
       (rcp.items || [])
@@ -721,29 +742,18 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       : distinctEditManufacturers.size === 1
         ? Array.from(distinctEditManufacturers)[0]
         : '';
-
-    setFormSupplier(resolvedEditSupplier);
-    setFormManufacturer(resolvedEditManufacturer);
-    initialEditSupplierRef.current = resolvedEditSupplier;
-    initialEditManufacturerRef.current = resolvedEditManufacturer;
-    setFormShipment(
-      rcp.shipment && rcp.shipment !== 'N/A' && rcp.shipment !== 'SHP-EXCEL' ? rcp.shipment : ''
-    );
-    setFormPackingListNo(
-      rcp.packingListNo && rcp.packingListNo !== 'PL-EXCEL' ? rcp.packingListNo : ''
-    );
-    setFormDriverVehicle(rcp.driverVehicleNo || '');
+    const initialShipment =
+      rcp.shipment && rcp.shipment !== 'N/A' && rcp.shipment !== 'SHP-EXCEL' ? rcp.shipment : '';
+    const initialPackingListNo =
+      rcp.packingListNo && rcp.packingListNo !== 'PL-EXCEL' ? rcp.packingListNo : '';
+    const initialDriverVehicle = rcp.driverVehicleNo || '';
     const distinctEditLocations = new Set(
       (rcp.items || [])
         .map((it) => (it.storageLocation || '').trim())
         .filter((loc) => loc && loc.toUpperCase() !== 'N/A')
     );
-    setFormStorageLocation(distinctEditLocations.size === 1 ? Array.from(distinctEditLocations)[0] : '');
-    setFormError('');
-    setFormItemSearch('');
-    setFormItemPage(1);
-    setQuickCatalogQuery('');
-    setIsQuickCatalogOpen(false);
+    const initialStorageLocation =
+      distinctEditLocations.size === 1 ? Array.from(distinctEditLocations)[0] : '';
 
     const clonedItems: InboundItemDetail[] = (rcp.items || []).map((it, idx) => ({
       ...it,
@@ -753,7 +763,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       storageLocation: (it.storageLocation || '').trim(),
       note: it.note ?? it.conditionNote ?? ''
     }));
-    setFormItems(
+    const initialItems: InboundItemDetail[] =
       clonedItems.length > 0
         ? clonedItems
         : [
@@ -779,10 +789,146 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
               conditionNote: '',
               note: ''
             }
-          ]
-    );
+          ];
+
+    setReceipts(currentReceipts);
+    setWarehouses(whList);
+    setMaterials(mats);
+    setEditingReceipt(rcp);
+    setIsCodeManuallyEdited(false);
+    setReceiptCode(initialCode);
+    setReceiptDate(initialDate);
+    setSelectedWarehouseId(initialWhId);
+    setFormDepartmentName(initialDepartmentName);
+    setFormDeliverer(rawDeliverer);
+    setFormContractNo(initialContractNo);
+    setFormRequestNo(initialRequestNo);
+    setFormNotes(initialNotes);
+    setFormInboundType(initialInboundType);
+    setFormAmountInWords(initialAmountInWords);
+    setFormAttachedDocs(initialAttachedDocs);
+    setFormSupplier(resolvedEditSupplier);
+    setFormManufacturer(resolvedEditManufacturer);
+    initialEditSupplierRef.current = resolvedEditSupplier;
+    initialEditManufacturerRef.current = resolvedEditManufacturer;
+    setFormShipment(initialShipment);
+    setFormPackingListNo(initialPackingListNo);
+    setFormDriverVehicle(initialDriverVehicle);
+    setFormStorageLocation(initialStorageLocation);
+    setFormError('');
+    setFormItemSearch('');
+    setFormItemPage(1);
+    setQuickCatalogQuery('');
+    setIsQuickCatalogOpen(false);
+    setFormItems(initialItems);
+
+    initialFormSnapshotRef.current = computeInboundFormSnapshot({
+      receiptCode: initialCode,
+      receiptDate: initialDate,
+      selectedWarehouseId: initialWhId,
+      formDepartmentName: initialDepartmentName,
+      formDeliverer: rawDeliverer,
+      formContractNo: initialContractNo,
+      formRequestNo: initialRequestNo,
+      formNotes: initialNotes,
+      formInboundType: initialInboundType,
+      formAmountInWords: initialAmountInWords,
+      formAttachedDocs: initialAttachedDocs,
+      formSupplier: resolvedEditSupplier,
+      formManufacturer: resolvedEditManufacturer,
+      formShipment: initialShipment,
+      formPackingListNo: initialPackingListNo,
+      formDriverVehicle: initialDriverVehicle,
+      formStorageLocation: initialStorageLocation,
+      formItems: initialItems
+    });
 
     setIsCreateModalOpen(true);
+  };
+
+  const currentFormSnapshot = useMemo(() => {
+    if (!isCreateModalOpen) return '';
+    return computeInboundFormSnapshot({
+      receiptCode: editingReceipt || isCodeManuallyEdited ? receiptCode : '',
+      receiptDate,
+      selectedWarehouseId,
+      formDepartmentName,
+      formDeliverer,
+      formContractNo,
+      formRequestNo,
+      formNotes,
+      formInboundType,
+      formAmountInWords,
+      formAttachedDocs,
+      formSupplier,
+      formManufacturer,
+      formShipment,
+      formPackingListNo,
+      formDriverVehicle,
+      formStorageLocation,
+      formItems
+    });
+  }, [
+    isCreateModalOpen,
+    editingReceipt,
+    isCodeManuallyEdited,
+    receiptCode,
+    receiptDate,
+    selectedWarehouseId,
+    formDepartmentName,
+    formDeliverer,
+    formContractNo,
+    formRequestNo,
+    formNotes,
+    formInboundType,
+    formAmountInWords,
+    formAttachedDocs,
+    formSupplier,
+    formManufacturer,
+    formShipment,
+    formPackingListNo,
+    formDriverVehicle,
+    formStorageLocation,
+    formItems
+  ]);
+
+  const isFormDirty = useMemo(
+    () =>
+      isCreateModalOpen &&
+      hasFormSnapshotChanged(initialFormSnapshotRef.current, currentFormSnapshot),
+    [isCreateModalOpen, currentFormSnapshot]
+  );
+
+  const closeFormModalImmediately = () => {
+    setIsCreateModalOpen(false);
+    setEditingReceipt(null);
+    initialFormSnapshotRef.current = null;
+  };
+
+  const triggerFormSubmit = () => {
+    const formEl = voucherFormRef.current;
+    if (formEl && typeof formEl.requestSubmit === 'function') {
+      formEl.requestSubmit();
+      return;
+    }
+    voucherSubmitBtnRef.current?.click();
+  };
+
+  const formModalGuardTitle = editingReceipt
+    ? `Chỉnh Sửa Phiếu Nhập Kho: ${editingReceipt.receiptCode}`
+    : 'Lập Phiếu Nhập Kho Mới';
+
+  const handleRequestCloseFormModal = () => {
+    if (isFormDirty) {
+      requestClose({
+        title: formModalGuardTitle,
+        trigger: 'close',
+        onConfirmClose: closeFormModalImmediately,
+        onSave: triggerFormSubmit
+      });
+      return;
+    }
+    closeFormModalImmediately();
   };
 
   const handleExportReceiptExcel = (rcp: InboundReceipt) => {
@@ -2456,16 +2602,11 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 lg:p-5 overscroll-contain">
           <ModalGuard
-            title={
-              editingReceipt
-                ? `Chỉnh Sửa Phiếu Nhập Kho: ${editingReceipt.receiptCode}`
-                : 'Lập Phiếu Nhập Kho Mới'
-            }
+            title={formModalGuardTitle}
             confirmOnEsc
-            onClose={() => {
-              setIsCreateModalOpen(false);
-              setEditingReceipt(null);
-            }}
+            hasUnsavedChanges={isFormDirty}
+            onClose={closeFormModalImmediately}
+            onSave={triggerFormSubmit}
           />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-[96vw] 2xl:max-w-[1760px] max-h-[94dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
@@ -2496,15 +2637,14 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                   </p>
                 </div>
               </div>
-              <ModalCloseButton
-                onClick={() => {
-                  setIsCreateModalOpen(false);
-                  setEditingReceipt(null);
-                }}
-              />
+              <ModalCloseButton onClick={handleRequestCloseFormModal} />
             </div>
 
-            <form onSubmit={handleSaveCreate} className="overflow-y-auto overscroll-contain flex-1">
+            <form
+              ref={voucherFormRef}
+              onSubmit={handleSaveCreate}
+              className="overflow-y-auto overscroll-contain flex-1"
+            >
               <div className="p-4 sm:p-6 space-y-4">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
@@ -3214,6 +3354,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
 
               <div className="pt-3 flex gap-2">
                 <button
+                  ref={voucherSubmitBtnRef}
                   type="submit"
                   className={`flex-1 py-2.5 text-white font-semibold text-sm rounded-xl transition shadow-md ${
                     editingReceipt
@@ -3225,10 +3366,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsCreateModalOpen(false);
-                    setEditingReceipt(null);
-                  }}
+                  onClick={handleRequestCloseFormModal}
                   className="py-2.5 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition"
                 >
                   Hủy
