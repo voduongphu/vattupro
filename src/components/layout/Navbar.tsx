@@ -86,7 +86,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
     if (isConnectingCloud) return;
     const mySeq = ++toggleSeqRef.current;
     setIsUserMenuOpen(false);
-    setDismissedCloudErrorMsg(null);
+    setRemoteLogoutNotice(null);
     const currentlyPaused =
       cloudState.status === 'paused' || Boolean(cloudState.connectionPaused);
     const shouldShowPending =
@@ -95,6 +95,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
         (cloudState.status === 'disconnected' ||
           cloudState.status === 'error' ||
           Boolean(cloudState.quotaExceeded)));
+    setDismissedCloudErrorMsg(shouldShowPending ? cloudState.errorMessage : null);
     setIsCheckingSync(shouldShowPending);
     try {
       const res = await SyncService.toggleCloudSync();
@@ -123,18 +124,21 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
     if (isConnectingCloud) return;
     const mySeq = ++toggleSeqRef.current;
     setIsUserMenuOpen(false);
-    setDismissedCloudErrorMsg(null);
+    setRemoteLogoutNotice(null);
+    setDismissedCloudErrorMsg(cloudState.errorMessage || '__dismissed__');
     setIsCheckingSync(true);
     try {
       const res = await SyncService.syncCloudChangesOnly();
       if (toggleSeqRef.current !== mySeq) return;
-      setRemoteLogoutNotice({
-        success: res.success,
-        paused: res.paused,
-        manualPaused: res.manualPaused,
-        redirected: res.redirected,
-        message: res.message
-      });
+      if (!res.success) {
+        setRemoteLogoutNotice({
+          success: res.success,
+          paused: res.paused,
+          manualPaused: res.manualPaused,
+          redirected: res.redirected,
+          message: res.message
+        });
+      }
     } catch (err: any) {
       if (toggleSeqRef.current !== mySeq) return;
       setRemoteLogoutNotice({
@@ -543,7 +547,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu, onOpenQuickSea
                       disabled={isConnectingCloud}
                       className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-100 font-semibold transition whitespace-nowrap"
                     >
-                      {t('cloudReconnectNow')}
+                      {cloudState.manualPaused ? t('cloudResumeNow') : t('cloudReconnectNow')}
                     </button>
                   )}
                   <button

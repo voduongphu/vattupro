@@ -14,7 +14,8 @@ import {
   CheckCircle2,
   Boxes,
   LogOut,
-  FileWarning
+  FileWarning,
+  BookOpen
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -84,6 +85,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: t('navUsers'),
       icon: Users,
       meta: 'Admin'
+    },
+    {
+      section: t('navGuideSection')
+    },
+    {
+      id: 'guide',
+      label: t('navGuide'),
+      icon: BookOpen,
+      meta: 'PDF'
     }
   ];
 

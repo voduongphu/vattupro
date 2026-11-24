@@ -61,6 +61,8 @@ const TRANSLATIONS = {
     navWarehouses: 'Quản Lý Kho Bãi',
     navMaterials: 'Danh Mục Vật Tư',
     navUsers: 'Người Sử Dụng',
+    navGuideSection: 'Tài liệu & Hỗ trợ',
+    navGuide: 'Hướng Dẫn Sử Dụng',
     sidebarBadgeNew: 'Mới',
     sidebarRoleAdminTitle: 'Quyền Quản Trị Viên',
     sidebarRoleStaffTitle: 'Chế độ Nhân Viên',
@@ -77,6 +79,7 @@ const TRANSLATIONS = {
     quickTabWarehouses: 'Kho bãi',
     quickTabMaterials: 'Vật tư',
     quickTabUsers: 'Người dùng',
+    quickTabGuide: 'Hướng dẫn',
 
     // Login Screen & Login Modal
     loginModalTitle: 'Hệ Thống Quản Lý Vật Tư',
@@ -218,6 +221,8 @@ const TRANSLATIONS = {
     navWarehouses: 'Warehouse Setup',
     navMaterials: 'Materials Catalog',
     navUsers: 'User Accounts',
+    navGuideSection: 'Documentation',
+    navGuide: 'User Guide',
     sidebarBadgeNew: 'New',
     sidebarRoleAdminTitle: 'Administrator Access',
     sidebarRoleStaffTitle: 'Staff Mode',
@@ -234,6 +239,7 @@ const TRANSLATIONS = {
     quickTabWarehouses: 'Warehouses',
     quickTabMaterials: 'Materials',
     quickTabUsers: 'Users',
+    quickTabGuide: 'User Guide',
 
     // Login Screen & Login Modal
     loginModalTitle: 'Material Management System',

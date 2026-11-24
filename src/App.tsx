@@ -17,6 +17,7 @@ import { InventoryReport } from './components/reports/InventoryReport';
 import { WarehouseManager } from './components/warehouses/WarehouseManager';
 import { MaterialCatalog } from './components/materials/MaterialCatalog';
 import { UserManager } from './components/users/UserManager';
+import { UserGuide } from './components/guide/UserGuide';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { StickyTableHeadersController } from './components/common/StickyTableHeadersController';
 import {
@@ -37,6 +38,7 @@ import {
   Warehouse,
   Package,
   Users,
+  BookOpen,
   AlertTriangle,
   X
 } from 'lucide-react';
@@ -67,7 +69,8 @@ const MainLayout: React.FC = () => {
     { id: 'report', label: t('quickTabReport'), icon: BarChart3 },
     { id: 'warehouses', label: t('quickTabWarehouses'), icon: Warehouse },
     { id: 'materials', label: t('quickTabMaterials'), icon: Package },
-    { id: 'users', label: t('quickTabUsers'), icon: Users }
+    { id: 'users', label: t('quickTabUsers'), icon: Users },
+    { id: 'guide', label: t('quickTabGuide'), icon: BookOpen }
   ];
 
   const mainRef = useRef<HTMLElement | null>(null);
@@ -288,6 +291,8 @@ const MainLayout: React.FC = () => {
         );
       case 'users':
         return <UserManager />;
+      case 'guide':
+        return <UserGuide onNavigate={handleSelectTab} />;
       default:
         return <DashboardOverview onNavigate={handleSelectTab} />;
     }
