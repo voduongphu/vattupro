@@ -563,6 +563,8 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Báo Cáo Nhập - Xuất - Tồn Đa Chiều': 'Multidimensional Inventory Report',
   'Tra cứu đa điều kiện: Packing List, Shipment, Bản vẽ, Hạng mục, Kiện hàng, NSX, NCC, Khối lượng & Số lượng':
     'Multi-criteria query: Packing List, Shipment, Drawing, Category, Package, Mfr, Supplier, Weight & Quantity',
+  'Tra cứu đa điều kiện: Packing List, Shipment, Bản vẽ, Hạng mục, Package No., NSX, NCC, Khối lượng & Số lượng':
+    'Multi-criteria query: Packing List, Shipment, Drawing, Category, Package No., Mfr, Supplier, Weight & Quantity',
   'Hư Hỏng, Thiếu Hụt, Thừa Hàng (OS&D)': 'Over, Short & Damaged (OS&D)',
   'Danh Sách Phiếu Nhập': 'Inbound Receipts List',
   'Lập Phiếu Nhập Mới': 'Create Inbound Receipt',

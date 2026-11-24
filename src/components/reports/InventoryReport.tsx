@@ -25,7 +25,6 @@ export const InventoryReport: React.FC = () => {
   const [manufacturer, setManufacturer] = useState('');
   const [supplier, setSupplier] = useState('');
   const [packageNo, setPackageNo] = useState('');
-  const [packageName, setPackageName] = useState('');
   const [category, setCategory] = useState('');
   const [drawingNo, setDrawingNo] = useState('');
   const [storageLocation, setStorageLocation] = useState('');
@@ -43,7 +42,6 @@ export const InventoryReport: React.FC = () => {
   const defManufacturer = useDeferredValue(manufacturer);
   const defSupplier = useDeferredValue(supplier);
   const defPackageNo = useDeferredValue(packageNo);
-  const defPackageName = useDeferredValue(packageName);
   const defCategory = useDeferredValue(category);
   const defDrawingNo = useDeferredValue(drawingNo);
   const defStorageLocation = useDeferredValue(storageLocation);
@@ -84,7 +82,6 @@ export const InventoryReport: React.FC = () => {
       manufacturer: defManufacturer || undefined,
       supplier: defSupplier || undefined,
       packageNo: defPackageNo || undefined,
-      packageName: defPackageName || undefined,
       category: defCategory || undefined,
       drawingNo: defDrawingNo || undefined,
       storageLocation: defStorageLocation || undefined,
@@ -102,7 +99,6 @@ export const InventoryReport: React.FC = () => {
     defManufacturer,
     defSupplier,
     defPackageNo,
-    defPackageName,
     defCategory,
     defDrawingNo,
     defStorageLocation,
@@ -135,7 +131,6 @@ export const InventoryReport: React.FC = () => {
     setManufacturer('');
     setSupplier('');
     setPackageNo('');
-    setPackageName('');
     setCategory('');
     setDrawingNo('');
     setStorageLocation('');
@@ -149,8 +144,7 @@ export const InventoryReport: React.FC = () => {
       'STT': index + 1,
       'Packing List': r.packingListNo,
       'Shipment': r.shipment,
-      'Kiện Hàng (Số kiện)': r.packageNo,
-      'Tên Kiện Hàng': r.packageName,
+      'PACKAGE No.': r.packageNo,
       'Mã Vật Tư': r.materialCode,
       'Vật Tư Thiết Bị': r.materialName,
       'ĐVT': r.unit,
@@ -249,7 +243,7 @@ export const InventoryReport: React.FC = () => {
           <div>
             <h1 className="text-lg sm:text-xl font-bold text-slate-900">Báo Cáo Nhập - Xuất - Tồn Vật Tư Thiết Bị</h1>
             <p className="text-slate-500 text-xs mt-0.5">
-              Tra cứu đa điều kiện: Packing List, Shipment, Bản vẽ, Hạng mục, Kiện hàng, NSX, NCC, Khối lượng & Số lượng
+              Tra cứu đa điều kiện: Packing List, Shipment, Bản vẽ, Hạng mục, Package No., NSX, NCC, Khối lượng & Số lượng
             </p>
           </div>
         </div>
@@ -306,7 +300,7 @@ export const InventoryReport: React.FC = () => {
             data-quick-search="primary"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Tìm kiếm tổng hợp (mã vật tư, tên kiện, vị trí lưu kho/bãi, hạng mục, bản vẽ, packing list, shipment...)"
+            placeholder="Tìm kiếm tổng hợp (mã vật tư, Package No., vị trí lưu kho/bãi, hạng mục, bản vẽ, packing list, shipment...)"
             className="w-full pl-9 pr-16 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px] sm:min-h-0"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-2.5" />
@@ -394,15 +388,15 @@ export const InventoryReport: React.FC = () => {
             />
           </div>
 
-          {/* Số kiện */}
+          {/* PACKAGE No. (Số kiện) */}
           <div>
-            <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">Số kiện (Pkg No)</label>
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">PACKAGE No. (Số kiện)</label>
             <input
               type="text"
               value={packageNo}
               onChange={(e) => setPackageNo(e.target.value)}
               placeholder="PKG-01..."
-              className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none"
+              className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-mono outline-none"
             />
           </div>
 
@@ -438,20 +432,8 @@ export const InventoryReport: React.FC = () => {
             </datalist>
           </div>
 
-          {/* Tên kiện */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">Tên kiện hàng</label>
-            <input
-              type="text"
-              value={packageName}
-              onChange={(e) => setPackageName(e.target.value)}
-              placeholder="Kiện cụm van..."
-              className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg outline-none"
-            />
-          </div>
-
           {/* Vị trí lưu kho/bãi */}
-          <div>
+          <div className="lg:col-span-2">
             <label className="block text-[11px] font-semibold text-emerald-700 uppercase mb-1">Vị trí lưu kho/bãi</label>
             <input
               type="text"
@@ -568,7 +550,7 @@ export const InventoryReport: React.FC = () => {
             Bảng Chi Tiết Nhập - Xuất - Tồn Sau Gộp ({records.length.toLocaleString('vi-VN')} vật tư gộp)
           </div>
           <span className="text-xs text-slate-500">
-            Tự động gộp theo Packing List, Shipment, Kiện hàng, Mã vật tư &amp; Tên vật tư | Tồn = (Nhập + Nhập trả) - (Xuất + Tái xuất)
+            Tự động gộp theo Packing List, Shipment, Package No., Mã vật tư &amp; Tên vật tư | Tồn = (Nhập + Nhập trả) - (Xuất + Tái xuất)
           </span>
         </div>
 
@@ -579,7 +561,7 @@ export const InventoryReport: React.FC = () => {
                 <th className="p-3 w-10 text-center">STT</th>
                 <th className="p-3 w-32">PACKING LIST</th>
                 <th className="p-3 w-28">SHIPMENT</th>
-                <th className="p-3 w-32">KIỆN HÀNG</th>
+                <th className="p-3 w-32 normal-case">PACKAGE No.</th>
                 <th className="p-3 w-32">MÃ VẬT TƯ</th>
                 <th className="p-3 w-56">VẬT TƯ THIẾT BỊ</th>
                 <th className="p-3 w-36">VỊ TRÍ LƯU KHO/BÃI</th>
@@ -605,12 +587,12 @@ export const InventoryReport: React.FC = () => {
                     <td className="p-3 text-center text-slate-400">{(pageStartIdx + idx + 1).toLocaleString('vi-VN')}</td>
                     <td className="p-3 font-mono font-bold text-blue-700" data-user-content="true">{r.packingListNo}</td>
                     <td className="p-3 font-mono text-slate-700" data-user-content="true">{r.shipment}</td>
-                    <td className="p-3">
-                      <span className="font-bold text-slate-900 block" data-user-content="true">{r.packageNo}</span>
-                      {r.packageName &&
-                        r.packageName.trim().toUpperCase() !== r.packageNo.trim().toUpperCase() && (
-                          <span className="text-[11px] text-slate-500 line-clamp-1" data-user-content="true">{r.packageName}</span>
-                        )}
+                    <td className="p-3 font-mono font-bold text-slate-900">
+                      {r.packageNo && r.packageNo !== 'N/A' ? (
+                        <span data-user-content="true">{r.packageNo}</span>
+                      ) : (
+                        <span className="text-slate-400 font-normal">N/A</span>
+                      )}
                     </td>
                     <td className="p-3 font-mono font-semibold text-slate-800">
                       {r.materialCode && r.materialCode !== 'N/A' ? (

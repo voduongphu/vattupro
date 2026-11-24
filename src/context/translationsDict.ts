@@ -512,9 +512,12 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
   'Đặt lại bộ lọc': 'Reset Filters',
   'Tìm kiếm tổng hợp (mã vật tư, tên kiện, vị trí lưu kho/bãi, hạng mục, bản vẽ, packing list, shipment...)':
     'Combined search (material code, package name, storage location, category, drawing, packing list, shipment...)',
+  'Tìm kiếm tổng hợp (mã vật tư, Package No., vị trí lưu kho/bãi, hạng mục, bản vẽ, packing list, shipment...)':
+    'Combined search (material code, Package No., storage location, category, drawing, packing list, shipment...)',
   'Shipment / Vận đơn': 'Shipment / Bill of Lading',
   'Hạng mục dự án': 'Project Category',
   'Bản vẽ (DWG No)': 'Drawing (DWG No.)',
+  'PACKAGE No. (Số kiện)': 'PACKAGE No.',
   'Tên kiện hàng': 'Package Name',
   'Đường ống, Kết cấu...': 'Piping, Steel Structure...',
   'Hòa Phát, Petro...': 'Supplier name...',
@@ -535,9 +538,12 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
   'Bảng Chi Tiết Nhập - Xuất - Tồn Sau Gộp': 'Consolidated Inventory Inbound-Outbound-Stock Table',
   'Tự động gộp theo Packing List, Shipment, Kiện hàng, Mã vật tư & Tên vật tư | Tồn = (Nhập + Nhập trả) - (Xuất + Tái xuất)':
     'Auto-consolidated by Packing List, Shipment, Package, Material Code & Name | Stock = (Inbound + Return) - (Outbound + Transfer)',
+  'Tự động gộp theo Packing List, Shipment, Package No., Mã vật tư & Tên vật tư | Tồn = (Nhập + Nhập trả) - (Xuất + Tái xuất)':
+    'Auto-consolidated by Packing List, Shipment, Package No., Material Code & Name | Stock = (Inbound + Return) - (Outbound + Transfer)',
   'PACKING LIST': 'PACKING LIST',
   'SHIPMENT': 'SHIPMENT',
   'KIỆN HÀNG': 'PACKAGE',
+  'PACKAGE No.': 'PACKAGE No.',
   'MÃ VẬT TƯ': 'MATERIAL CODE',
   'VẬT TƯ THIẾT BỊ': 'MATERIALS & EQUIPMENT',
   'VỊ TRÍ LƯU KHO/BÃI': 'STORAGE LOCATION',
