@@ -1,8 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { InboundItemDetail, MaterialItem } from '../types/inventory.ts';
+import type {
+  InboundItemDetail,
+  InventoryStockRecord,
+  MaterialItem,
+  OutboundItemDetail
+} from '../types/inventory.ts';
 import {
   applyExcelPasteToInboundItems,
+  applyExcelPasteToOutboundItems,
   parseExcelClipboardGrid,
   parsePastedNumber,
   shouldHandleBulkExcelPaste
@@ -193,5 +199,169 @@ describe('inboundExcelPaste', () => {
     assert.equal(parsePastedNumber('1.250.000 VNĐ'), 1250000);
     assert.equal(parsePastedNumber(''), null);
     assert.equal(parsePastedNumber('abc'), null);
+  });
+});
+
+function makeBlankOutboundRow(idx: number): OutboundItemDetail {
+  return {
+    id: `out-row-${idx}`,
+    materialCode: '',
+    materialName: '',
+    unit: 'Ống',
+    batchCode: '',
+    packingListNo: 'N/A',
+    shipment: 'N/A',
+    packageNo: '',
+    packageName: '',
+    category: 'Vật tư dự án',
+    drawingNo: 'N/A',
+    manufacturer: 'N/A',
+    supplier: 'N/A',
+    quantity: 1,
+    weightKg: 0,
+    purpose: '',
+    note: ''
+  };
+}
+
+const SAMPLE_STOCK: InventoryStockRecord[] = [
+  {
+    id: 'st-1',
+    warehouseId: 'wh-1',
+    warehouseName: 'Kho Dung Quất',
+    packingListNo: 'PL-2026-88',
+    shipment: 'SHP-88',
+    packageNo: 'PKG-STK-01',
+    packageName: 'Kiện PKG-STK-01',
+    materialCode: 'VT-001',
+    materialName: 'Ống thép đúc DN200 SCH40',
+    unit: 'Cây',
+    category: 'Đường ống',
+    drawingNo: 'DWG-001',
+    manufacturer: 'Nippon Steel',
+    supplier: 'PetroSupply',
+    storageLocation: 'Bãi A1',
+    currentQuantity: 8,
+    currentWeightKg: 800,
+    inboundQuantity: 10,
+    inboundWeightKg: 1000,
+    returnInboundQuantity: 0,
+    returnInboundWeightKg: 0,
+    outboundQuantity: 2,
+    outboundWeightKg: 200,
+    transferOutboundQuantity: 0,
+    transferOutboundWeightKg: 0,
+    lastUpdated: '2026-11-24T00:00:00.000Z'
+  }
+];
+
+const stockByCode = (code: string) =>
+  SAMPLE_STOCK.find((s) => s.materialCode.toLowerCase() === code.trim().toLowerCase());
+const stockByName = (name: string) =>
+  SAMPLE_STOCK.find(
+    (s) => s.materialName.normalize('NFC').trim().toLowerCase() === name.normalize('NFC').trim().toLowerCase()
+  );
+
+describe('outboundExcelPaste', () => {
+  it('auto-adds rows into an empty outbound table and matches stock first then catalog fallback', () => {
+    const grid = parseExcelClipboardGrid('VT-001\r\nVT-002\r\nVT-MANUAL-03\r\n');
+    const result = applyExcelPasteToOutboundItems({
+      existingItems: [],
+      startRowIndex: 0,
+      startField: 'materialCode',
+      grid,
+      createBlankRow: makeBlankOutboundRow,
+      findStockByCode: stockByCode,
+      findStockByName: stockByName,
+      findMaterialByCode: byCode,
+      findMaterialByName: byName
+    });
+
+    assert.equal(result.items.length, 3);
+    assert.equal(result.addedRowCount, 3);
+    assert.equal(result.matchedStockCount, 1);
+    assert.equal(result.matchedCatalogCount, 1);
+
+    // Row 0: matched from stock (800kg / 8 = 100kg per unit * qty 1 = 100kg)
+    assert.equal(result.items[0].materialCode, 'VT-001');
+    assert.equal(result.items[0].materialName, 'Ống thép đúc DN200 SCH40');
+    assert.equal(result.items[0].batchCode, 'PKG-STK-01');
+    assert.equal(result.items[0].packingListNo, 'PL-2026-88');
+    assert.equal(result.items[0].shipment, 'SHP-88');
+    assert.equal(result.items[0].unit, 'Cây');
+    assert.equal(result.items[0].weightKg, 100);
+
+    // Row 1: matched from catalog fallback (18kg * 1)
+    assert.equal(result.items[1].materialCode, 'VT-002');
+    assert.equal(result.items[1].materialName, 'Mặt bích hàn cổ 8 inch 150#');
+    assert.equal(result.items[1].batchCode, 'PKG-02');
+    assert.equal(result.items[1].unit, 'Cái');
+    assert.equal(result.items[1].weightKg, 18);
+
+    // Row 2: unmatched manual code preserved cleanly
+    assert.equal(result.items[2].materialCode, 'VT-MANUAL-03');
+    assert.equal(result.items[2].materialName, '');
+  });
+
+  it('auto-adds rows and resolves codes when pasting multiple material names into outbound', () => {
+    const grid = parseExcelClipboardGrid(
+      'Ống thép đúc DN200 SCH40\nMặt bích hàn cổ 8 inch 150#\nBu lông neo M24\n'
+    );
+    const result = applyExcelPasteToOutboundItems({
+      existingItems: [makeBlankOutboundRow(0)],
+      startRowIndex: 0,
+      startField: 'materialName',
+      grid,
+      createBlankRow: makeBlankOutboundRow,
+      findStockByCode: stockByCode,
+      findStockByName: stockByName,
+      findMaterialByCode: byCode,
+      findMaterialByName: byName
+    });
+
+    assert.equal(result.items.length, 3);
+    assert.equal(result.addedRowCount, 2);
+    assert.equal(result.matchedStockCount, 1);
+    assert.equal(result.matchedCatalogCount, 1);
+
+    assert.equal(result.items[0].materialCode, 'VT-001');
+    assert.equal(result.items[0].packingListNo, 'PL-2026-88');
+    assert.equal(result.items[1].materialCode, 'VT-002');
+    assert.equal(result.items[1].unit, 'Cái');
+    assert.equal(result.items[2].materialCode, '');
+    assert.equal(result.items[2].materialName, 'Bu lông neo M24');
+  });
+
+  it('supports multi-column outbound paste where explicit pasted values override defaults', () => {
+    const raw =
+      'VT-001\tỐng thép cắt ngắn\tLOT-CUSTOM\t4\tCây\t420.5\tXuất tổ lắp ống\r\n' +
+      'VT-002\t\t\t5\t\t\tXuất dự phòng\r\n';
+    const grid = parseExcelClipboardGrid(raw);
+    const result = applyExcelPasteToOutboundItems({
+      existingItems: [],
+      startRowIndex: 0,
+      startField: 'materialCode',
+      grid,
+      createBlankRow: makeBlankOutboundRow,
+      findStockByCode: stockByCode,
+      findStockByName: stockByName,
+      findMaterialByCode: byCode,
+      findMaterialByName: byName
+    });
+
+    assert.equal(result.items.length, 2);
+    assert.equal(result.items[0].materialName, 'Ống thép cắt ngắn');
+    assert.equal(result.items[0].batchCode, 'LOT-CUSTOM');
+    assert.equal(result.items[0].quantity, 4);
+    assert.equal(result.items[0].weightKg, 420.5);
+    assert.equal(result.items[0].note, 'Xuất tổ lắp ống');
+
+    // Row 1: blank name/batch/unit/weight auto-filled from catalog (5 * 18kg = 90kg)
+    assert.equal(result.items[1].materialName, 'Mặt bích hàn cổ 8 inch 150#');
+    assert.equal(result.items[1].batchCode, 'PKG-02');
+    assert.equal(result.items[1].unit, 'Cái');
+    assert.equal(result.items[1].quantity, 5);
+    assert.equal(result.items[1].weightKg, 90);
+    assert.equal(result.items[1].note, 'Xuất dự phòng');
   });
 });

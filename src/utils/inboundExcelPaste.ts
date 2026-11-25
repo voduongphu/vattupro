@@ -1,4 +1,9 @@
-import type { InboundItemDetail, MaterialItem } from '../types/inventory';
+import type {
+  InboundItemDetail,
+  InventoryStockRecord,
+  MaterialItem,
+  OutboundItemDetail
+} from '../types/inventory';
 import { roundQty } from './additiveMerge';
 
 export type InboundPasteField =
@@ -362,6 +367,338 @@ export function applyExcelPasteToInboundItems(
     pastedRowCount: grid.length,
     pastedColCount: maxColCount,
     addedRowCount,
+    matchedCatalogCount
+  };
+}
+
+export type OutboundPasteField =
+  | 'materialCode'
+  | 'materialName'
+  | 'batchCode'
+  | 'quantity'
+  | 'unit'
+  | 'weightKg'
+  | 'note';
+
+export const OUTBOUND_PASTE_COLUMN_ORDER: readonly OutboundPasteField[] = [
+  'materialCode',
+  'materialName',
+  'batchCode',
+  'quantity',
+  'unit',
+  'weightKg',
+  'note'
+];
+
+export interface ApplyOutboundExcelPasteParams {
+  existingItems: OutboundItemDetail[];
+  startRowIndex: number;
+  startField: OutboundPasteField;
+  grid: string[][];
+  createBlankRow: (idxOffset: number) => OutboundItemDetail;
+  findStockByCode?: (code: string) => InventoryStockRecord | undefined;
+  findStockByName?: (name: string) => InventoryStockRecord | undefined;
+  findMaterialByCode: (code: string) => MaterialItem | undefined;
+  findMaterialByName: (name: string) => MaterialItem | undefined;
+}
+
+export interface ApplyOutboundExcelPasteResult {
+  items: OutboundItemDetail[];
+  pastedRowCount: number;
+  pastedColCount: number;
+  addedRowCount: number;
+  matchedStockCount: number;
+  matchedCatalogCount: number;
+}
+
+function isBlankOrNA(value?: string): boolean {
+  const trimmed = (value || '').trim();
+  return !trimmed || trimmed.toUpperCase() === 'N/A';
+}
+
+function applyStockMetadataToOutboundRow(
+  row: OutboundItemDetail,
+  st: InventoryStockRecord,
+  explicitFields: Set<OutboundPasteField>,
+  matchedBy: 'code' | 'name',
+  fallbackCatalog?: MaterialItem
+): void {
+  if (matchedBy === 'code') {
+    if (!explicitFields.has('materialName') && st.materialName) {
+      row.materialName = st.materialName;
+    }
+  } else if (!explicitFields.has('materialCode') && !(row.materialCode || '').trim() && st.materialCode) {
+    row.materialCode = st.materialCode;
+  }
+
+  if (!explicitFields.has('unit') && st.unit) {
+    row.unit = st.unit;
+  }
+
+  const defaultBatch = !isBlankOrNA(st.packageNo)
+    ? st.packageNo
+    : !isBlankOrNA(st.shipment)
+      ? st.shipment
+      : '';
+  if (!explicitFields.has('batchCode') && !(row.batchCode || '').trim() && defaultBatch) {
+    row.batchCode = defaultBatch;
+  }
+
+  if (isBlankOrNA(row.packingListNo) && !isBlankOrNA(st.packingListNo)) {
+    row.packingListNo = st.packingListNo;
+  }
+  if (isBlankOrNA(row.shipment) && !isBlankOrNA(st.shipment)) {
+    row.shipment = st.shipment;
+  }
+  if (isBlankOrNA(row.packageNo) && !isBlankOrNA(st.packageNo)) {
+    row.packageNo = st.packageNo;
+  }
+  if (!(row.packageName || '').trim() && st.packageName) {
+    row.packageName = st.packageName;
+  }
+  if ((!row.category || row.category === 'Vật tư dự án') && st.category) {
+    row.category = st.category;
+  }
+  if (isBlankOrNA(row.drawingNo) && !isBlankOrNA(st.drawingNo)) {
+    row.drawingNo = st.drawingNo;
+  }
+  if (isBlankOrNA(row.manufacturer) && !isBlankOrNA(st.manufacturer)) {
+    row.manufacturer = st.manufacturer;
+  }
+  if (isBlankOrNA(row.supplier) && !isBlankOrNA(st.supplier)) {
+    row.supplier = st.supplier;
+  }
+
+  if (!explicitFields.has('weightKg')) {
+    const qty = Math.max(0, roundQty(row.quantity));
+    if (qty > 0) {
+      if (st.currentQuantity > 0 && st.currentWeightKg > 0) {
+        const unitWeight = st.currentWeightKg / st.currentQuantity;
+        row.weightKg = Math.round(unitWeight * qty * 100) / 100;
+      } else if (fallbackCatalog && fallbackCatalog.unitWeightKg && fallbackCatalog.unitWeightKg > 0) {
+        row.weightKg = Math.round(fallbackCatalog.unitWeightKg * qty * 100) / 100;
+      }
+    }
+  }
+}
+
+function applyCatalogMetadataToOutboundRow(
+  row: OutboundItemDetail,
+  found: MaterialItem,
+  explicitFields: Set<OutboundPasteField>,
+  matchedBy: 'code' | 'name'
+): void {
+  if (matchedBy === 'code') {
+    if (!explicitFields.has('materialName') && found.name) {
+      row.materialName = found.name;
+    }
+  } else if (!explicitFields.has('materialCode') && !(row.materialCode || '').trim() && found.code) {
+    row.materialCode = found.code;
+  }
+
+  if (!explicitFields.has('unit') && found.unit) {
+    row.unit = found.unit;
+  }
+
+  if (
+    !explicitFields.has('batchCode') &&
+    !(row.batchCode || '').trim() &&
+    !isBlankOrNA(found.packageNo)
+  ) {
+    row.batchCode = found.packageNo!;
+    if (isBlankOrNA(row.packageNo)) {
+      row.packageNo = found.packageNo!;
+    }
+  }
+
+  if ((!row.category || row.category === 'Vật tư dự án') && found.category && found.category !== 'Chung') {
+    row.category = found.category;
+  }
+  if (isBlankOrNA(row.drawingNo) && found.drawingNo && !isBlankOrNA(found.drawingNo)) {
+    row.drawingNo = found.drawingNo;
+  }
+  if (isBlankOrNA(row.manufacturer) && found.manufacturer && !isBlankOrNA(found.manufacturer)) {
+    row.manufacturer = found.manufacturer;
+  }
+  if (isBlankOrNA(row.supplier) && found.supplier && !isBlankOrNA(found.supplier)) {
+    row.supplier = found.supplier;
+  }
+
+  if (!explicitFields.has('weightKg') && found.unitWeightKg && found.unitWeightKg > 0) {
+    const qty = Math.max(0, roundQty(row.quantity));
+    if (qty > 0) {
+      row.weightKg = Math.round(found.unitWeightKg * qty * 100) / 100;
+    }
+  }
+}
+
+/**
+ * Dán ma trận dữ liệu từ Excel vào danh sách dòng vật tư của phiếu xuất kho thủ công.
+ * Tự động mở rộng thêm dòng mới khi số dòng dán vượt quá số dòng hiện có,
+ * ưu tiên tra cứu từ Tồn kho hiện tại (và dự phòng Danh mục vật tư) theo Mã vật tư hoặc Tên vật tư.
+ */
+export function applyExcelPasteToOutboundItems(
+  params: ApplyOutboundExcelPasteParams
+): ApplyOutboundExcelPasteResult {
+  const {
+    existingItems,
+    startRowIndex,
+    startField,
+    grid,
+    createBlankRow,
+    findStockByCode,
+    findStockByName,
+    findMaterialByCode,
+    findMaterialByName
+  } = params;
+
+  const safeStartRow = Math.max(0, Math.min(startRowIndex, existingItems.length));
+  const startColIdx = OUTBOUND_PASTE_COLUMN_ORDER.indexOf(startField);
+
+  if (grid.length === 0 || startColIdx < 0) {
+    return {
+      items: existingItems,
+      pastedRowCount: 0,
+      pastedColCount: 0,
+      addedRowCount: 0,
+      matchedStockCount: 0,
+      matchedCatalogCount: 0
+    };
+  }
+
+  const nextItems = existingItems.map((it) => ({ ...it }));
+  let addedRowCount = 0;
+  let matchedStockCount = 0;
+  let matchedCatalogCount = 0;
+  let maxColCount = 0;
+
+  for (let r = 0; r < grid.length; r++) {
+    const rowCells = grid[r];
+    if (rowCells.length > maxColCount) {
+      maxColCount = rowCells.length;
+    }
+
+    const targetIdx = safeStartRow + r;
+    while (nextItems.length <= targetIdx) {
+      nextItems.push(createBlankRow(nextItems.length));
+      addedRowCount += 1;
+    }
+
+    const prevRow = nextItems[targetIdx];
+    const rowCopy: OutboundItemDetail = { ...prevRow };
+    const explicitFields = new Set<OutboundPasteField>();
+
+    for (let c = 0; c < rowCells.length; c++) {
+      const colIdx = startColIdx + c;
+      if (colIdx >= OUTBOUND_PASTE_COLUMN_ORDER.length) break;
+      const field = OUTBOUND_PASTE_COLUMN_ORDER[colIdx];
+      const cellVal = rowCells[c];
+
+      if (cellVal === '') continue;
+
+      if (field === 'quantity') {
+        const parsed = parsePastedNumber(cellVal);
+        if (parsed !== null) {
+          rowCopy.quantity = Math.max(0, roundQty(parsed));
+          explicitFields.add('quantity');
+        }
+      } else if (field === 'weightKg') {
+        const parsed = parsePastedNumber(cellVal);
+        if (parsed !== null) {
+          rowCopy.weightKg = Math.max(0, Math.round(parsed * 100) / 100);
+          explicitFields.add('weightKg');
+        }
+      } else {
+        rowCopy[field] = cellVal;
+        explicitFields.add(field);
+        if (field === 'batchCode' && isBlankOrNA(rowCopy.packingListNo)) {
+          rowCopy.packageNo = cellVal;
+        }
+      }
+    }
+
+    // Ưu tiên khớp Tồn kho hiện tại -> dự phòng Danh mục vật tư khi dán Mã vật tư hoặc Tên vật tư
+    if (explicitFields.has('materialCode')) {
+      const stockByCode = findStockByCode?.(rowCopy.materialCode);
+      if (stockByCode) {
+        matchedStockCount += 1;
+        applyStockMetadataToOutboundRow(
+          rowCopy,
+          stockByCode,
+          explicitFields,
+          'code',
+          findMaterialByCode(rowCopy.materialCode)
+        );
+      } else {
+        const matByCode = findMaterialByCode(rowCopy.materialCode);
+        if (matByCode) {
+          matchedCatalogCount += 1;
+          applyCatalogMetadataToOutboundRow(rowCopy, matByCode, explicitFields, 'code');
+        } else if (explicitFields.has('materialName')) {
+          const stockByName = findStockByName?.(rowCopy.materialName);
+          if (stockByName) {
+            matchedStockCount += 1;
+            applyStockMetadataToOutboundRow(
+              rowCopy,
+              stockByName,
+              explicitFields,
+              'name',
+              findMaterialByName(rowCopy.materialName)
+            );
+          } else {
+            const matByName = findMaterialByName(rowCopy.materialName);
+            if (matByName) {
+              matchedCatalogCount += 1;
+              applyCatalogMetadataToOutboundRow(rowCopy, matByName, explicitFields, 'name');
+            }
+          }
+        }
+      }
+    } else if (explicitFields.has('materialName')) {
+      const stockByName = findStockByName?.(rowCopy.materialName);
+      if (stockByName) {
+        matchedStockCount += 1;
+        applyStockMetadataToOutboundRow(
+          rowCopy,
+          stockByName,
+          explicitFields,
+          'name',
+          findMaterialByName(rowCopy.materialName)
+        );
+      } else {
+        const matByName = findMaterialByName(rowCopy.materialName);
+        if (matByName) {
+          matchedCatalogCount += 1;
+          applyCatalogMetadataToOutboundRow(rowCopy, matByName, explicitFields, 'name');
+        }
+      }
+    } else if (explicitFields.has('quantity') && !explicitFields.has('weightKg')) {
+      // Nếu chỉ dán cột Số lượng cho các dòng đã có dữ liệu -> tự cập nhật lại khối lượng
+      const nextQty = Math.max(0, roundQty(rowCopy.quantity));
+      const prevQty = roundQty(prevRow.quantity);
+      const currW = Number(prevRow.weightKg) || 0;
+      const found = findMaterialByCode(rowCopy.materialCode);
+      if (found && found.unitWeightKg && found.unitWeightKg > 0) {
+        const prevAutoW = Math.round(found.unitWeightKg * prevQty * 100) / 100;
+        if (currW === 0 || Math.abs(currW - prevAutoW) < 0.05) {
+          rowCopy.weightKg = Math.round(found.unitWeightKg * nextQty * 100) / 100;
+        } else if (prevQty > 0 && currW > 0 && nextQty > 0) {
+          rowCopy.weightKg = Math.round((currW / prevQty) * nextQty * 100) / 100;
+        }
+      } else if (prevQty > 0 && currW > 0 && nextQty > 0) {
+        rowCopy.weightKg = Math.round((currW / prevQty) * nextQty * 100) / 100;
+      }
+    }
+
+    nextItems[targetIdx] = rowCopy;
+  }
+
+  return {
+    items: nextItems,
+    pastedRowCount: grid.length,
+    pastedColCount: maxColCount,
+    addedRowCount,
+    matchedStockCount,
     matchedCatalogCount
   };
 }

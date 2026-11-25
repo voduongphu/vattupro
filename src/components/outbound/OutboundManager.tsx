@@ -46,6 +46,12 @@ import {
   type OutboundValidatedRowEntry
 } from '../../utils/outboundImportValidation';
 import {
+  applyExcelPasteToOutboundItems,
+  parseExcelClipboardGrid,
+  shouldHandleBulkExcelPaste,
+  type OutboundPasteField
+} from '../../utils/inboundExcelPaste';
+import {
   ArrowUpRight,
   Plus,
   FileSpreadsheet,
@@ -65,7 +71,8 @@ import {
   ArrowDown,
   Package,
   Check,
-  ShieldAlert
+  ShieldAlert,
+  ClipboardPaste
 } from 'lucide-react';
 
 export type ReceiptSortField = 'date' | 'code';
@@ -228,6 +235,26 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
   // Thanh tìm kiếm nhanh từ tồn kho trực tiếp trong Form lập phiếu
   const [quickStockQuery, setQuickStockQuery] = useState('');
   const [isQuickStockOpen, setIsQuickStockOpen] = useState(false);
+  const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  const pasteNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!isCreateModalOpen) {
+      setPasteNotice(null);
+      if (pasteNoticeTimerRef.current) {
+        clearTimeout(pasteNoticeTimerRef.current);
+        pasteNoticeTimerRef.current = null;
+      }
+    }
+  }, [isCreateModalOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (pasteNoticeTimerRef.current) {
+        clearTimeout(pasteNoticeTimerRef.current);
+      }
+    };
+  }, []);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -308,6 +335,61 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     }
     return map;
   }, [materials]);
+
+  const materialNameMap = useMemo(() => {
+    const map = new Map<string, MaterialItem>();
+    for (let i = 0; i < materials.length; i++) {
+      const key = (materials[i].name || '').normalize('NFC').trim().toLowerCase();
+      if (key && !map.has(key)) {
+        map.set(key, materials[i]);
+      }
+    }
+    return map;
+  }, [materials]);
+
+  const { stockByCodeMap, stockByNameMap } = useMemo(() => {
+    const byCode = new Map<string, InventoryStockRecord>();
+    const byName = new Map<string, InventoryStockRecord>();
+
+    const scoreStock = (st: InventoryStockRecord): number => {
+      let score = 0;
+      if (selectedWarehouseId && st.warehouseId === selectedWarehouseId) score += 4;
+      if (st.currentQuantity > 0) score += 2;
+      if (st.currentWeightKg > 0) score += 1;
+      return score;
+    };
+
+    for (let i = 0; i < stockRecords.length; i++) {
+      const st = stockRecords[i];
+      const nextScore = scoreStock(st);
+
+      const codeKey = (st.materialCode || '').trim().toLowerCase();
+      if (codeKey) {
+        const existing = byCode.get(codeKey);
+        if (
+          !existing ||
+          nextScore > scoreStock(existing) ||
+          (nextScore === scoreStock(existing) && st.currentQuantity > existing.currentQuantity)
+        ) {
+          byCode.set(codeKey, st);
+        }
+      }
+
+      const nameKey = (st.materialName || '').normalize('NFC').trim().toLowerCase();
+      if (nameKey) {
+        const existing = byName.get(nameKey);
+        if (
+          !existing ||
+          nextScore > scoreStock(existing) ||
+          (nextScore === scoreStock(existing) && st.currentQuantity > existing.currentQuantity)
+        ) {
+          byName.set(nameKey, st);
+        }
+      }
+    }
+
+    return { stockByCodeMap: byCode, stockByNameMap: byName };
+  }, [stockRecords, selectedWarehouseId]);
 
   const generateNextPxkCode = (
     existingList: OutboundReceipt[],
@@ -690,31 +772,30 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     }
   };
 
+  const createBlankOutboundItem = (idxOffset = 0): OutboundItemDetail => ({
+    id: `out-item-${Date.now()}-${idxOffset}-${Math.random().toString(36).substring(2, 6)}`,
+    materialCode: '',
+    materialName: '',
+    unit: 'Ống',
+    batchCode: '',
+    packingListNo: 'N/A',
+    shipment: 'N/A',
+    packageNo: '',
+    packageName: '',
+    category: 'Vật tư dự án',
+    drawingNo: 'N/A',
+    manufacturer: 'N/A',
+    supplier: 'N/A',
+    quantity: 1,
+    weightKg: 0,
+    purpose: '',
+    note: ''
+  });
+
   const addManualItemRow = () => {
     setFormItemSearch('');
     setFormItems((prev) => {
-      const next: OutboundItemDetail[] = [
-        ...prev,
-        {
-          id: `out-item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          materialCode: '',
-          materialName: '',
-          unit: 'Ống',
-          batchCode: '',
-          packingListNo: 'N/A',
-          shipment: 'N/A',
-          packageNo: '',
-          packageName: '',
-          category: 'Vật tư dự án',
-          drawingNo: 'N/A',
-          manufacturer: 'N/A',
-          supplier: 'N/A',
-          quantity: 1,
-          weightKg: 0,
-          purpose: '',
-          note: ''
-        }
-      ];
+      const next: OutboundItemDetail[] = [...prev, createBlankOutboundItem(prev.length)];
       setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
       return next;
     });
@@ -840,6 +921,117 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
 
       return copy;
     });
+  };
+
+  const showPasteNotice = (message: string) => {
+    setPasteNotice(message);
+    if (pasteNoticeTimerRef.current) {
+      clearTimeout(pasteNoticeTimerRef.current);
+    }
+    pasteNoticeTimerRef.current = setTimeout(() => {
+      setPasteNotice(null);
+      pasteNoticeTimerRef.current = null;
+    }, 6500);
+  };
+
+  const executeExcelPasteAt = (
+    rawText: string,
+    startRowIndex: number,
+    startField: OutboundPasteField
+  ): boolean => {
+    if (!shouldHandleBulkExcelPaste(rawText)) return false;
+    const grid = parseExcelClipboardGrid(rawText);
+    if (grid.length === 0) return false;
+
+    const result = applyExcelPasteToOutboundItems({
+      existingItems: formItems,
+      startRowIndex,
+      startField,
+      grid,
+      createBlankRow: (idxOffset) => createBlankOutboundItem(idxOffset),
+      findStockByCode: (code) => stockByCodeMap.get(code.trim().toLowerCase()),
+      findStockByName: (name) =>
+        stockByNameMap.get(name.normalize('NFC').trim().toLowerCase()),
+      findMaterialByCode: (code) => materialMap.get(code.trim().toLowerCase()),
+      findMaterialByName: (name) =>
+        materialNameMap.get(name.normalize('NFC').trim().toLowerCase())
+    });
+
+    if (result.pastedRowCount === 0) return false;
+
+    setFormItems(result.items);
+    setFormError('');
+    if (formItemSearch.trim()) {
+      setFormItemSearch('');
+    }
+    const targetPage = Math.max(1, Math.ceil((startRowIndex + 1) / FORM_ITEM_PAGE_SIZE));
+    setFormItemPage(targetPage);
+
+    const details: string[] = [];
+    if (result.addedRowCount > 0) {
+      details.push(`tự động thêm ${result.addedRowCount.toLocaleString('vi-VN')} dòng mới`);
+    }
+    if (result.matchedStockCount > 0) {
+      details.push(`khớp ${result.matchedStockCount.toLocaleString('vi-VN')} vật tư từ Tồn kho`);
+    }
+    if (result.matchedCatalogCount > 0) {
+      details.push(`khớp ${result.matchedCatalogCount.toLocaleString('vi-VN')} vật tư từ Danh mục`);
+    }
+    const suffix = details.length > 0 ? ` (${details.join(' · ')})` : '';
+    showPasteNotice(
+      `Đã dán ${result.pastedRowCount.toLocaleString('vi-VN')} dòng từ Excel${suffix}.`
+    );
+    return true;
+  };
+
+  const handleItemCellPaste = (
+    e: React.ClipboardEvent<HTMLInputElement>,
+    realIdx: number,
+    field: OutboundPasteField
+  ) => {
+    const rawText = e.clipboardData?.getData('text/plain') || '';
+    if (!shouldHandleBulkExcelPaste(rawText)) return;
+    e.preventDefault();
+    executeExcelPasteAt(rawText, realIdx, field);
+  };
+
+  const handleQuickStockPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const rawText = e.clipboardData?.getData('text/plain') || '';
+    if (!shouldHandleBulkExcelPaste(rawText)) return;
+    const grid = parseExcelClipboardGrid(rawText);
+    if (grid.length === 0) return;
+    e.preventDefault();
+
+    const firstColValues = grid.map((r) => (r[0] || '').trim()).filter(Boolean);
+    const hasMultiCol = grid.some((r) => r.length > 1);
+    const matchedCodeHits = firstColValues.filter((v) => {
+      const key = v.toLowerCase();
+      return stockByCodeMap.has(key) || materialMap.has(key);
+    }).length;
+    const matchedNameHits = firstColValues.filter((v) => {
+      const key = v.normalize('NFC').toLowerCase();
+      return stockByNameMap.has(key) || materialNameMap.has(key);
+    }).length;
+
+    let inferredField: OutboundPasteField = 'materialCode';
+    if (!hasMultiCol) {
+      if (matchedNameHits > matchedCodeHits) {
+        inferredField = 'materialName';
+      } else if (matchedCodeHits === 0 && matchedNameHits === 0) {
+        const looksLikeNames = firstColValues.some((v) => v.includes(' '));
+        inferredField = looksLikeNames ? 'materialName' : 'materialCode';
+      }
+    }
+
+    const firstBlankIdx = formItems.findIndex(
+      (it) => !it.materialCode.trim() && !it.materialName.trim()
+    );
+    const targetStartIdx = firstBlankIdx >= 0 ? firstBlankIdx : formItems.length;
+
+    if (executeExcelPasteAt(rawText, targetStartIdx, inferredField)) {
+      setQuickStockQuery('');
+      setIsQuickStockOpen(false);
+    }
   };
 
   // Import từ file Excel xuất kho tối ưu O(N) cho trên 100.000 dòng
@@ -2499,6 +2691,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                           setQuickStockQuery(e.target.value);
                           setIsQuickStockOpen(true);
                         }}
+                        onPaste={handleQuickStockPaste}
                         placeholder="🔍 Tìm nhanh vật tư từ Tồn kho (gõ Mã VT, Tên VT, Vị trí lưu kho/bãi, Mã lô / Số kiện, Packing List...)"
                         className="w-full pl-9 pr-9 py-2 bg-white border border-blue-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none shadow-xs"
                       />
@@ -2654,6 +2847,33 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                   )}
                 </div>
 
+                {/* Hướng dẫn dán nhanh nhiều dòng từ Excel & thông báo kết quả dán */}
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-50 border border-slate-200/90 rounded-xl text-[11px] text-slate-600">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <ClipboardPaste className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span>
+                      Mẹo dán nhanh từ Excel: Copy nhiều dòng (hoặc nhiều cột) Mã vật tư, Tên vật tư, Mã lô / Số kiện, Số lượng... rồi nhấn Ctrl+V vào ô tìm nhanh hoặc trực tiếp vào ô trong bảng — hệ thống tự động thêm dòng &amp; điền dữ liệu.
+                    </span>
+                  </div>
+                </div>
+
+                {pasteNotice && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-medium">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>{pasteNotice}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPasteNotice(null)}
+                      className="p-0.5 text-emerald-600 hover:text-emerald-900 rounded transition shrink-0"
+                      aria-label="Đóng thông báo dán dữ liệu"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 <div className="border border-slate-200 rounded-xl overflow-x-auto">
                   <table className="w-full text-left text-xs min-w-[1200px]">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
@@ -2698,6 +2918,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'materialCode', e.target.value)
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'materialCode')}
                                 placeholder="PI-P.AA.S..."
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
                               />
@@ -2709,6 +2930,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'materialName', e.target.value)
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'materialName')}
                                 placeholder='20"x12m PIPE, API 5L B...'
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-medium outline-none text-xs"
                               />
@@ -2726,6 +2948,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'batchCode', e.target.value)
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'batchCode')}
                                 placeholder="76C-061.35"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
                               />
@@ -2749,6 +2972,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                                     e.target.value === '' ? 0 : roundQty(e.target.value)
                                   )
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'quantity')}
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-bold outline-none text-xs tabular-nums"
                               />
                             </td>
@@ -2757,6 +2981,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                                 type="text"
                                 value={item.unit}
                                 onChange={(e) => updateItemRow(realIdx, 'unit', e.target.value)}
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'unit')}
                                 placeholder="Ống"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-center outline-none text-xs"
                               />
@@ -2775,6 +3000,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                                     e.target.value === '' ? 0 : Number(e.target.value)
                                   )
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'weightKg')}
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono font-medium outline-none text-xs tabular-nums"
                               />
                             </td>
@@ -2783,6 +3009,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                                 type="text"
                                 value={item.note ?? item.purpose ?? ''}
                                 onChange={(e) => updateItemRow(realIdx, 'note', e.target.value)}
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'note')}
                                 placeholder="Ghi chú..."
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded outline-none text-xs"
                               />

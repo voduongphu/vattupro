@@ -119,6 +119,8 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
     'Quick search Material Code, Name, Package No., Batch No., Storage Location...',
   'Mẹo dán nhanh từ Excel: Copy nhiều dòng (hoặc nhiều cột) Mã vật tư, Tên vật tư, Số kiện, Số lượng... rồi nhấn Ctrl+V trực tiếp vào ô trong bảng — hệ thống tự động thêm dòng & điền dữ liệu.':
     'Quick Excel Paste Tip: Copy multiple rows (or columns) of Material Code, Material Name, Package No., Quantity... and press Ctrl+V directly into any table cell — rows are added and filled automatically.',
+  'Mẹo dán nhanh từ Excel: Copy nhiều dòng (hoặc nhiều cột) Mã vật tư, Tên vật tư, Mã lô / Số kiện, Số lượng... rồi nhấn Ctrl+V vào ô tìm nhanh hoặc trực tiếp vào ô trong bảng — hệ thống tự động thêm dòng & điền dữ liệu.':
+    'Quick Excel Paste Tip: Copy multiple rows (or columns) of Material Code, Material Name, Batch / Package No., Quantity... and press Ctrl+V into the quick search box or any table cell — rows are added and filled automatically.',
   'Đóng thông báo dán dữ liệu': 'Close paste notification',
   'Tất cả kho bãi': 'All Warehouses',
   '🌐 Tất cả các kho': 'All Warehouses',
@@ -1801,6 +1803,8 @@ export const SYSTEM_UI_PATTERN_RULES_EN: SystemUiPatternRule[] = [
       const enParts: string[] = [];
       const addedMatch = String(details).match(/tự động thêm\s+([0-9.,]+)\s+dòng mới/i);
       if (addedMatch) enParts.push(`auto-added ${addedMatch[1]} new rows`);
+      const stockMatch = String(details).match(/khớp\s+([0-9.,]+)\s+vật tư từ Tồn kho/i);
+      if (stockMatch) enParts.push(`matched ${stockMatch[1]} stock items`);
       const matchedMatch = String(details).match(/khớp\s+([0-9.,]+)\s+vật tư từ Danh mục/i);
       if (matchedMatch) enParts.push(`matched ${matchedMatch[1]} catalog items`);
       return enParts.length > 0
