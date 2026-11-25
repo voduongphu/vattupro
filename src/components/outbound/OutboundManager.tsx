@@ -5,7 +5,8 @@ import {
   OutboundItemDetail,
   Warehouse,
   InventoryStockRecord,
-  MaterialItem
+  MaterialItem,
+  User
 } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
 import { SyncService } from '../../services/syncService';
@@ -52,6 +53,10 @@ import {
   type OutboundPasteField
 } from '../../utils/inboundExcelPaste';
 import {
+  buildVoucherLastModifiedSummary,
+  getCurrentUserIdentifier
+} from '../../utils/voucherAudit';
+import {
   ArrowUpRight,
   Plus,
   FileSpreadsheet,
@@ -72,7 +77,8 @@ import {
   Package,
   Check,
   ShieldAlert,
-  ClipboardPaste
+  ClipboardPaste,
+  Clock
 } from 'lucide-react';
 
 export type ReceiptSortField = 'date' | 'code';
@@ -167,6 +173,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [stockRecords, setStockRecords] = useState<InventoryStockRecord[]>([]);
   const [materials, setMaterials] = useState<MaterialItem[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
 
   // Search & Filter
   const [searchTerm, setSearchTerm] = useState('');
@@ -265,6 +272,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     setReceipts(StorageService.getOutboundReceipts());
     setWarehouses(StorageService.getWarehouses());
     setMaterials(StorageService.getMaterials());
+    setUsers(StorageService.getUsers());
   };
 
   useEffect(() => {
@@ -635,6 +643,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     const initialItems: OutboundItemDetail[] = (rcp.items || []).map((it, idx) => ({
       ...it,
       id: it.id || `out-edit-${Date.now()}-${idx}`,
+      drawingNo: it.drawingNo && it.drawingNo !== 'N/A' ? it.drawingNo : '',
       note: it.note ?? it.purpose ?? ''
     }));
 
@@ -892,6 +901,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
             copy[idx].packageNo = found.packageNo;
           }
           if (found.category) copy[idx].category = found.category;
+          if (found.drawingNo && found.drawingNo !== 'N/A') copy[idx].drawingNo = found.drawingNo;
           if (found.unitWeightKg && copy[idx].quantity) {
             copy[idx].weightKg = Math.round(found.unitWeightKg * roundQty(copy[idx].quantity) * 100) / 100;
           }
@@ -1146,6 +1156,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     const baseTs = Date.now();
     const batchSalt = Math.random().toString(36).slice(2, 6);
     const userFullName = currentUser?.fullName || 'Võ Dương Phú';
+    const actorUserCode = getCurrentUserIdentifier(currentUser) || userFullName;
     let createdCount = 0;
     const existingForAutoNumber = StorageService.getOutboundReceipts();
     const newReceipts: OutboundReceipt[] = [];
@@ -1266,7 +1277,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
           totalQuantity: sums.totalQuantity,
           totalWeightKg: sums.totalWeightKg,
           createdAt: todayIso,
-          createdBy: userFullName
+          createdBy: actorUserCode
         });
         createdCount++;
       }
@@ -1361,6 +1372,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       const batch = (it.batchCode || it.packageNo || '').trim();
       const noteText = (it.note ?? it.purpose ?? '').trim();
       const rawMatCode = it.materialCode.trim();
+      const rawDwg = (it.drawingNo || '').trim();
       return {
         ...it,
         materialCode: rawMatCode
@@ -1370,6 +1382,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
         unit: it.unit.trim() || 'Ống',
         batchCode: batch,
         packageNo: it.packageNo || batch || 'N/A',
+        drawingNo: rawDwg && rawDwg.toUpperCase() !== 'N/A' ? rawDwg : 'N/A',
         warehouseName: wh?.name || it.warehouseName || 'Kho Dự Án',
         quantity: Math.max(0, roundQty(it.quantity)),
         weightKg: Math.max(0, Math.round((Number(it.weightKg) || 0) * 100) / 100),
@@ -1381,6 +1394,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     const sums = sumOutboundItems(normalizedItems);
     const deptHeader = formDepartmentName.trim();
     const editorName = currentUser?.fullName || 'Võ Dương Phú';
+    const actorUserCode = getCurrentUserIdentifier(currentUser) || editorName;
 
     if (editingReceipt) {
       const updatedReceipt: OutboundReceipt = {
@@ -1402,7 +1416,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
         packingListSummary: buildPackingListSummary(normalizedItems),
         totalQuantity: sums.totalQuantity,
         totalWeightKg: sums.totalWeightKg,
-        lastEditedBy: editorName,
+        lastEditedBy: actorUserCode,
         lastEditedAt: new Date().toISOString()
       };
 
@@ -1439,7 +1453,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       totalQuantity: sums.totalQuantity,
       totalWeightKg: sums.totalWeightKg,
       createdAt: new Date().toISOString(),
-      createdBy: editorName
+      createdBy: actorUserCode
     };
 
     StorageService.addOutboundReceipt(newReceipt);
@@ -1537,7 +1551,8 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                   (it.batchCode && it.batchCode.toLowerCase().includes(q)) ||
                   it.packingListNo.toLowerCase().includes(q) ||
                   it.shipment.toLowerCase().includes(q) ||
-                  it.packageNo.toLowerCase().includes(q)
+                  it.packageNo.toLowerCase().includes(q) ||
+                  (it.drawingNo && it.drawingNo.toLowerCase().includes(q))
                 ) {
                   return true;
                 }
@@ -1854,6 +1869,18 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     [viewingReceipt]
   );
 
+  const viewingReceiptAudit = useMemo(() => {
+    if (!viewingReceipt) return null;
+    return buildVoucherLastModifiedSummary({
+      lastEditedBy: viewingReceipt.lastEditedBy,
+      lastEditedAt: viewingReceipt.lastEditedAt,
+      createdBy: viewingReceipt.createdBy,
+      createdAt: viewingReceipt.createdAt,
+      updatedAt: viewingReceipt.updatedAt,
+      users
+    });
+  }, [viewingReceipt, users]);
+
   // Lọc & phân trang các dòng vật tư trong form Lập / Sửa Phiếu Xuất
   const indexedFormItems = useMemo(() => {
     const q = formItemSearch.trim().toLowerCase();
@@ -1866,6 +1893,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
           (it.materialName || '').toLowerCase().includes(q) ||
           (it.batchCode || '').toLowerCase().includes(q) ||
           (it.packageNo || '').toLowerCase().includes(q) ||
+          (it.drawingNo || '').toLowerCase().includes(q) ||
           (it.note || '').toLowerCase().includes(q);
         if (!hit) continue;
       }
@@ -2006,7 +2034,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
             data-quick-search="primary"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Tìm theo Số phiếu (PXK...), Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Mã lô, Mã/Tên vật tư..."
+            placeholder="Tìm theo Số phiếu (PXK...), Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Mã lô, Bản vẽ, Mã/Tên vật tư..."
             className="w-full pl-9 pr-16 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-3" />
@@ -2875,17 +2903,18 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                 )}
 
                 <div className="border border-slate-200 rounded-xl overflow-x-auto">
-                  <table className="w-full text-left text-xs min-w-[1200px]">
+                  <table className="w-full text-left text-xs min-w-[1360px]">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
                       <tr>
                         <th className="p-2 w-11 text-center">STT</th>
                         <th className="p-2 min-w-[220px]">Mã vật tư</th>
-                        <th className="p-2 min-w-[320px]">Tên vật tư (*)</th>
-                        <th className="p-2 min-w-[200px]">Mã lô / Số kiện</th>
+                        <th className="p-2 min-w-[300px]">Tên vật tư (*)</th>
+                        <th className="p-2 min-w-[190px]">Mã lô / Số kiện</th>
+                        <th className="p-2 min-w-[160px]">Bản vẽ</th>
                         <th className="p-2 min-w-[130px] text-right">Số lượng (cây/tấm)</th>
                         <th className="p-2 min-w-[90px] text-center">ĐVT</th>
                         <th className="p-2 min-w-[140px] text-right">Khối lượng (Kg)</th>
-                        <th className="p-2 min-w-[210px]">Ghi chú</th>
+                        <th className="p-2 min-w-[200px]">Ghi chú</th>
                         <th className="p-2 w-14 text-center sticky right-0 bg-slate-100 z-10 shadow-[-2px_0_4px_rgba(0,0,0,0.06)] border-l border-slate-200">
                           Xóa
                         </th>
@@ -2894,14 +2923,14 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                     <tbody className="divide-y divide-slate-100">
                       {formItems.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="p-8 text-center text-slate-400">
+                          <td colSpan={10} className="p-8 text-center text-slate-400">
                             Chưa có vật tư xuất. Bấm <strong>"Chọn Từ Tồn Kho Hiện Tại"</strong> hoặc{' '}
                             <strong>"Thêm Dòng Thủ Công"</strong> để lập phiếu xuất kho.
                           </td>
                         </tr>
                       ) : visibleFormItems.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="p-6 text-center text-slate-400">
+                          <td colSpan={10} className="p-6 text-center text-slate-400">
                             Không có dòng vật tư nào khớp từ khóa lọc.
                           </td>
                         </tr>
@@ -2957,6 +2986,18 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                                   <span>Kiện:</span> <span data-user-content="true">{item.packageNo}</span>
                                 </span>
                               )}
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={item.drawingNo && item.drawingNo !== 'N/A' ? item.drawingNo : ''}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'drawingNo', e.target.value)
+                                }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'drawingNo')}
+                                placeholder="DWG-..."
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs focus:border-blue-500"
+                              />
                             </td>
                             <td className="p-2 text-right">
                               <input
@@ -3502,6 +3543,13 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                 </div>
               </div>
 
+              {viewingReceiptAudit && (
+                <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50/70 border border-amber-200/80 text-xs text-amber-900">
+                  <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span>{viewingReceiptAudit.message}</span>
+                </div>
+              )}
+
               <div className="relative">
                 <input
                   type="text"
@@ -3511,7 +3559,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                     setDetailSearch(e.target.value);
                     setDetailPage(1);
                   }}
-                  placeholder="Tìm nhanh Mã vật tư, Tên vật tư, Mã lô trong phiếu xuất..."
+                  placeholder="Tìm nhanh Mã vật tư, Tên vật tư, Mã lô, Bản vẽ trong phiếu xuất..."
                   className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 sm:top-2.5" />
@@ -3519,13 +3567,14 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
 
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="max-h-96 overflow-x-auto overflow-y-auto">
-                  <table className="w-full min-w-[740px] text-left text-xs">
+                  <table className="w-full min-w-[860px] text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 sticky top-0">
                       <tr>
                         <th className="p-2.5 w-12 text-center">STT</th>
                         <th className="p-2.5">Mã Vật Tư</th>
                         <th className="p-2.5">Tên Vật Tư</th>
                         <th className="p-2.5 text-center">Mã Lô</th>
+                        <th className="p-2.5">Bản vẽ</th>
                         <th className="p-2.5 text-right">Số Lượng</th>
                         <th className="p-2.5 text-center">ĐVT</th>
                         <th className="p-2.5 text-right">Khối Lượng (Kg)</th>
@@ -3535,7 +3584,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                     <tbody className="divide-y divide-slate-100">
                       {pagedDetailItems.length === 0 ? (
                         <tr>
-                          <td colSpan={8} className="p-8 text-center text-slate-400">
+                          <td colSpan={9} className="p-8 text-center text-slate-400">
                             Không tìm thấy mặt hàng phù hợp từ khóa.
                           </td>
                         </tr>
@@ -3545,6 +3594,8 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                           const batchText =
                             it.batchCode ||
                             (it.packageNo && it.packageNo !== 'N/A' ? it.packageNo : '');
+                          const drawingText =
+                            it.drawingNo && it.drawingNo !== 'N/A' ? it.drawingNo : '-';
                           return (
                             <tr key={it.id || globalIdx} className="hover:bg-slate-50">
                               <td className="p-2.5 text-center font-mono text-slate-400">
@@ -3558,6 +3609,9 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                               </td>
                               <td className="p-2.5 text-center font-mono text-slate-800" data-user-content="true">
                                 {batchText}
+                              </td>
+                              <td className="p-2.5 font-mono text-slate-700" data-user-content="true">
+                                {drawingText}
                               </td>
                               <td className="p-2.5 text-right font-bold font-mono text-slate-900 tabular-nums">
                                 {roundQty(it.quantity) > 0
@@ -3585,6 +3639,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                         <td className="p-2.5 text-center uppercase whitespace-nowrap">
                           {deferredDetailSearch.trim() ? 'TỔNG CỘNG (LỌC)' : 'TỔNG CỘNG'}
                         </td>
+                        <td></td>
                         <td></td>
                         <td></td>
                         <td className="p-2.5 text-right text-blue-700 font-mono tabular-nums">

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { InboundReceipt, InboundItemDetail, Warehouse, MaterialItem } from '../../types/inventory';
+import { InboundReceipt, InboundItemDetail, Warehouse, MaterialItem, User } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
 import { SyncService } from '../../services/syncService';
 import { ExcelImportModal } from '../common/ExcelImportModal';
@@ -18,6 +18,11 @@ import {
   shouldHandleBulkExcelPaste,
   type InboundPasteField
 } from '../../utils/inboundExcelPaste';
+import { numberToVietnameseMoneyWords } from '../../utils/vietnameseMoneyWords';
+import {
+  buildVoucherLastModifiedSummary,
+  getCurrentUserIdentifier
+} from '../../utils/voucherAudit';
 import {
   downloadInboundTemplate,
   exportInboundReceiptToExcel,
@@ -62,7 +67,8 @@ import {
   ArrowUp,
   ArrowDown,
   ShieldAlert,
-  ClipboardPaste
+  ClipboardPaste,
+  Clock
 } from 'lucide-react';
 
 const FORM_ITEM_PAGE_SIZE = 100;
@@ -121,6 +127,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
   const [receipts, setReceipts] = useState<InboundReceipt[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [materials, setMaterials] = useState<MaterialItem[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
 
   // Search, Filters & Sorting
   const [searchTerm, setSearchTerm] = useState('');
@@ -161,7 +168,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
   const [formRequestNo, setFormRequestNo] = useState('');
   const [formNotes, setFormNotes] = useState('');
   const [formInboundType, setFormInboundType] = useState<'new' | 'return'>('new');
-  const [formAmountInWords, setFormAmountInWords] = useState('');
   const [formAttachedDocs, setFormAttachedDocs] = useState('');
 
   // Trường Logistics bổ sung
@@ -214,6 +220,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     setReceipts(StorageService.getInboundReceipts());
     setWarehouses(StorageService.getWarehouses());
     setMaterials(StorageService.getMaterials());
+    setUsers(StorageService.getUsers());
   };
 
   useEffect(() => {
@@ -653,7 +660,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     setFormRequestNo('');
     setFormNotes('');
     setFormInboundType('new');
-    setFormAmountInWords('');
     setFormAttachedDocs('');
 
     setFormSupplier('');
@@ -681,7 +687,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       formRequestNo: '',
       formNotes: '',
       formInboundType: 'new',
-      formAmountInWords: '',
       formAttachedDocs: '',
       formSupplier: '',
       formManufacturer: '',
@@ -755,7 +760,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     const initialNotes =
       rcp.notes && !rcp.notes.startsWith('Import thành công ') ? rcp.notes : '';
     const initialInboundType: 'new' | 'return' = rcp.inboundType || 'new';
-    const initialAmountInWords = rcp.amountInWords || '';
     const initialAttachedDocs = rcp.attachedDocs || '';
 
     const distinctEditSuppliers = new Set(
@@ -796,6 +800,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       id: it.id || `item-edit-${Date.now()}-${idx}`,
       packageNo: it.packageNo ?? '',
       batchCode: it.batchCode ?? '',
+      drawingNo: it.drawingNo && it.drawingNo !== 'N/A' ? it.drawingNo : '',
       storageLocation: (it.storageLocation || '').trim(),
       note: it.note ?? it.conditionNote ?? ''
     }));
@@ -841,7 +846,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     setFormRequestNo(initialRequestNo);
     setFormNotes(initialNotes);
     setFormInboundType(initialInboundType);
-    setFormAmountInWords(initialAmountInWords);
     setFormAttachedDocs(initialAttachedDocs);
     setFormSupplier(resolvedEditSupplier);
     setFormManufacturer(resolvedEditManufacturer);
@@ -868,7 +872,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       formRequestNo: initialRequestNo,
       formNotes: initialNotes,
       formInboundType: initialInboundType,
-      formAmountInWords: initialAmountInWords,
       formAttachedDocs: initialAttachedDocs,
       formSupplier: resolvedEditSupplier,
       formManufacturer: resolvedEditManufacturer,
@@ -894,7 +897,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       formRequestNo,
       formNotes,
       formInboundType,
-      formAmountInWords,
       formAttachedDocs,
       formSupplier,
       formManufacturer,
@@ -917,7 +919,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     formRequestNo,
     formNotes,
     formInboundType,
-    formAmountInWords,
     formAttachedDocs,
     formSupplier,
     formManufacturer,
@@ -1034,7 +1035,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
             copy[idx].packageNo = found.packageNo;
           }
           if (found.category) copy[idx].category = found.category;
-          if (found.drawingNo) copy[idx].drawingNo = found.drawingNo;
+          if (found.drawingNo && found.drawingNo !== 'N/A') copy[idx].drawingNo = found.drawingNo;
           if (found.manufacturer) copy[idx].manufacturer = found.manufacturer;
           if (found.supplier) copy[idx].supplier = found.supplier;
           if (found.unitWeightKg && copy[idx].quantity) {
@@ -1439,8 +1440,10 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
           totalQuantity: sums.totalQuantity,
           totalWeightKg: sums.totalWeightKg,
           totalAmount: sums.totalAmount,
+          amountInWords:
+            sums.totalAmount > 0 ? numberToVietnameseMoneyWords(sums.totalAmount) : '',
           createdAt: todayIso,
-          createdBy: userFullName
+          createdBy: getCurrentUserIdentifier(currentUser) || userFullName
         });
         createdCount++;
       }
@@ -1663,7 +1666,10 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     });
 
     const sums = sumInboundItems(normalizedItems);
-    const editorName = currentUser?.fullName || 'Võ Dương Phú';
+    const receiverFullName = currentUser?.fullName || 'Võ Dương Phú';
+    const actorUserCode = getCurrentUserIdentifier(currentUser) || receiverFullName;
+    const autoAmountInWords =
+      sums.totalAmount > 0 ? numberToVietnameseMoneyWords(sums.totalAmount) : '';
 
     if (editingReceipt) {
       const updatedReceipt: InboundReceipt = {
@@ -1676,7 +1682,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         contractNo: formContractNo.trim(),
         requestNo: formRequestNo.trim(),
         inboundType: formInboundType,
-        amountInWords: formAmountInWords.trim(),
+        amountInWords: autoAmountInWords,
         attachedDocs: formAttachedDocs.trim(),
         supplier:
           trimmedFormSup ||
@@ -1687,7 +1693,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         shipment: headerShp,
         packingListNo: headerPl,
         delivererName: formDeliverer.trim() || trimmedFormSup,
-        receiverName: editingReceipt.receiverName || editorName,
+        receiverName: editingReceipt.receiverName || receiverFullName,
         driverVehicleNo: formDriverVehicle.trim(),
         notes: formNotes.trim(),
         items: normalizedItems,
@@ -1695,7 +1701,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         totalQuantity: sums.totalQuantity,
         totalWeightKg: sums.totalWeightKg,
         totalAmount: sums.totalAmount,
-        lastEditedBy: editorName,
+        lastEditedBy: actorUserCode,
         lastEditedAt: new Date().toISOString()
       };
 
@@ -1723,14 +1729,14 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       contractNo: formContractNo.trim(),
       requestNo: formRequestNo.trim(),
       inboundType: formInboundType,
-      amountInWords: formAmountInWords.trim(),
+      amountInWords: autoAmountInWords,
       attachedDocs: formAttachedDocs.trim(),
       supplier: formSupplier.trim() || formDeliverer.trim() || 'Đơn vị giao hàng',
       manufacturer: formManufacturer.trim(),
       shipment: headerShp,
       packingListNo: headerPl,
       delivererName: formDeliverer.trim() || formSupplier.trim(),
-      receiverName: editorName,
+      receiverName: receiverFullName,
       driverVehicleNo: formDriverVehicle.trim(),
       notes: formNotes.trim(),
       items: normalizedItems,
@@ -1739,7 +1745,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       totalWeightKg: sums.totalWeightKg,
       totalAmount: sums.totalAmount,
       createdAt: new Date().toISOString(),
-      createdBy: editorName
+      createdBy: actorUserCode
     };
 
     StorageService.addInboundReceipt(newReceipt);
@@ -1997,6 +2003,18 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     [viewingReceipt]
   );
 
+  const viewingReceiptAudit = useMemo(() => {
+    if (!viewingReceipt) return null;
+    return buildVoucherLastModifiedSummary({
+      lastEditedBy: viewingReceipt.lastEditedBy,
+      lastEditedAt: viewingReceipt.lastEditedAt,
+      createdBy: viewingReceipt.createdBy,
+      createdAt: viewingReceipt.createdAt,
+      updatedAt: viewingReceipt.updatedAt,
+      users
+    });
+  }, [viewingReceipt, users]);
+
   // Lọc & phân trang các dòng vật tư trong form Lập / Sửa Phiếu (hỗ trợ mượt mà cả phiếu nhiều nghìn dòng)
   const indexedFormItems = useMemo(() => {
     const q = formItemSearch.trim().toLowerCase();
@@ -2009,6 +2027,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
           (it.materialName || '').toLowerCase().includes(q) ||
           (it.batchCode || '').toLowerCase().includes(q) ||
           (it.packageNo || '').toLowerCase().includes(q) ||
+          (it.drawingNo || '').toLowerCase().includes(q) ||
           (it.storageLocation || '').toLowerCase().includes(q) ||
           (it.note || '').toLowerCase().includes(q);
         if (!hit) continue;
@@ -3043,7 +3062,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                 </div>
 
                 {/* Thông tin chứng từ & Logistics bổ trợ (tùy chọn) */}
-                <div className="pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block font-medium text-slate-500 mb-1">
                       Số Packing List (nếu có)
@@ -3067,19 +3086,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                       onChange={(e) => setFormShipment(e.target.value)}
                       placeholder="SHP-..."
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg font-mono outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-medium text-slate-500 mb-1">
-                      Viết bằng chữ (trên phiếu in)
-                    </label>
-                    <input
-                      type="text"
-                      value={formAmountInWords}
-                      onChange={(e) => setFormAmountInWords(e.target.value)}
-                      placeholder="Số tiền bằng chữ..."
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none"
                     />
                   </div>
 
@@ -3279,7 +3285,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                 )}
 
                 <div className="border border-slate-200 rounded-xl overflow-x-auto">
-                  <table className="w-full text-left text-xs min-w-[1460px]">
+                  <table className="w-full text-left text-xs min-w-[1620px]">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
                       <tr>
                         <th className="p-2 w-11 text-center">STT</th>
@@ -3287,6 +3293,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                         <th className="p-2 min-w-[260px]">Tên vật tư (*)</th>
                         <th className="p-2 min-w-[170px]">Số kiện (Package No.)</th>
                         <th className="p-2 min-w-[160px]">Mã lô</th>
+                        <th className="p-2 min-w-[160px]">Bản vẽ</th>
                         <th className="p-2 min-w-[110px] text-right">Số lượng (cây/tấm)</th>
                         <th className="p-2 min-w-[84px] text-center">ĐVT</th>
                         <th className="p-2 min-w-[125px] text-right">Khối lượng (Kg)</th>
@@ -3302,7 +3309,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                     <tbody className="divide-y divide-slate-100">
                       {visibleFormItems.length === 0 ? (
                         <tr>
-                          <td colSpan={13} className="p-6 text-center text-slate-400">
+                          <td colSpan={14} className="p-6 text-center text-slate-400">
                             Không có dòng vật tư nào khớp từ khóa lọc.
                           </td>
                         </tr>
@@ -3380,6 +3387,18 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                 onPaste={(e) => handleItemCellPaste(e, realIdx, 'batchCode')}
                                 placeholder="183A0108"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
+                              />
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={item.drawingNo && item.drawingNo !== 'N/A' ? item.drawingNo : ''}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'drawingNo', e.target.value)
+                                }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'drawingNo')}
+                                placeholder="DWG-..."
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs focus:border-blue-500"
                               />
                             </td>
                             <td className="p-2 text-right">
@@ -3979,6 +3998,13 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                 </div>
               </div>
 
+              {viewingReceiptAudit && (
+                <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50/70 border border-amber-200/80 text-xs text-amber-900">
+                  <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span>{viewingReceiptAudit.message}</span>
+                </div>
+              )}
+
               {/* Tìm kiếm nhanh trong chi tiết phiếu */}
               <div className="relative">
                 <input
@@ -3989,7 +4015,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                     setDetailSearch(e.target.value);
                     setDetailPage(1);
                   }}
-                  placeholder="Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô, Vị trí lưu kho/bãi trong phiếu..."
+                  placeholder="Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô, Bản vẽ, Vị trí lưu kho/bãi trong phiếu..."
                   className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 sm:top-2.5" />
@@ -3997,7 +4023,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
 
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="max-h-96 overflow-x-auto overflow-y-auto">
-                  <table className="w-full min-w-[860px] text-left text-xs">
+                  <table className="w-full min-w-[980px] text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 sticky top-0">
                       <tr>
                         <th className="p-2.5 w-12 text-center">STT</th>
@@ -4005,6 +4031,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                         <th className="p-2.5">Tên Vật Tư</th>
                         <th className="p-2.5 text-center">Số Kiện (Package No.)</th>
                         <th className="p-2.5 text-center">Mã Lô</th>
+                        <th className="p-2.5">Bản vẽ</th>
                         <th className="p-2.5 text-right">Số Lượng</th>
                         <th className="p-2.5 text-center">ĐVT</th>
                         <th className="p-2.5 text-right">Khối Lượng (Kg)</th>
@@ -4016,7 +4043,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                     <tbody className="divide-y divide-slate-100">
                       {pagedDetailItems.length === 0 ? (
                         <tr>
-                          <td colSpan={11} className="p-8 text-center text-slate-400">
+                          <td colSpan={12} className="p-8 text-center text-slate-400">
                             Không tìm thấy mặt hàng phù hợp từ khóa.
                           </td>
                         </tr>
@@ -4025,6 +4052,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                           const globalIdx = (detailPage - 1) * detailPageSize + idx;
                           const pkgText = it.packageNo && it.packageNo !== 'N/A' ? it.packageNo : '-';
                           const batchText = it.batchCode || '';
+                          const drawingText = it.drawingNo && it.drawingNo !== 'N/A' ? it.drawingNo : '-';
                           const lineTotal =
                             it.totalPrice && it.totalPrice > 0
                               ? it.totalPrice
@@ -4045,6 +4073,9 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                               </td>
                               <td className="p-2.5 text-center font-mono text-slate-800" data-user-content="true">
                                 {batchText || '-'}
+                              </td>
+                              <td className="p-2.5 font-mono text-slate-700" data-user-content="true">
+                                {drawingText}
                               </td>
                               <td className="p-2.5 text-right font-bold font-mono text-slate-900 tabular-nums">
                                 {roundQty(it.quantity) > 0
@@ -4084,6 +4115,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                         <td className="p-2.5 text-center uppercase whitespace-nowrap">
                           {deferredDetailSearch.trim() ? 'TỔNG CỘNG (LỌC)' : 'TỔNG CỘNG'}
                         </td>
+                        <td></td>
                         <td></td>
                         <td></td>
                         <td></td>

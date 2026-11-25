@@ -76,7 +76,8 @@ export const QuickGlobalSearchModal: React.FC<{
           (it.materialCode || '').toLowerCase().includes(trimmed) ||
           (it.materialName || '').toLowerCase().includes(trimmed) ||
           (it.batchCode || '').toLowerCase().includes(trimmed) ||
-          (it.packageNo || '').toLowerCase().includes(trimmed)
+          (it.packageNo || '').toLowerCase().includes(trimmed) ||
+          (it.drawingNo || '').toLowerCase().includes(trimmed)
       );
       if (hitHeader || hitItem) {
         matches.push({
@@ -108,7 +109,8 @@ export const QuickGlobalSearchModal: React.FC<{
           (it.materialCode || '').toLowerCase().includes(trimmed) ||
           (it.materialName || '').toLowerCase().includes(trimmed) ||
           (it.batchCode || '').toLowerCase().includes(trimmed) ||
-          (it.packageNo || '').toLowerCase().includes(trimmed)
+          (it.packageNo || '').toLowerCase().includes(trimmed) ||
+          (it.drawingNo || '').toLowerCase().includes(trimmed)
       );
       if (hitHeader || hitItem) {
         matches.push({
@@ -132,6 +134,7 @@ export const QuickGlobalSearchModal: React.FC<{
         (m.code || '').toLowerCase().includes(trimmed) ||
         (m.name || '').toLowerCase().includes(trimmed) ||
         (m.packageNo || '').toLowerCase().includes(trimmed) ||
+        (m.drawingNo || '').toLowerCase().includes(trimmed) ||
         (m.packingListNo || '').toLowerCase().includes(trimmed) ||
         (m.supplier || '').toLowerCase().includes(trimmed);
       if (hit) {
@@ -140,7 +143,14 @@ export const QuickGlobalSearchModal: React.FC<{
           section: 'materials',
           code: m.code,
           title: m.name,
-          subtitle: [m.category, m.unit, m.packageNo].filter(Boolean).join(' • '),
+          subtitle: [
+            m.category,
+            m.unit,
+            m.packageNo,
+            m.drawingNo && m.drawingNo !== 'N/A' ? m.drawingNo : null
+          ]
+            .filter(Boolean)
+            .join(' • '),
           query: m.code || m.name
         });
         matCount++;

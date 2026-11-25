@@ -114,6 +114,7 @@ export const InventoryReport: React.FC = () => {
     availableMakers,
     availableSuppliers,
     availableCategories,
+    availableDrawings,
     availableLocations
   } = useMemo(
     () => StorageService.getInventoryFilterOptions(allowedWarehouseIds),
@@ -384,8 +385,12 @@ export const InventoryReport: React.FC = () => {
               value={drawingNo}
               onChange={(e) => setDrawingNo(e.target.value)}
               placeholder="DWG-PID..."
+              list="dwg-list"
               className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-mono outline-none"
             />
+            <datalist id="dwg-list">
+              {availableDrawings.map(d => <option key={d} value={d} />)}
+            </datalist>
           </div>
 
           {/* PACKAGE No. (Số kiện) */}
@@ -545,9 +550,16 @@ export const InventoryReport: React.FC = () => {
 
       {/* Main Stock Report Table */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
-        <div className="p-3.5 sm:p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-          <div className="font-bold text-slate-900 text-sm">
-            Bảng Chi Tiết Nhập - Xuất - Tồn Sau Gộp ({records.length.toLocaleString('vi-VN')} vật tư gộp)
+        <div className="p-3.5 sm:p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="font-bold text-slate-900 text-sm">
+              Bảng Chi Tiết Nhập - Xuất - Tồn Sau Gộp ({records.length.toLocaleString('vi-VN')} vật tư gộp)
+            </div>
+            {defDrawingNo.trim() && (
+              <span className="px-2.5 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-semibold font-mono">
+                {`Bản vẽ "${defDrawingNo.trim()}": ${records.length.toLocaleString('vi-VN')} vật tư`}
+              </span>
+            )}
           </div>
           <span className="text-xs text-slate-500">
             Tự động gộp theo Packing List, Shipment, Package No., Mã vật tư &amp; Tên vật tư | Tồn = (Nhập + Nhập trả) - (Xuất + Tái xuất)
@@ -603,6 +615,11 @@ export const InventoryReport: React.FC = () => {
                     </td>
                     <td className="p-3">
                       <span className="font-semibold text-slate-900 block text-xs" data-user-content="true">{r.materialName}</span>
+                      {r.drawingNo && r.drawingNo !== 'N/A' && (
+                        <span className="text-[11px] font-mono text-indigo-700 block mt-0.5">
+                          <span>Bản vẽ:</span> <span data-user-content="true">{r.drawingNo}</span>
+                        </span>
+                      )}
                     </td>
                     <td className="p-3">
                       {r.storageLocation ? (

@@ -19,7 +19,6 @@ const createBaseInboundInput = (): InboundFormSnapshotInput => ({
   formRequestNo: 'YC-01',
   formNotes: 'Ghi chú ban đầu',
   formInboundType: 'new',
-  formAmountInWords: '',
   formAttachedDocs: 'CO/CQ',
   formSupplier: 'NCC A',
   formManufacturer: 'NSX A',

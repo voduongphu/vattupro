@@ -17,6 +17,10 @@ import {
 } from 'lucide-react';
 import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 import { useLanguage } from '../../context/LanguageContext';
+import {
+  formatMoneyWordsByLanguage,
+  numberToVietnameseMoneyWords
+} from '../../utils/vietnameseMoneyWords';
 
 interface ReceiptPrintModalProps {
   isOpen: boolean;
@@ -111,7 +115,6 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
   const [customSubUnitOrContract, setCustomSubUnitOrContract] = useState('');
   const [customRequestNo, setCustomRequestNo] = useState('');
   const [customReasonOrContent, setCustomReasonOrContent] = useState('');
-  const [customAmountInWords, setCustomAmountInWords] = useState('');
   const [customAttachedDocs, setCustomAttachedDocs] = useState('');
   const [extraBlankRows, setExtraBlankRows] = useState(0);
   const [inboundCheck, setInboundCheck] = useState<'new' | 'return' | ''>('');
@@ -145,7 +148,6 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
           ? inbound.notes
           : '';
       setCustomReasonOrContent(cleanNotes);
-      setCustomAmountInWords(inbound.amountInWords || '');
       setCustomAttachedDocs(inbound.attachedDocs || '');
       setInboundCheck(inbound.inboundType || '');
     } else if (outbound) {
@@ -248,7 +250,8 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
         contractNo: customSubUnitOrContract.trim(),
         requestNo: customRequestNo.trim(),
         notes: customReasonOrContent.trim(),
-        amountInWords: customAmountInWords.trim(),
+        amountInWords:
+          totals.totalAmount > 0 ? numberToVietnameseMoneyWords(totals.totalAmount) : '',
         attachedDocs: customAttachedDocs.trim(),
         inboundType: inboundCheck || inbound.inboundType
       });
@@ -478,30 +481,17 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
               </div>
 
               {isReceive && (
-                <>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
-                      Viết bằng chữ
-                    </label>
-                    <input
-                      type="text"
-                      value={customAmountInWords}
-                      onChange={(e) => setCustomAmountInWords(e.target.value)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg outline-none focus:border-blue-500"
-                    />
-                  </div>
-                  <div className="sm:col-span-2">
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
-                      Số chứng từ gốc kèm theo
-                    </label>
-                    <input
-                      type="text"
-                      value={customAttachedDocs}
-                      onChange={(e) => setCustomAttachedDocs(e.target.value)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg outline-none focus:border-blue-500"
-                    />
-                  </div>
-                </>
+                <div className="sm:col-span-2 md:col-span-3">
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
+                    Số chứng từ gốc kèm theo
+                  </label>
+                  <input
+                    type="text"
+                    value={customAttachedDocs}
+                    onChange={(e) => setCustomAttachedDocs(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg outline-none focus:border-blue-500"
+                  />
+                </div>
               )}
             </div>
           )}
@@ -919,7 +909,11 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
                 <div className="mt-2.5 space-y-0.5 text-[11.5px] leading-relaxed">
                   <div>
                     <span>Viết bằng chữ : </span>
-                    <span className="italic" data-user-content="true">{customAmountInWords}</span>
+                    <span className="italic" data-user-content="true">
+                      {totals.totalAmount > 0
+                        ? formatMoneyWordsByLanguage(totals.totalAmount, language)
+                        : ''}
+                    </span>
                   </div>
                   <div>
                     <span>Số chứng từ gốc kèm theo: </span>

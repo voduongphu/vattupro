@@ -7,6 +7,7 @@ import {
   MaterialItem
 } from '../types/inventory';
 import { roundQty, sumInboundItems, sumOutboundItems } from '../utils/additiveMerge';
+import { numberToVietnameseMoneyWords } from '../utils/vietnameseMoneyWords';
 
 export type ExcelProgressCallback = (percent: number, processedRows: number, totalRows: number) => void;
 
@@ -1729,7 +1730,9 @@ export function buildInboundReceiptWorkbook(receipt: InboundReceipt): XLSX.WorkB
 
   aoa.push([]);
   const wordsRowIdx = aoa.length;
-  aoa.push([`Viết bằng chữ : ${receipt.amountInWords || ''}`, '', '', '', '', '', '', '', '', '']);
+  const autoWords =
+    sums.totalAmount > 0 ? numberToVietnameseMoneyWords(sums.totalAmount) : receipt.amountInWords || '';
+  aoa.push([`Viết bằng chữ : ${autoWords}`, '', '', '', '', '', '', '', '', '']);
   const docsRowIdx = aoa.length;
   aoa.push([`Số chứng từ gốc kèm theo: ${receipt.attachedDocs || ''}`, '', '', '', '', '', '', '', '', '']);
   const noteRowIdx = aoa.length;

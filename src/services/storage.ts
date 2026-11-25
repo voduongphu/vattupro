@@ -168,6 +168,7 @@ let cachedFilterOptions: {
   availableSuppliers: string[];
   availableCategories: string[];
   availableLocations: string[];
+  availableDrawings: string[];
   totalPLCount: number;
   totalShipmentCount: number;
 } = {
@@ -177,6 +178,7 @@ let cachedFilterOptions: {
   availableSuppliers: [],
   availableCategories: [],
   availableLocations: [],
+  availableDrawings: [],
   totalPLCount: 0,
   totalShipmentCount: 0
 };
@@ -2620,6 +2622,7 @@ export const StorageService = {
     const supSet = new Set<string>();
     const catSet = new Set<string>();
     const locSet = new Set<string>();
+    const dwgSet = new Set<string>();
 
     for (let i = 0; i < records.length; i++) {
       const r = records[i];
@@ -2628,6 +2631,7 @@ export const StorageService = {
       if (r.manufacturer && r.manufacturer !== 'N/A') makerSet.add(r.manufacturer);
       if (r.supplier && r.supplier !== 'N/A') supSet.add(r.supplier);
       if (r.category && r.category !== 'N/A') catSet.add(r.category);
+      if (r.drawingNo && r.drawingNo !== 'N/A') dwgSet.add(r.drawingNo);
       if (r.storageLocation) collectMeaningfulLocations(locSet, r.storageLocation);
     }
 
@@ -2648,6 +2652,7 @@ export const StorageService = {
       availableSuppliers: takeFirst(supSet, 150),
       availableCategories: takeFirst(catSet, 150),
       availableLocations: takeFirst(locSet, 150),
+      availableDrawings: takeFirst(dwgSet, 150),
       totalPLCount: plSet.size,
       totalShipmentCount: shpSet.size
     };
@@ -2668,6 +2673,7 @@ export const StorageService = {
     const supSet = new Set<string>();
     const catSet = new Set<string>();
     const locSet = new Set<string>();
+    const dwgSet = new Set<string>();
 
     for (let i = 0; i < baseRecords.length; i++) {
       const r = baseRecords[i];
@@ -2677,6 +2683,7 @@ export const StorageService = {
       if (r.manufacturer && r.manufacturer !== 'N/A') makerSet.add(r.manufacturer);
       if (r.supplier && r.supplier !== 'N/A') supSet.add(r.supplier);
       if (r.category && r.category !== 'N/A') catSet.add(r.category);
+      if (r.drawingNo && r.drawingNo !== 'N/A') dwgSet.add(r.drawingNo);
       if (r.storageLocation) collectMeaningfulLocations(locSet, r.storageLocation);
     }
 
@@ -2696,6 +2703,7 @@ export const StorageService = {
       availableSuppliers: takeFirst(supSet, 150),
       availableCategories: takeFirst(catSet, 150),
       availableLocations: takeFirst(locSet, 150),
+      availableDrawings: takeFirst(dwgSet, 150),
       totalPLCount: plSet.size,
       totalShipmentCount: shpSet.size
     };

@@ -10,7 +10,6 @@ export interface InboundFormSnapshotInput {
   formRequestNo: string;
   formNotes: string;
   formInboundType: 'new' | 'return';
-  formAmountInWords: string;
   formAttachedDocs: string;
   formSupplier: string;
   formManufacturer: string;
@@ -53,7 +52,6 @@ export function computeInboundFormSnapshot(input: InboundFormSnapshotInput): str
     formRequestNo: normStr(input.formRequestNo),
     formNotes: normStr(input.formNotes),
     formInboundType: input.formInboundType,
-    formAmountInWords: normStr(input.formAmountInWords),
     formAttachedDocs: normStr(input.formAttachedDocs),
     formSupplier: normStr(input.formSupplier),
     formManufacturer: normStr(input.formManufacturer),

@@ -67,6 +67,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
   const [unit, setUnit] = useState('Bộ');
   const [category, setCategory] = useState('Đường ống công nghệ P&ID');
   const [packageNo, setPackageNo] = useState('');
+  const [drawingNo, setDrawingNo] = useState('');
   const [manufacturer, setManufacturer] = useState('');
   const [supplier, setSupplier] = useState('');
   const [unitWeightKg, setUnitWeightKg] = useState<number>(0);
@@ -104,6 +105,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     setUnit('Bộ');
     setCategory('Đường ống công nghệ P&ID');
     setPackageNo('');
+    setDrawingNo('');
     setManufacturer('');
     setSupplier('');
     setUnitWeightKg(0);
@@ -121,6 +123,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     setUnit(item.unit);
     setCategory(item.category || 'Chung');
     setPackageNo(item.packageNo || '');
+    setDrawingNo(item.drawingNo && item.drawingNo !== 'N/A' ? item.drawingNo : '');
     setManufacturer(item.manufacturer || '');
     setSupplier(item.supplier || '');
     setUnitWeightKg(item.unitWeightKg || 0);
@@ -160,6 +163,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
       unit: unit.trim() || 'Bộ',
       category: category.trim(),
       packageNo: packageNo.trim(),
+      drawingNo: drawingNo.trim(),
       manufacturer: manufacturer.trim(),
       supplier: supplier.trim(),
       unitWeightKg: Number(unitWeightKg) || 0,
@@ -191,6 +195,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
       unit: unit.trim(),
       category: category.trim(),
       packageNo: packageNo.trim(),
+      drawingNo: drawingNo.trim(),
       manufacturer: manufacturer.trim(),
       supplier: supplier.trim(),
       unitWeightKg: Number(unitWeightKg) || 0,
@@ -263,6 +268,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
       'Tên Vật Tư Thiết Bị': m.name,
       'Đơn Vị Tính': m.unit,
       'Package No.': m.packageNo || 'N/A',
+      'Bản Vẽ Kỹ Thuật': m.drawingNo || 'N/A',
       'Hạng Mục': m.category,
       'Nhà Sản Xuất': m.manufacturer || 'N/A',
       'Nhà Cung Cấp': m.supplier || 'N/A',
@@ -303,6 +309,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
           m.name.toLowerCase().includes(q) ||
           m.code.toLowerCase().includes(q) ||
           (m.packageNo ? m.packageNo.toLowerCase().includes(q) : false) ||
+          (m.drawingNo ? m.drawingNo.toLowerCase().includes(q) : false) ||
           (m.manufacturer ? m.manufacturer.toLowerCase().includes(q) : false) ||
           (m.supplier ? m.supplier.toLowerCase().includes(q) : false);
         if (!hit) continue;
@@ -500,7 +507,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
             data-quick-search="primary"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Tìm theo mã VT, tên thiết bị, Package No., NSX, NCC..."
+            placeholder="Tìm theo mã VT, tên thiết bị, Package No., Bản vẽ, NSX, NCC..."
             className="w-full pl-9 pr-16 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-3" />
@@ -645,6 +652,11 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                           {m.code}
                         </span>
                         <div className="font-semibold text-slate-900 text-sm leading-snug" data-user-content="true">{m.name}</div>
+                        {m.drawingNo && m.drawingNo !== 'N/A' && (
+                          <div className="text-[11px] font-mono text-indigo-700 mt-0.5">
+                            <span>Bản vẽ:</span> <span data-user-content="true">{m.drawingNo}</span>
+                          </div>
+                        )}
                         {m.specification && (
                           <div className="text-xs text-slate-500 line-clamp-1 mt-0.5">
                             <span>Quy cách:</span> <span data-user-content="true">{m.specification}</span>
@@ -793,7 +805,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Hạng mục</label>
                   <input
@@ -812,6 +824,17 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                     value={packageNo}
                     onChange={(e) => setPackageNo(e.target.value)}
                     placeholder="ví dụ: PKG-01/15, BOX-03/08..."
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Bản vẽ (DWG No.)</label>
+                  <input
+                    type="text"
+                    value={drawingNo}
+                    onChange={(e) => setDrawingNo(e.target.value)}
+                    placeholder="VD: DWG-PID-001..."
                     className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono"
                   />
                 </div>
@@ -948,7 +971,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Package No.</label>
                   <input
@@ -956,6 +979,17 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                     value={packageNo}
                     onChange={(e) => setPackageNo(e.target.value)}
                     placeholder="ví dụ: PKG-01/15, BOX-03/08..."
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Bản vẽ (DWG No.)</label>
+                  <input
+                    type="text"
+                    value={drawingNo}
+                    onChange={(e) => setDrawingNo(e.target.value)}
+                    placeholder="VD: DWG-PID-001..."
                     className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono"
                   />
                 </div>

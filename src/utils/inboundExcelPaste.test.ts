@@ -109,11 +109,13 @@ describe('inboundExcelPaste', () => {
     assert.equal(result.items[0].materialName, 'Ống thép đúc DN200 SCH40');
     assert.equal(result.items[0].unit, 'Cây');
     assert.equal(result.items[0].packageNo, 'PKG-01');
+    assert.equal(result.items[0].drawingNo, 'DWG-001');
     assert.equal(result.items[0].weightKg, 120.5);
 
     assert.equal(result.items[1].materialCode, 'VT-002');
     assert.equal(result.items[1].materialName, 'Mặt bích hàn cổ 8 inch 150#');
     assert.equal(result.items[1].unit, 'Cái');
+    assert.equal(result.items[1].drawingNo, 'DWG-002');
     assert.equal(result.items[1].weightKg, 18);
 
     assert.equal(result.items[2].materialCode, 'VT-NEW-03');
@@ -152,10 +154,10 @@ describe('inboundExcelPaste', () => {
     assert.equal(result.items[2].materialName, 'Van bi inox DN50');
   });
 
-  it('supports multi-column Excel paste (code + name + packageNo + batch + qty + unit + weight + price) and computes totalPrice', () => {
+  it('supports multi-column Excel paste (code + name + packageNo + batch + drawingNo + qty + unit + weight + price) and computes totalPrice', () => {
     const raw =
-      'VT-001\tỐng thép tùy chỉnh\tPKG-99\tLOT-A\t10\tCây\t1,250.5\t500,000\tKệ C1\tHàng gấp\r\n' +
-      'VT-002\t\tPKG-88\tLOT-B\t5\t\t\t200.000\tKệ C2\t\r\n';
+      'VT-001\tỐng thép tùy chỉnh\tPKG-99\tLOT-A\tDWG-CUSTOM-01\t10\tCây\t1,250.5\t500,000\tKệ C1\tHàng gấp\r\n' +
+      'VT-002\t\tPKG-88\tLOT-B\t\t5\t\t\t200.000\tKệ C2\t\r\n';
     const grid = parseExcelClipboardGrid(raw);
     const result = applyExcelPasteToInboundItems({
       existingItems: [makeBlankRow(0)],
@@ -175,6 +177,7 @@ describe('inboundExcelPaste', () => {
     assert.equal(result.items[0].materialName, 'Ống thép tùy chỉnh');
     assert.equal(result.items[0].packageNo, 'PKG-99');
     assert.equal(result.items[0].batchCode, 'LOT-A');
+    assert.equal(result.items[0].drawingNo, 'DWG-CUSTOM-01');
     assert.equal(result.items[0].quantity, 10);
     assert.equal(result.items[0].weightKg, 1250.5);
     assert.equal(result.items[0].unitPrice, 500000);
@@ -182,8 +185,9 @@ describe('inboundExcelPaste', () => {
     assert.equal(result.items[0].storageLocation, 'Kệ C1');
     assert.equal(result.items[0].note, 'Hàng gấp');
 
-    // Row 1: blank name/unit/weight auto-filled from catalog (5 * 18kg = 90kg)
+    // Row 1: blank name/drawingNo/unit/weight auto-filled from catalog (5 * 18kg = 90kg)
     assert.equal(result.items[1].materialName, 'Mặt bích hàn cổ 8 inch 150#');
+    assert.equal(result.items[1].drawingNo, 'DWG-002');
     assert.equal(result.items[1].unit, 'Cái');
     assert.equal(result.items[1].quantity, 5);
     assert.equal(result.items[1].weightKg, 90);
@@ -334,8 +338,8 @@ describe('outboundExcelPaste', () => {
 
   it('supports multi-column outbound paste where explicit pasted values override defaults', () => {
     const raw =
-      'VT-001\tỐng thép cắt ngắn\tLOT-CUSTOM\t4\tCây\t420.5\tXuất tổ lắp ống\r\n' +
-      'VT-002\t\t\t5\t\t\tXuất dự phòng\r\n';
+      'VT-001\tỐng thép cắt ngắn\tLOT-CUSTOM\tDWG-OUT-99\t4\tCây\t420.5\tXuất tổ lắp ống\r\n' +
+      'VT-002\t\t\t\t5\t\t\tXuất dự phòng\r\n';
     const grid = parseExcelClipboardGrid(raw);
     const result = applyExcelPasteToOutboundItems({
       existingItems: [],
@@ -352,13 +356,15 @@ describe('outboundExcelPaste', () => {
     assert.equal(result.items.length, 2);
     assert.equal(result.items[0].materialName, 'Ống thép cắt ngắn');
     assert.equal(result.items[0].batchCode, 'LOT-CUSTOM');
+    assert.equal(result.items[0].drawingNo, 'DWG-OUT-99');
     assert.equal(result.items[0].quantity, 4);
     assert.equal(result.items[0].weightKg, 420.5);
     assert.equal(result.items[0].note, 'Xuất tổ lắp ống');
 
-    // Row 1: blank name/batch/unit/weight auto-filled from catalog (5 * 18kg = 90kg)
+    // Row 1: blank name/batch/drawing/unit/weight auto-filled from catalog (5 * 18kg = 90kg)
     assert.equal(result.items[1].materialName, 'Mặt bích hàn cổ 8 inch 150#');
     assert.equal(result.items[1].batchCode, 'PKG-02');
+    assert.equal(result.items[1].drawingNo, 'DWG-002');
     assert.equal(result.items[1].unit, 'Cái');
     assert.equal(result.items[1].quantity, 5);
     assert.equal(result.items[1].weightKg, 90);

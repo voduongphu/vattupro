@@ -11,6 +11,7 @@ export type InboundPasteField =
   | 'materialName'
   | 'packageNo'
   | 'batchCode'
+  | 'drawingNo'
   | 'quantity'
   | 'unit'
   | 'weightKg'
@@ -23,6 +24,7 @@ export const INBOUND_PASTE_COLUMN_ORDER: readonly InboundPasteField[] = [
   'materialName',
   'packageNo',
   'batchCode',
+  'drawingNo',
   'quantity',
   'unit',
   'weightKg',
@@ -216,7 +218,7 @@ function applyCatalogMetadataToRow(
   if (found.category && found.category !== 'Chung' && !row.category) {
     row.category = found.category;
   }
-  if (found.drawingNo && found.drawingNo !== 'N/A' && !row.drawingNo) {
+  if (!explicitFields.has('drawingNo') && found.drawingNo && found.drawingNo !== 'N/A' && !row.drawingNo) {
     row.drawingNo = found.drawingNo;
   }
   if (found.manufacturer && found.manufacturer !== 'N/A' && !row.manufacturer) {
@@ -375,6 +377,7 @@ export type OutboundPasteField =
   | 'materialCode'
   | 'materialName'
   | 'batchCode'
+  | 'drawingNo'
   | 'quantity'
   | 'unit'
   | 'weightKg'
@@ -384,6 +387,7 @@ export const OUTBOUND_PASTE_COLUMN_ORDER: readonly OutboundPasteField[] = [
   'materialCode',
   'materialName',
   'batchCode',
+  'drawingNo',
   'quantity',
   'unit',
   'weightKg',
@@ -459,7 +463,7 @@ function applyStockMetadataToOutboundRow(
   if ((!row.category || row.category === 'Vật tư dự án') && st.category) {
     row.category = st.category;
   }
-  if (isBlankOrNA(row.drawingNo) && !isBlankOrNA(st.drawingNo)) {
+  if (!explicitFields.has('drawingNo') && isBlankOrNA(row.drawingNo) && !isBlankOrNA(st.drawingNo)) {
     row.drawingNo = st.drawingNo;
   }
   if (isBlankOrNA(row.manufacturer) && !isBlankOrNA(st.manufacturer)) {
@@ -514,7 +518,7 @@ function applyCatalogMetadataToOutboundRow(
   if ((!row.category || row.category === 'Vật tư dự án') && found.category && found.category !== 'Chung') {
     row.category = found.category;
   }
-  if (isBlankOrNA(row.drawingNo) && found.drawingNo && !isBlankOrNA(found.drawingNo)) {
+  if (!explicitFields.has('drawingNo') && isBlankOrNA(row.drawingNo) && found.drawingNo && !isBlankOrNA(found.drawingNo)) {
     row.drawingNo = found.drawingNo;
   }
   if (isBlankOrNA(row.manufacturer) && found.manufacturer && !isBlankOrNA(found.manufacturer)) {

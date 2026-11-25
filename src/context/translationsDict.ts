@@ -117,6 +117,8 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
     'Quick search Material Code, Material Name, Package No., Batch No. in receipt...',
   'Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô, Vị trí lưu kho/bãi trong phiếu...':
     'Quick search Material Code, Name, Package No., Batch No., Storage Location...',
+  'Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô, Bản vẽ, Vị trí lưu kho/bãi trong phiếu...':
+    'Quick search Material Code, Name, Package No., Batch No., DWG no., Storage Location...',
   'Mẹo dán nhanh từ Excel: Copy nhiều dòng (hoặc nhiều cột) Mã vật tư, Tên vật tư, Số kiện, Số lượng... rồi nhấn Ctrl+V trực tiếp vào ô trong bảng — hệ thống tự động thêm dòng & điền dữ liệu.':
     'Quick Excel Paste Tip: Copy multiple rows (or columns) of Material Code, Material Name, Package No., Quantity... and press Ctrl+V directly into any table cell — rows are added and filled automatically.',
   'Mẹo dán nhanh từ Excel: Copy nhiều dòng (hoặc nhiều cột) Mã vật tư, Tên vật tư, Mã lô / Số kiện, Số lượng... rồi nhấn Ctrl+V vào ô tìm nhanh hoặc trực tiếp vào ô trong bảng — hệ thống tự động thêm dòng & điền dữ liệu.':
@@ -257,8 +259,12 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
     'PTSC QUANG NGAI — Select from available stock or add outbound material lines',
   'Tìm theo Số phiếu (PXK...), Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Mã lô, Mã/Tên vật tư...':
     'Search by Issue No., Receiver, Unit/Team, Request No., Batch, Code/Name...',
+  'Tìm theo Số phiếu (PXK...), Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Mã lô, Bản vẽ, Mã/Tên vật tư...':
+    'Search by Issue No., Receiver, Unit/Team, Request No., Batch, DWG no., Code/Name...',
   'Tìm nhanh Mã vật tư, Tên vật tư, Mã lô trong phiếu xuất...':
     'Quick search Material Code, Material Name, Batch No. in issue voucher...',
+  'Tìm nhanh Mã vật tư, Tên vật tư, Mã lô, Bản vẽ trong phiếu xuất...':
+    'Quick search Material Code, Material Name, Batch No., DWG no. in issue voucher...',
   'Người Nhận & Đơn Vị/Tổ/Nhóm': 'Receiver & Unit/Team',
   'Bộ Phận & Kho Xuất': 'Department & Issuing Warehouse',
   'Số PYC/PĐX & Lý Do Xuất': 'Request No. & Issue Purpose',
@@ -668,6 +674,10 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
   'Chọn tất cả các dòng trên trang này': 'Select all rows on this page',
   'Tìm theo mã VT, tên thiết bị, Package No., NSX, NCC...':
     'Search by Material Code, Name, Package No., Mfr, Supplier...',
+  'Tìm theo mã VT, tên thiết bị, Package No., Bản vẽ, NSX, NCC...':
+    'Search by Material Code, Name, Package No., DWG no., Mfr, Supplier...',
+  'Bản vẽ (DWG No.)': 'DWG no.',
+  'VD: DWG-PID-001...': 'e.g., DWG-PID-001...',
   'Bộ, Cái, Cây, Tủ, Tấn, Mét...': 'Set, Pcs, Length, Panel, Ton, Meter...',
   'ví dụ: Van cầu áp lực cao Class 600 DN200': 'e.g., High-Pressure Globe Valve Class 600 DN200',
   'Đường ống P&ID, Kết cấu thép, Điện...': 'P&ID Piping, Steel Structure, Electrical...',
@@ -1843,5 +1853,13 @@ export const SYSTEM_UI_PATTERN_RULES_EN: SystemUiPatternRule[] = [
       }
       return `Paused Cloud sync due to: ${enReason}. Click "Cloud Sync" to manually reconnect.`;
     }
+  },
+  {
+    pattern: /^Bản vẽ\s+"(.+?)":\s*([0-9.,]+)\s+vật tư$/i,
+    replace: (_, dwg, n) => `DWG "${dwg}": ${n} materials`
+  },
+  {
+    pattern: /^Lần sửa đổi gần nhất từ\s+(.+?),\s*vào lúc:\s*(\d{2}:\d{2})\s*\(GMT\+7\),\s*(\d{2}\/\d{2}\/\d{4})$/i,
+    replace: (_, userCode, time, date) => `Last modified by ${userCode} at ${time} (GMT+7), ${date}`
   }
 ];
