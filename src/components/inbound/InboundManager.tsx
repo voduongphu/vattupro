@@ -13,6 +13,12 @@ import {
   hasFormSnapshotChanged
 } from '../../utils/voucherFormDirty';
 import {
+  applyExcelPasteToInboundItems,
+  parseExcelClipboardGrid,
+  shouldHandleBulkExcelPaste,
+  type InboundPasteField
+} from '../../utils/inboundExcelPaste';
+import {
   downloadInboundTemplate,
   exportInboundReceiptToExcel,
   exportInboundReceiptsToExcel,
@@ -55,7 +61,8 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
-  ShieldAlert
+  ShieldAlert,
+  ClipboardPaste
 } from 'lucide-react';
 
 const FORM_ITEM_PAGE_SIZE = 100;
@@ -184,6 +191,8 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
   const [formItemSearch, setFormItemSearch] = useState('');
   const [formItemPage, setFormItemPage] = useState(1);
   const [formError, setFormError] = useState('');
+  const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  const pasteNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Trường chọn nhanh & hộp thoại chọn nhiều từ Danh mục vật tư có sẵn
   const [quickCatalogQuery, setQuickCatalogQuery] = useState('');
@@ -211,6 +220,22 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     loadData();
     return StorageService.subscribe(loadData);
   }, []);
+
+  useEffect(() => {
+    if (!isCreateModalOpen) {
+      setPasteNotice(null);
+      if (pasteNoticeTimerRef.current) {
+        clearTimeout(pasteNoticeTimerRef.current);
+        pasteNoticeTimerRef.current = null;
+      }
+    }
+    return () => {
+      if (pasteNoticeTimerRef.current) {
+        clearTimeout(pasteNoticeTimerRef.current);
+        pasteNoticeTimerRef.current = null;
+      }
+    };
+  }, [isCreateModalOpen]);
 
   const authorizedWarehouses = useMemo(
     () => getAuthorizedWarehouses(warehouses, currentUser),
@@ -268,6 +293,17 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     const map = new Map<string, MaterialItem>();
     for (let i = 0; i < materials.length; i++) {
       map.set(materials[i].code.toLowerCase(), materials[i]);
+    }
+    return map;
+  }, [materials]);
+
+  const materialNameMap = useMemo(() => {
+    const map = new Map<string, MaterialItem>();
+    for (let i = 0; i < materials.length; i++) {
+      const key = (materials[i].name || '').normalize('NFC').trim().toLowerCase();
+      if (key && !map.has(key)) {
+        map.set(key, materials[i]);
+      }
     }
     return map;
   }, [materials]);
@@ -1027,6 +1063,106 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
 
       return copy;
     });
+  };
+
+  const showPasteNotice = (message: string) => {
+    setPasteNotice(message);
+    if (pasteNoticeTimerRef.current) {
+      clearTimeout(pasteNoticeTimerRef.current);
+    }
+    pasteNoticeTimerRef.current = setTimeout(() => {
+      setPasteNotice(null);
+      pasteNoticeTimerRef.current = null;
+    }, 6500);
+  };
+
+  const executeExcelPasteAt = (
+    rawText: string,
+    startRowIndex: number,
+    startField: InboundPasteField
+  ): boolean => {
+    if (!shouldHandleBulkExcelPaste(rawText)) return false;
+    const grid = parseExcelClipboardGrid(rawText);
+    if (grid.length === 0) return false;
+
+    const result = applyExcelPasteToInboundItems({
+      existingItems: formItems,
+      startRowIndex,
+      startField,
+      grid,
+      createBlankRow: (idxOffset) => createBlankInboundItem(idxOffset),
+      findMaterialByCode: (code) => materialMap.get(code.trim().toLowerCase()),
+      findMaterialByName: (name) =>
+        materialNameMap.get(name.normalize('NFC').trim().toLowerCase())
+    });
+
+    if (result.pastedRowCount === 0) return false;
+
+    setFormItems(result.items);
+    setFormError('');
+    if (formItemSearch.trim()) {
+      setFormItemSearch('');
+    }
+    const targetPage = Math.max(1, Math.ceil((startRowIndex + 1) / FORM_ITEM_PAGE_SIZE));
+    setFormItemPage(targetPage);
+
+    const details: string[] = [];
+    if (result.addedRowCount > 0) {
+      details.push(`tự động thêm ${result.addedRowCount.toLocaleString('vi-VN')} dòng mới`);
+    }
+    if (result.matchedCatalogCount > 0) {
+      details.push(`khớp ${result.matchedCatalogCount.toLocaleString('vi-VN')} vật tư từ Danh mục`);
+    }
+    const suffix = details.length > 0 ? ` (${details.join(' · ')})` : '';
+    showPasteNotice(
+      `Đã dán ${result.pastedRowCount.toLocaleString('vi-VN')} dòng từ Excel${suffix}.`
+    );
+    return true;
+  };
+
+  const handleItemCellPaste = (
+    e: React.ClipboardEvent<HTMLInputElement>,
+    realIdx: number,
+    field: InboundPasteField
+  ) => {
+    const rawText = e.clipboardData?.getData('text/plain') || '';
+    if (!shouldHandleBulkExcelPaste(rawText)) return;
+    e.preventDefault();
+    executeExcelPasteAt(rawText, realIdx, field);
+  };
+
+  const handleQuickCatalogPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const rawText = e.clipboardData?.getData('text/plain') || '';
+    if (!shouldHandleBulkExcelPaste(rawText)) return;
+    const grid = parseExcelClipboardGrid(rawText);
+    if (grid.length === 0) return;
+    e.preventDefault();
+
+    const firstColValues = grid.map((r) => (r[0] || '').trim()).filter(Boolean);
+    const hasMultiCol = grid.some((r) => r.length > 1);
+    const matchedCodeHits = firstColValues.filter((v) => materialMap.has(v.toLowerCase())).length;
+    const matchedNameHits = firstColValues.filter((v) =>
+      materialNameMap.has(v.normalize('NFC').toLowerCase())
+    ).length;
+
+    let inferredField: InboundPasteField = 'materialCode';
+    if (!hasMultiCol) {
+      if (matchedNameHits > matchedCodeHits) {
+        inferredField = 'materialName';
+      } else if (matchedCodeHits === 0 && matchedNameHits === 0) {
+        // Nếu các dòng chứa nhiều khoảng trắng (mô tả tên vật tư) thì điền vào cột Tên vật tư
+        const looksLikeNames = firstColValues.some((v) => v.includes(' '));
+        inferredField = looksLikeNames ? 'materialName' : 'materialCode';
+      }
+    }
+
+    const firstBlankIdx = formItems.findIndex(
+      (it) => !it.materialCode.trim() && !it.materialName.trim()
+    );
+    const startIdx = firstBlankIdx !== -1 ? firstBlankIdx : formItems.length;
+    setQuickCatalogQuery('');
+    setIsQuickCatalogOpen(false);
+    executeExcelPasteAt(rawText, startIdx, inferredField);
   };
 
   const handleAutoGenerateRowMaterialCode = (rowIdx: number) => {
@@ -3029,6 +3165,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                         setQuickCatalogQuery(e.target.value);
                         setIsQuickCatalogOpen(true);
                       }}
+                      onPaste={handleQuickCatalogPaste}
                       placeholder={
                         materials.length > 0
                           ? 'Gõ Mã vật tư, Tên vật tư, Quy cách hoặc nhấp vào đây để chọn từ Danh mục vật tư có sẵn...'
@@ -3114,6 +3251,33 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                   </div>
                 </div>
 
+                {/* Hướng dẫn dán nhanh nhiều dòng từ Excel & thông báo kết quả dán */}
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-50 border border-slate-200/90 rounded-xl text-[11px] text-slate-600">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <ClipboardPaste className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span>
+                      Mẹo dán nhanh từ Excel: Copy nhiều dòng (hoặc nhiều cột) Mã vật tư, Tên vật tư, Số kiện, Số lượng... rồi nhấn Ctrl+V trực tiếp vào ô trong bảng — hệ thống tự động thêm dòng &amp; điền dữ liệu.
+                    </span>
+                  </div>
+                </div>
+
+                {pasteNotice && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-medium">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>{pasteNotice}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPasteNotice(null)}
+                      className="p-0.5 text-emerald-600 hover:text-emerald-900 rounded transition shrink-0"
+                      aria-label="Đóng thông báo dán dữ liệu"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 <div className="border border-slate-200 rounded-xl overflow-x-auto">
                   <table className="w-full text-left text-xs min-w-[1460px]">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
@@ -3156,6 +3320,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                   onChange={(e) =>
                                     updateItemRow(realIdx, 'materialCode', e.target.value)
                                   }
+                                  onPaste={(e) => handleItemCellPaste(e, realIdx, 'materialCode')}
                                   placeholder="Tự tạo nếu để trống"
                                   className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs focus:border-blue-500"
                                 />
@@ -3188,6 +3353,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'materialName', e.target.value)
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'materialName')}
                                 placeholder='20"x12m PIPE, API 5L B...'
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-medium outline-none text-xs focus:border-blue-500"
                               />
@@ -3199,6 +3365,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'packageNo', e.target.value)
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'packageNo')}
                                 placeholder="PKG-01/15..."
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs focus:border-blue-500"
                               />
@@ -3210,6 +3377,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'batchCode', e.target.value)
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'batchCode')}
                                 placeholder="183A0108"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
                               />
@@ -3228,6 +3396,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                     e.target.value === '' ? 0 : roundQty(e.target.value)
                                   )
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'quantity')}
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-bold outline-none text-xs tabular-nums"
                               />
                             </td>
@@ -3236,6 +3405,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                 type="text"
                                 value={item.unit}
                                 onChange={(e) => updateItemRow(realIdx, 'unit', e.target.value)}
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'unit')}
                                 placeholder="Ống"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-center outline-none text-xs"
                               />
@@ -3254,6 +3424,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                     e.target.value === '' ? 0 : Number(e.target.value)
                                   )
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'weightKg')}
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono font-medium outline-none text-xs tabular-nums"
                               />
                             </td>
@@ -3266,6 +3437,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'unitPrice', Number(e.target.value))
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'unitPrice')}
                                 placeholder="-"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono outline-none text-xs tabular-nums"
                               />
@@ -3283,6 +3455,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'storageLocation', e.target.value)
                                 }
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'storageLocation')}
                                 placeholder={
                                   formStorageLocation.trim()
                                     ? formStorageLocation.trim()
@@ -3296,6 +3469,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                 type="text"
                                 value={item.note ?? ''}
                                 onChange={(e) => updateItemRow(realIdx, 'note', e.target.value)}
+                                onPaste={(e) => handleItemCellPaste(e, realIdx, 'note')}
                                 placeholder="Ghi chú..."
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded outline-none text-xs"
                               />

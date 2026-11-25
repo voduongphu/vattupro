@@ -117,6 +117,9 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
     'Quick search Material Code, Material Name, Package No., Batch No. in receipt...',
   'Tìm nhanh Mã vật tư, Tên vật tư, Số kiện, Mã lô, Vị trí lưu kho/bãi trong phiếu...':
     'Quick search Material Code, Name, Package No., Batch No., Storage Location...',
+  'Mẹo dán nhanh từ Excel: Copy nhiều dòng (hoặc nhiều cột) Mã vật tư, Tên vật tư, Số kiện, Số lượng... rồi nhấn Ctrl+V trực tiếp vào ô trong bảng — hệ thống tự động thêm dòng & điền dữ liệu.':
+    'Quick Excel Paste Tip: Copy multiple rows (or columns) of Material Code, Material Name, Package No., Quantity... and press Ctrl+V directly into any table cell — rows are added and filled automatically.',
+  'Đóng thông báo dán dữ liệu': 'Close paste notification',
   'Tất cả kho bãi': 'All Warehouses',
   '🌐 Tất cả các kho': 'All Warehouses',
   'Từ:': 'From:',
@@ -1790,6 +1793,20 @@ export const SYSTEM_UI_PATTERN_RULES_EN: SystemUiPatternRule[] = [
   {
     pattern: /^Đã chọn\s+([0-9.,]+)\s+vật tư vào phiếu xuất kho!$/i,
     replace: (_, n) => `Selected ${n} materials for the outbound issue!`
+  },
+  {
+    pattern: /^Đã dán\s+([0-9.,]+)\s+dòng từ Excel(?:\s*\((.+)\))?\.$/i,
+    replace: (_, count, details) => {
+      if (!details) return `Pasted ${count} rows from Excel.`;
+      const enParts: string[] = [];
+      const addedMatch = String(details).match(/tự động thêm\s+([0-9.,]+)\s+dòng mới/i);
+      if (addedMatch) enParts.push(`auto-added ${addedMatch[1]} new rows`);
+      const matchedMatch = String(details).match(/khớp\s+([0-9.,]+)\s+vật tư từ Danh mục/i);
+      if (matchedMatch) enParts.push(`matched ${matchedMatch[1]} catalog items`);
+      return enParts.length > 0
+        ? `Pasted ${count} rows from Excel (${enParts.join(' · ')}).`
+        : `Pasted ${count} rows from Excel.`;
+    }
   },
   {
     pattern: /^Thiết bị đang ngoại tuyến\.\s*Vui lòng kiểm tra kết nối mạng và nhấn nút "Đồng Bộ Cloud" để thử lại\.?$/i,
