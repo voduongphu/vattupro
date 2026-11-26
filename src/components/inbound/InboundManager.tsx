@@ -3876,7 +3876,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
             title={`Chi Tiết Phiếu Nhập Kho: ${viewingReceipt.receiptCode}`}
             onClose={() => setViewingReceipt(null)}
           />
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-[92vw] 2xl:max-w-[1620px] max-h-[91dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="p-4 sm:p-5 border-b border-slate-100 bg-slate-50 space-y-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
@@ -3904,10 +3904,10 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => handleExportReceiptExcel(viewingReceipt)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition min-h-[36px]"
+                  className="flex items-center gap-1.5 px-3 py-1.5 h-[36px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition whitespace-nowrap"
                   title="Xuất phiếu nhập kho ra Excel (.xlsx)"
                 >
-                  <FileSpreadsheet className="w-4 h-4" />
+                  <FileSpreadsheet className="w-4 h-4 shrink-0" />
                   <span>Xuất Excel</span>
                 </button>
                 <button
@@ -3915,9 +3915,9 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                     setSelectedReceiptForPrint(viewingReceipt);
                     setViewingReceipt(null);
                   }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition min-h-[36px]"
+                  className="flex items-center gap-1.5 px-3 py-1.5 h-[36px] bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition whitespace-nowrap"
                 >
-                  <Printer className="w-4 h-4" />
+                  <Printer className="w-4 h-4 shrink-0" />
                   <span>Xem & In Phiếu (FM05.01)</span>
                 </button>
                 {isAdmin && (
@@ -3927,10 +3927,10 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                       setViewingReceipt(null);
                       openEditModal(target);
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition min-h-[36px]"
+                    className="flex items-center gap-1.5 px-3 py-1.5 h-[36px] bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition whitespace-nowrap"
                     title="Sửa phiếu nhập kho này (Admin)"
                   >
-                    <Pencil className="w-4 h-4" />
+                    <Pencil className="w-4 h-4 shrink-0" />
                     <span>Sửa Phiếu</span>
                   </button>
                 )}
@@ -3941,17 +3941,20 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                       setViewingReceipt(null);
                       setReceiptToDelete(toDelete);
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition min-h-[36px]"
+                    className="flex items-center gap-1.5 px-3 py-1.5 h-[36px] bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition whitespace-nowrap"
                     title="Xóa phiếu nhập kho này"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-4 h-4 shrink-0" />
                     <span>Xóa Phiếu</span>
                   </button>
                 )}
                 {viewingReceiptAudit && (
-                  <div className="flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded-lg bg-amber-50/80 border border-amber-200/90 text-xs text-amber-900 flex-1 min-w-[260px]">
+                  <div
+                    className="flex items-center gap-1.5 px-3 min-h-[36px] sm:h-[36px] py-1.5 sm:py-0 rounded-lg bg-amber-50/80 border border-amber-200/90 text-xs text-amber-900 flex-1 min-w-[260px] overflow-hidden"
+                    title={viewingReceiptAudit.message}
+                  >
                     <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                    <span className="leading-snug">{viewingReceiptAudit.message}</span>
+                    <span className="leading-snug sm:truncate">{viewingReceiptAudit.message}</span>
                   </div>
                 )}
               </div>
@@ -4022,7 +4025,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
               </div>
 
               <div className="border border-slate-200 rounded-xl overflow-hidden">
-                <div className="max-h-96 overflow-x-auto overflow-y-auto">
+                <div className="max-h-[54dvh] overflow-x-auto overflow-y-auto">
                   <table className="w-full min-w-[980px] text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 sticky top-0">
                       <tr>
