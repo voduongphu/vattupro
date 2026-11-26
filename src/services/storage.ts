@@ -32,6 +32,10 @@ import {
   generateUniqueMaterialCode,
   normalizeAllowedWarehouseIds
 } from '../utils/additiveMerge';
+import {
+  cleanupLegacyInboundReceipts,
+  cleanupLegacyOutboundReceipts
+} from '../utils/batchPackageCleanup';
 import { incrementVersionVector } from '../utils/versionVector';
 
 function getLocalActorId(): string {
@@ -521,8 +525,8 @@ function buildPackageMergeKey(
     }
   }
   const cleanedPkgName = cleanStockDisplayValue(stripKienXuatLabel(packageName), '');
-  if (cleanedPkgName) {
-    const coreName = cleanedPkgName.replace(/^(?:kiện|lô)\s+/i, '').trim();
+  if (cleanedPkgName && !/^lô\s+/i.test(cleanedPkgName)) {
+    const coreName = cleanedPkgName.replace(/^kiện\s+/i, '').trim();
     if (coreName) {
       return coreName.toUpperCase();
     }
@@ -729,6 +733,41 @@ function finalizeAggEntries(groupMap: Map<string, AggEntry>): InventoryStockReco
   return records;
 }
 
+interface AggKeyMeta {
+  plKey: string;
+  shpKey: string;
+  pkgKey: string;
+  mCodeKey: string;
+  mNameKey: string;
+}
+
+function getAggAvailQty(e: AggEntry): number {
+  return roundQty(
+    (e.inboundQuantity + e.returnInboundQuantity) -
+      (e.outboundQuantity + e.transferOutboundQuantity)
+  );
+}
+
+function getAggAvailWeight(e: AggEntry): number {
+  return (
+    Math.round(
+      ((e.inboundWeightKg + e.returnInboundWeightKg) -
+        (e.outboundWeightKg + e.transferOutboundWeightKg)) *
+        100
+    ) / 100
+  );
+}
+
+function pushIndexKey(map: Map<string, string[]>, indexKey: string, entryKey: string): void {
+  let list = map.get(indexKey);
+  if (!list) {
+    list = [entryKey];
+    map.set(indexKey, list);
+  } else {
+    list.push(entryKey);
+  }
+}
+
 export function buildAggregatedRecords(
   inbounds: InboundReceipt[],
   outbounds: OutboundReceipt[],
@@ -737,6 +776,10 @@ export function buildAggregatedRecords(
   endDate?: string
 ): InventoryStockRecord[] {
   const groupMap = new Map<string, AggEntry>();
+  const entryMetaByKey = new Map<string, AggKeyMeta>();
+  const keysByWhPlShpMat = new Map<string, string[]>();
+  const keysByWhMat = new Map<string, string[]>();
+  const keysByWhCode = new Map<string, string[]>();
 
   // Bản đồ tra cứu Packing List & Shipment chuẩn cho từng mã vật tư
   const realPlByItemKey = new Map<string, { pl: string; shp: string }>();
@@ -899,6 +942,12 @@ export function buildAggregatedRecords(
           lastUpdated: rDate
         };
         groupMap.set(key, entry);
+        entryMetaByKey.set(key, { plKey, shpKey, pkgKey, mCodeKey, mNameKey });
+        pushIndexKey(keysByWhPlShpMat, `${whId}__${plKey}__${shpKey}__${mCodeKey}__${mNameKey}`, key);
+        pushIndexKey(keysByWhMat, `${whId}__${mCodeKey}__${mNameKey}`, key);
+        if (mCodeKey !== 'N/A') {
+          pushIndexKey(keysByWhCode, `${whId}__${mCodeKey}`, key);
+        }
       } else {
         if (isReturn) {
           entry.returnInboundQuantity += itemQty;
@@ -943,12 +992,13 @@ export function buildAggregatedRecords(
       const dispPkgName = cleanStockDisplayValue(stripKienXuatLabel(item.packageName), '');
       const dispCode = cleanStockDisplayValue(item.materialCode, 'N/A');
       const pkgKey = buildPackageMergeKey(dispPkgNo, dispPkgName);
+      const legacyBatchKey = buildPackageMergeKey(item.batchCode, '');
 
       const resolvedPlShp = resolveActualPlAndShp(
         item.packingListNo,
         item.shipment,
         dispCode,
-        pkgKey,
+        pkgKey !== 'N/A' ? pkgKey : legacyBatchKey,
         whId,
         receipt.issueCode,
         false
@@ -966,62 +1016,188 @@ export function buildAggregatedRecords(
       const shpKey = dispShp === 'N/A' ? 'N/A' : dispShp.toUpperCase();
       const mCodeKey = dispCode === 'N/A' ? 'N/A' : dispCode.toUpperCase();
       const mNameKey = dispName === 'Vật tư' ? 'N/A' : dispName.toUpperCase();
-      const key = `${whId}__${plKey}__${shpKey}__${pkgKey}__${mCodeKey}__${mNameKey}`;
+      const exactKey = `${whId}__${plKey}__${shpKey}__${pkgKey}__${mCodeKey}__${mNameKey}`;
 
       const itemQty = Number(item.quantity) || 0;
       const itemW = Number(item.weightKg) || 0;
 
-      let entry = groupMap.get(key);
-      if (!entry) {
-        entry = {
-          warehouseId: whId,
-          warehouseName: whName,
-          materialCode: dispCode,
-          materialName: dispName,
-          unit: dispUnit,
-          packingListNo: dispPl,
-          shipment: dispShp,
-          manufacturer: dispMaker,
-          supplier: dispSup,
-          packageNo: dispPkgNo,
-          packageName: dispPkgName,
-          category: dispCat,
-          drawingNo: dispDwg,
-          storageLocation: '',
-          inboundQuantity: 0,
-          inboundWeightKg: 0,
-          returnInboundQuantity: 0,
-          returnInboundWeightKg: 0,
-          outboundQuantity: isTransfer ? 0 : itemQty,
-          outboundWeightKg: isTransfer ? 0 : itemW,
-          transferOutboundQuantity: isTransfer ? itemQty : 0,
-          transferOutboundWeightKg: isTransfer ? itemW : 0,
-          lastUpdated: iDate
-        };
-        groupMap.set(key, entry);
-      } else {
+      const outMetaPayload = {
+        materialCode: dispCode,
+        materialName: dispName,
+        unit: dispUnit,
+        packingListNo: dispPl,
+        shipment: dispShp,
+        packageNo: dispPkgNo,
+        packageName: dispPkgName,
+        category: dispCat,
+        drawingNo: dispDwg,
+        manufacturer: dispMaker,
+        supplier: dispSup,
+        storageLocation: '',
+        date: iDate
+      };
+
+      const applyOutToEntry = (target: AggEntry, q: number, w: number): void => {
         if (isTransfer) {
-          entry.transferOutboundQuantity += itemQty;
-          entry.transferOutboundWeightKg += itemW;
+          target.transferOutboundQuantity += q;
+          target.transferOutboundWeightKg += w;
         } else {
-          entry.outboundQuantity += itemQty;
-          entry.outboundWeightKg += itemW;
+          target.outboundQuantity += q;
+          target.outboundWeightKg += w;
         }
-        mergeAggMetadata(entry, {
-          materialCode: dispCode,
-          materialName: dispName,
-          unit: dispUnit,
-          packingListNo: dispPl,
-          shipment: dispShp,
-          packageNo: dispPkgNo,
-          packageName: dispPkgName,
-          category: dispCat,
-          drawingNo: dispDwg,
-          manufacturer: dispMaker,
-          supplier: dispSup,
-          storageLocation: '',
-          date: iDate
-        });
+        mergeAggMetadata(target, outMetaPayload);
+      };
+
+      let remQty = itemQty;
+      let remW = itemW;
+      const visitedKeys = new Set<string>();
+      let lastMatchedEntry: AggEntry | undefined;
+
+      const consumeFromEntry = (targetKey: string, target: AggEntry): void => {
+        if (visitedKeys.has(targetKey)) return;
+        visitedKeys.add(targetKey);
+
+        if (remQty > 0) {
+          const availQty = getAggAvailQty(target);
+          if (availQty <= 0) return;
+          const allocQty = Math.min(remQty, availQty);
+          const allocW =
+            allocQty >= remQty
+              ? remW
+              : Math.round(remW * (allocQty / remQty) * 100) / 100;
+          applyOutToEntry(target, allocQty, allocW);
+          remQty = roundQty(remQty - allocQty);
+          remW = Math.round((remW - allocW) * 100) / 100;
+          lastMatchedEntry = target;
+        } else if (remQty === 0 && remW > 0) {
+          const availW = getAggAvailWeight(target);
+          if (availW <= 0) return;
+          const allocW = Math.min(remW, availW);
+          applyOutToEntry(target, 0, allocW);
+          remW = Math.round((remW - allocW) * 100) / 100;
+          lastMatchedEntry = target;
+        }
+      };
+
+      const consumeFromCandidateList = (
+        candidateKeys: string[] | undefined,
+        preferPkgKey: string,
+        strictPkgOnly: boolean
+      ): void => {
+        if (!candidateKeys || candidateKeys.length === 0) return;
+        if (remQty <= 0 && remW <= 0) return;
+
+        const scored: Array<{ k: string; entry: AggEntry; score: number; order: number }> = [];
+        for (let c = 0; c < candidateKeys.length; c++) {
+          const candKey = candidateKeys[c];
+          if (visitedKeys.has(candKey)) continue;
+          const candEntry = groupMap.get(candKey);
+          if (!candEntry) continue;
+          const meta = entryMetaByKey.get(candKey);
+          if (strictPkgOnly && (!meta || meta.pkgKey !== preferPkgKey)) continue;
+
+          const hasAvail = remQty > 0 ? getAggAvailQty(candEntry) > 0 : getAggAvailWeight(candEntry) > 0;
+          if (!hasAvail) continue;
+
+          let score = 0;
+          if (meta) {
+            if (preferPkgKey !== 'N/A' && meta.pkgKey === preferPkgKey) score += 4;
+            if (plKey !== 'N/A' && meta.plKey === plKey) score += 2;
+            if (shpKey !== 'N/A' && meta.shpKey === shpKey) score += 1;
+          }
+          scored.push({ k: candKey, entry: candEntry, score, order: c });
+        }
+
+        if (scored.length > 1) {
+          scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.order - b.order));
+        }
+
+        for (let c = 0; c < scored.length; c++) {
+          if (remQty <= 0 && remW <= 0) break;
+          consumeFromEntry(scored[c].k, scored[c].entry);
+        }
+      };
+
+      // 1. Ưu tiên khớp chính xác tuyệt đối theo khóa (Kho + PL + Shipment + Package No. + Mã VT + Tên VT)
+      const exactEntry = groupMap.get(exactKey);
+      if (exactEntry && (remQty > 0 || remW > 0)) {
+        consumeFromEntry(exactKey, exactEntry);
+      }
+
+      // 2. Cầu nối dữ liệu cũ: phiếu xuất cũ trống Package No. nhưng mã lô lại lưu đúng Package No. của phiếu nhập
+      if ((remQty > 0 || remW > 0) && pkgKey === 'N/A' && legacyBatchKey !== 'N/A') {
+        consumeFromCandidateList(
+          keysByWhPlShpMat.get(`${whId}__${plKey}__${shpKey}__${mCodeKey}__${mNameKey}`),
+          legacyBatchKey,
+          true
+        );
+        if (remQty > 0 || remW > 0) {
+          consumeFromCandidateList(
+            keysByWhMat.get(`${whId}__${mCodeKey}__${mNameKey}`),
+            legacyBatchKey,
+            true
+          );
+        }
+      }
+
+      // 3. Đối trừ FIFO cùng Kho + PL + Shipment + Mã VT + Tên VT (xử lý lệch Package No. giữa dữ liệu cũ/mới)
+      if (remQty > 0 || remW > 0) {
+        consumeFromCandidateList(
+          keysByWhPlShpMat.get(`${whId}__${plKey}__${shpKey}__${mCodeKey}__${mNameKey}`),
+          pkgKey,
+          false
+        );
+      }
+
+      // 4. Đối trừ FIFO cùng Kho + Mã VT + Tên VT (xử lý lệch PL / Shipment / Package No.)
+      if (remQty > 0 || remW > 0) {
+        consumeFromCandidateList(
+          keysByWhMat.get(`${whId}__${mCodeKey}__${mNameKey}`),
+          pkgKey,
+          false
+        );
+      }
+
+      // 5. Đối trừ FIFO cùng Kho + Mã VT (xử lý sai khác nhỏ về tên vật tư giữa phiếu nhập và phiếu xuất)
+      if ((remQty > 0 || remW > 0) && mCodeKey !== 'N/A') {
+        consumeFromCandidateList(keysByWhCode.get(`${whId}__${mCodeKey}`), pkgKey, false);
+      }
+
+      // 6. Phần vượt tồn thực sự hoặc kỳ lọc không có phiếu nhập tương ứng
+      if (remQty > 0 || remW > 0 || (itemQty === 0 && itemW === 0)) {
+        if (exactEntry) {
+          applyOutToEntry(exactEntry, remQty, remW);
+        } else if (lastMatchedEntry && pkgKey === 'N/A') {
+          applyOutToEntry(lastMatchedEntry, remQty, remW);
+        } else {
+          const fallbackEntry: AggEntry = {
+            warehouseId: whId,
+            warehouseName: whName,
+            materialCode: dispCode,
+            materialName: dispName,
+            unit: dispUnit,
+            packingListNo: dispPl,
+            shipment: dispShp,
+            manufacturer: dispMaker,
+            supplier: dispSup,
+            packageNo: dispPkgNo,
+            packageName: dispPkgName,
+            category: dispCat,
+            drawingNo: dispDwg,
+            storageLocation: '',
+            inboundQuantity: 0,
+            inboundWeightKg: 0,
+            returnInboundQuantity: 0,
+            returnInboundWeightKg: 0,
+            outboundQuantity: isTransfer ? 0 : remQty,
+            outboundWeightKg: isTransfer ? 0 : remW,
+            transferOutboundQuantity: isTransfer ? remQty : 0,
+            transferOutboundWeightKg: isTransfer ? remW : 0,
+            lastUpdated: iDate
+          };
+          groupMap.set(exactKey, fallbackEntry);
+          entryMetaByKey.set(exactKey, { plKey, shpKey, pkgKey, mCodeKey, mNameKey });
+        }
       }
     }
   }
@@ -1032,6 +1208,7 @@ export function buildAggregatedRecords(
 // Gộp các bản ghi trùng 5 trường: Số Packing List + Shipment + Package (Kiện hàng) + Mã vật tư + Tên vật tư
 export function mergeRecordsForInventoryReport(records: InventoryStockRecord[]): InventoryStockRecord[] {
   const reportMap = new Map<string, AggEntry>();
+  const reportMetaByKey = new Map<string, AggKeyMeta>();
 
   for (let i = 0; i < records.length; i++) {
     const r = records[i];
@@ -1080,6 +1257,7 @@ export function mergeRecordsForInventoryReport(records: InventoryStockRecord[]):
         lastUpdated: r.lastUpdated || ''
       };
       reportMap.set(reportKey, entry);
+      reportMetaByKey.set(reportKey, { plKey, shpKey, pkgKey, mCodeKey, mNameKey });
     } else {
       entry.inboundQuantity += r.inboundQuantity;
       entry.inboundWeightKg += r.inboundWeightKg;
@@ -1111,6 +1289,180 @@ export function mergeRecordsForInventoryReport(records: InventoryStockRecord[]):
         storageLocation: r.storageLocation || '',
         date: r.lastUpdated || ''
       });
+    }
+  }
+
+  // Đối trừ các dòng tồn âm do lệch Package No. / PL / Shipment giữa các kho với các dòng tồn dương cùng vật tư (bảo toàn 100% tổng nhập/xuất/tồn)
+  const posByPlShpMat = new Map<string, string[]>();
+  const posByMat = new Map<string, string[]>();
+  const posByCode = new Map<string, string[]>();
+  const negKeys: string[] = [];
+
+  reportMap.forEach((entry, key) => {
+    const netQty = getAggAvailQty(entry);
+    const netW = getAggAvailWeight(entry);
+    const meta = reportMetaByKey.get(key);
+    if (!meta) return;
+    if (netQty > 0 || (netQty === 0 && netW > 0)) {
+      pushIndexKey(posByPlShpMat, `${meta.plKey}__${meta.shpKey}__${meta.mCodeKey}__${meta.mNameKey}`, key);
+      pushIndexKey(posByMat, `${meta.mCodeKey}__${meta.mNameKey}`, key);
+      if (meta.mCodeKey !== 'N/A') {
+        pushIndexKey(posByCode, meta.mCodeKey, key);
+      }
+    } else if (netQty < 0 || (netQty === 0 && netW < 0)) {
+      negKeys.push(key);
+    }
+  });
+
+  if (negKeys.length > 0 && posByMat.size > 0) {
+    const keysToDelete: string[] = [];
+
+    for (let i = 0; i < negKeys.length; i++) {
+      const negKey = negKeys[i];
+      const negEntry = reportMap.get(negKey);
+      const negMeta = reportMetaByKey.get(negKey);
+      if (!negEntry || !negMeta) continue;
+
+      const totalOutQty = roundQty(negEntry.outboundQuantity + negEntry.transferOutboundQuantity);
+      const totalOutW = Math.round((negEntry.outboundWeightKg + negEntry.transferOutboundWeightKg) * 100) / 100;
+      if (totalOutQty <= 0 && totalOutW <= 0) continue;
+
+      const candidatePools: Array<string[] | undefined> = [
+        posByPlShpMat.get(`${negMeta.plKey}__${negMeta.shpKey}__${negMeta.mCodeKey}__${negMeta.mNameKey}`),
+        posByMat.get(`${negMeta.mCodeKey}__${negMeta.mNameKey}`),
+        negMeta.mCodeKey !== 'N/A' ? posByCode.get(negMeta.mCodeKey) : undefined
+      ];
+
+      const triedPosKeys = new Set<string>();
+
+      for (let p = 0; p < candidatePools.length; p++) {
+        const pool = candidatePools[p];
+        if (!pool || pool.length === 0) continue;
+
+        let deficitQty = roundQty(-getAggAvailQty(negEntry));
+        let deficitW = Math.round(-getAggAvailWeight(negEntry) * 100) / 100;
+        if (deficitQty <= 0 && deficitW <= 0) break;
+
+        for (let c = 0; c < pool.length; c++) {
+          const posKey = pool[c];
+          if (posKey === negKey || triedPosKeys.has(posKey)) continue;
+          triedPosKeys.add(posKey);
+
+          const posEntry = reportMap.get(posKey);
+          if (!posEntry) continue;
+
+          deficitQty = roundQty(-getAggAvailQty(negEntry));
+          deficitW = Math.round(-getAggAvailWeight(negEntry) * 100) / 100;
+          if (deficitQty <= 0 && deficitW <= 0) break;
+
+          const curOutTotal = roundQty(negEntry.outboundQuantity + negEntry.transferOutboundQuantity);
+          const curOutWTotal =
+            Math.round((negEntry.outboundWeightKg + negEntry.transferOutboundWeightKg) * 100) / 100;
+          if (curOutTotal <= 0 && curOutWTotal <= 0) break;
+
+          if (deficitQty > 0 && curOutTotal > 0) {
+            const availPosQty = getAggAvailQty(posEntry);
+            if (availPosQty <= 0) continue;
+
+            const moveQty = Math.min(deficitQty, availPosQty, curOutTotal);
+            if (moveQty <= 0) continue;
+
+            // Tách phần xuất thường và tái xuất theo đúng tỷ lệ đang có để bảo toàn từng cột
+            const moveNormalQty =
+              moveQty >= curOutTotal
+                ? negEntry.outboundQuantity
+                : Math.min(
+                    negEntry.outboundQuantity,
+                    roundQty(moveQty * (negEntry.outboundQuantity / curOutTotal))
+                  );
+            const moveTransQty = roundQty(moveQty - moveNormalQty);
+
+            const moveNormalW =
+              negEntry.outboundQuantity > 0
+                ? moveNormalQty >= negEntry.outboundQuantity
+                  ? negEntry.outboundWeightKg
+                  : Math.round(negEntry.outboundWeightKg * (moveNormalQty / negEntry.outboundQuantity) * 100) / 100
+                : 0;
+            const moveTransW =
+              negEntry.transferOutboundQuantity > 0
+                ? moveTransQty >= negEntry.transferOutboundQuantity
+                  ? negEntry.transferOutboundWeightKg
+                  : Math.round(
+                      negEntry.transferOutboundWeightKg * (moveTransQty / negEntry.transferOutboundQuantity) * 100
+                    ) / 100
+                : 0;
+
+            negEntry.outboundQuantity = roundQty(negEntry.outboundQuantity - moveNormalQty);
+            negEntry.outboundWeightKg = Math.round((negEntry.outboundWeightKg - moveNormalW) * 100) / 100;
+            negEntry.transferOutboundQuantity = roundQty(negEntry.transferOutboundQuantity - moveTransQty);
+            negEntry.transferOutboundWeightKg =
+              Math.round((negEntry.transferOutboundWeightKg - moveTransW) * 100) / 100;
+
+            posEntry.outboundQuantity = roundQty(posEntry.outboundQuantity + moveNormalQty);
+            posEntry.outboundWeightKg = Math.round((posEntry.outboundWeightKg + moveNormalW) * 100) / 100;
+            posEntry.transferOutboundQuantity = roundQty(posEntry.transferOutboundQuantity + moveTransQty);
+            posEntry.transferOutboundWeightKg =
+              Math.round((posEntry.transferOutboundWeightKg + moveTransW) * 100) / 100;
+
+            if (negEntry.warehouseId !== posEntry.warehouseId) {
+              posEntry.warehouseId = 'merged';
+            }
+            if (negEntry.warehouseNames && posEntry.warehouseNames) {
+              negEntry.warehouseNames.forEach((wn) => posEntry.warehouseNames!.add(wn));
+            }
+            if (negEntry.lastUpdated > posEntry.lastUpdated) {
+              posEntry.lastUpdated = negEntry.lastUpdated;
+            }
+          } else if (deficitQty === 0 && deficitW > 0 && curOutWTotal > 0) {
+            const availPosW = getAggAvailWeight(posEntry);
+            if (availPosW <= 0) continue;
+
+            const moveW = Math.min(deficitW, availPosW, curOutWTotal);
+            if (moveW <= 0) continue;
+
+            const moveNormalW =
+              moveW >= curOutWTotal
+                ? negEntry.outboundWeightKg
+                : Math.min(
+                    negEntry.outboundWeightKg,
+                    Math.round(moveW * (negEntry.outboundWeightKg / curOutWTotal) * 100) / 100
+                  );
+            const moveTransW = Math.round((moveW - moveNormalW) * 100) / 100;
+
+            negEntry.outboundWeightKg = Math.round((negEntry.outboundWeightKg - moveNormalW) * 100) / 100;
+            negEntry.transferOutboundWeightKg =
+              Math.round((negEntry.transferOutboundWeightKg - moveTransW) * 100) / 100;
+            posEntry.outboundWeightKg = Math.round((posEntry.outboundWeightKg + moveNormalW) * 100) / 100;
+            posEntry.transferOutboundWeightKg =
+              Math.round((posEntry.transferOutboundWeightKg + moveTransW) * 100) / 100;
+
+            if (negEntry.warehouseId !== posEntry.warehouseId) {
+              posEntry.warehouseId = 'merged';
+            }
+            if (negEntry.warehouseNames && posEntry.warehouseNames) {
+              negEntry.warehouseNames.forEach((wn) => posEntry.warehouseNames!.add(wn));
+            }
+          }
+        }
+      }
+
+      const isCompletelyEmpty =
+        roundQty(negEntry.inboundQuantity) === 0 &&
+        roundQty(negEntry.returnInboundQuantity) === 0 &&
+        roundQty(negEntry.outboundQuantity) === 0 &&
+        roundQty(negEntry.transferOutboundQuantity) === 0 &&
+        Math.abs(negEntry.inboundWeightKg) < 0.001 &&
+        Math.abs(negEntry.returnInboundWeightKg) < 0.001 &&
+        Math.abs(negEntry.outboundWeightKg) < 0.001 &&
+        Math.abs(negEntry.transferOutboundWeightKg) < 0.001;
+
+      if (isCompletelyEmpty) {
+        keysToDelete.push(negKey);
+      }
+    }
+
+    for (let i = 0; i < keysToDelete.length; i++) {
+      reportMap.delete(keysToDelete[i]);
     }
   }
 
@@ -1260,6 +1612,11 @@ export const StorageService = {
       }
 
       this.ensureInitialized();
+      this.cleanupLegacyBatchFromPackage({
+        bumpTimestamp: Date.now(),
+        emitMutation: false,
+        notify: false
+      });
       this.syncMaterialsFromReceipts({ emitMutation: false, notify: false });
       inventoryVersion++;
       isHydrated = true;
@@ -2553,15 +2910,74 @@ export const StorageService = {
     return changed;
   },
 
+  // Dọn sạch dữ liệu cũ: bỏ các Mã lô bị ứng dụng cũ tự sao chép từ Số kiện (Package No.)
+  cleanupLegacyBatchFromPackage(options?: {
+    bumpTimestamp?: number;
+    emitMutation?: boolean;
+    notify?: boolean;
+  }): { inboundChanged: boolean; outboundChanged: boolean; cleanedItems: number } {
+    const rawInbounds = getItem<InboundReceipt[]>(STORAGE_KEYS.INBOUND, []);
+    const rawOutbounds = getItem<OutboundReceipt[]>(STORAGE_KEYS.OUTBOUND, []);
+    const materials = getItem<MaterialItem[]>(STORAGE_KEYS.MATERIALS, []);
+
+    const inClean = cleanupLegacyInboundReceipts(rawInbounds, {
+      bumpTimestamp: options?.bumpTimestamp
+    });
+    const effectiveInbounds = inClean.changed ? inClean.receipts : rawInbounds;
+    if (inClean.changed) {
+      this.saveInboundReceipts(inClean.receipts);
+    }
+
+    const outClean = cleanupLegacyOutboundReceipts(rawOutbounds, effectiveInbounds, materials, {
+      bumpTimestamp: options?.bumpTimestamp
+    });
+    if (outClean.changed) {
+      this.saveOutboundReceipts(outClean.receipts);
+    }
+
+    if (inClean.changed || outClean.changed) {
+      inventoryVersion++;
+      if (options?.notify) {
+        notifySubscribers();
+      }
+      if (options?.emitMutation) {
+        if (inClean.changed && inClean.changedCodes.length > 0) {
+          emitLocalMutation('inbound', inClean.changedCodes);
+        }
+        if (outClean.changed && outClean.changedCodes.length > 0) {
+          emitLocalMutation('outbound', outClean.changedCodes);
+        }
+      }
+    }
+
+    return {
+      inboundChanged: inClean.changed,
+      outboundChanged: outClean.changed,
+      cleanedItems: inClean.cleanedItemCount + outClean.cleanedItemCount
+    };
+  },
+
   applyRemoteInboundReceipts(receipts: InboundReceipt[]): boolean {
     if (!Array.isArray(receipts) || receipts.length === 0) return false;
     const tombstones = this.getTombstones();
     const merged = mergeInboundReceiptsAdditive(this.getInboundReceipts(), receipts, tombstones.inbound);
-    if (merged.changed) {
-      this.saveInboundReceipts(merged.list);
+    const cleanedIn = cleanupLegacyInboundReceipts(merged.list);
+    const inChanged = merged.changed || cleanedIn.changed;
+    if (inChanged) {
+      this.saveInboundReceipts(cleanedIn.receipts);
+    }
+    // Sau khi có thêm phiếu nhập mới từ Cloud, chuẩn hóa lại phiếu xuất cũ nếu có batchCode chứa Package No.
+    const rawOutbounds = getItem<OutboundReceipt[]>(STORAGE_KEYS.OUTBOUND, []);
+    const cleanedOut = cleanupLegacyOutboundReceipts(
+      rawOutbounds,
+      cleanedIn.receipts,
+      getItem<MaterialItem[]>(STORAGE_KEYS.MATERIALS, [])
+    );
+    if (cleanedOut.changed) {
+      this.saveOutboundReceipts(cleanedOut.receipts);
     }
     const matSync = this.syncMaterialsFromReceipts({ fromRemoteSync: true });
-    if (merged.changed || matSync.changed) {
+    if (inChanged || cleanedOut.changed || matSync.changed) {
       inventoryVersion++;
       notifySubscribers();
       return true;
@@ -2573,11 +2989,17 @@ export const StorageService = {
     if (!Array.isArray(receipts) || receipts.length === 0) return false;
     const tombstones = this.getTombstones();
     const merged = mergeOutboundReceiptsAdditive(this.getOutboundReceipts(), receipts, tombstones.outbound);
-    if (merged.changed) {
-      this.saveOutboundReceipts(merged.list);
+    const cleanedOut = cleanupLegacyOutboundReceipts(
+      merged.list,
+      getItem<InboundReceipt[]>(STORAGE_KEYS.INBOUND, []),
+      getItem<MaterialItem[]>(STORAGE_KEYS.MATERIALS, [])
+    );
+    const outChanged = merged.changed || cleanedOut.changed;
+    if (outChanged) {
+      this.saveOutboundReceipts(cleanedOut.receipts);
     }
     const matSync = this.syncMaterialsFromReceipts({ fromRemoteSync: true });
-    if (merged.changed || matSync.changed) {
+    if (outChanged || matSync.changed) {
       inventoryVersion++;
       notifySubscribers();
       return true;
