@@ -2668,22 +2668,33 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {formItems.length > 15 && (
-                      <div className="relative">
-                        <input
-                          type="text"
-                          data-quick-search="modal"
-                          value={formItemSearch}
-                          onChange={(e) => {
-                            setFormItemSearch(e.target.value);
+                    <div className="relative">
+                      <input
+                        type="text"
+                        data-quick-search="modal"
+                        value={formItemSearch}
+                        onChange={(e) => {
+                          setFormItemSearch(e.target.value);
+                          setFormItemPage(1);
+                        }}
+                        placeholder="Lọc dòng vật tư..."
+                        className="pl-7 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:bg-white focus:border-blue-500 min-h-[38px] w-48 sm:w-56"
+                      />
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      {formItemSearch && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormItemSearch('');
                             setFormItemPage(1);
                           }}
-                          placeholder="Lọc dòng vật tư..."
-                          className="pl-7 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:bg-white focus:border-blue-500"
-                        />
-                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2 top-2" />
-                      </div>
-                    )}
+                          className="p-0.5 text-slate-400 hover:text-slate-600 rounded absolute right-2 top-1/2 -translate-y-1/2"
+                          title="Xóa bộ lọc"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                     <button
                       type="button"
                       onClick={addManualItemRow}
