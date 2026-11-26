@@ -511,14 +511,11 @@ function normStockKeyPart(raw: string | undefined | null): string {
 
 function buildPackageMergeKey(
   packageNo?: string | null,
-  packageName?: string | null,
-  batchCode?: string | null
+  packageName?: string | null
 ): string {
   const resolvedPkgNo = cleanStockDisplayValue(stripKienXuatLabel(packageNo), 'N/A');
-  const resolvedBatch = cleanStockDisplayValue(stripKienXuatLabel(batchCode), 'N/A');
-  const effectivePkgNo = resolvedPkgNo !== 'N/A' ? resolvedPkgNo : resolvedBatch;
-  if (effectivePkgNo !== 'N/A') {
-    const coreNo = effectivePkgNo.replace(/^(?:kiện|lô)\s+/i, '').trim();
+  if (resolvedPkgNo !== 'N/A') {
+    const coreNo = resolvedPkgNo.replace(/^(?:kiện|lô)\s+/i, '').trim();
     if (coreNo) {
       return coreNo.toUpperCase();
     }
@@ -774,9 +771,7 @@ export function buildAggregatedRecords(
       const pl = cleanStockDisplayValue(it.packingListNo, 'N/A');
       const shp = cleanStockDisplayValue(it.shipment, 'N/A');
       if (pl !== 'N/A' && !isVoucherCodeLike(pl) && pl.toUpperCase() !== rcpCodeUpper) {
-        const rawPkg = cleanStockDisplayValue(stripKienXuatLabel(it.packageNo), 'N/A');
-        const effPkg =
-          rawPkg !== 'N/A' ? rawPkg : cleanStockDisplayValue(stripKienXuatLabel(it.batchCode), 'N/A');
+        const effPkg = cleanStockDisplayValue(stripKienXuatLabel(it.packageNo), 'N/A');
         const pkgK = buildPackageMergeKey(effPkg, cleanStockDisplayValue(stripKienXuatLabel(it.packageName), ''));
         const mK = normKey(it.materialCode);
         const whId = rcp.warehouseId;
@@ -839,11 +834,7 @@ export function buildAggregatedRecords(
 
     for (let j = 0; j < items.length; j++) {
       const item = items[j];
-      const rawPkgNo = cleanStockDisplayValue(stripKienXuatLabel(item.packageNo), 'N/A');
-      const dispPkgNo =
-        rawPkgNo !== 'N/A'
-          ? rawPkgNo
-          : cleanStockDisplayValue(stripKienXuatLabel(item.batchCode), 'N/A');
+      const dispPkgNo = cleanStockDisplayValue(stripKienXuatLabel(item.packageNo), 'N/A');
       const dispPkgName = cleanStockDisplayValue(stripKienXuatLabel(item.packageName), '');
       const dispCode = cleanStockDisplayValue(item.materialCode, 'N/A');
       const pkgKey = buildPackageMergeKey(dispPkgNo, dispPkgName);
@@ -948,11 +939,7 @@ export function buildAggregatedRecords(
 
     for (let j = 0; j < items.length; j++) {
       const item = items[j];
-      const rawPkgNo = cleanStockDisplayValue(stripKienXuatLabel(item.packageNo), 'N/A');
-      const dispPkgNo =
-        rawPkgNo !== 'N/A'
-          ? rawPkgNo
-          : cleanStockDisplayValue(stripKienXuatLabel(item.batchCode), 'N/A');
+      const dispPkgNo = cleanStockDisplayValue(stripKienXuatLabel(item.packageNo), 'N/A');
       const dispPkgName = cleanStockDisplayValue(stripKienXuatLabel(item.packageName), '');
       const dispCode = cleanStockDisplayValue(item.materialCode, 'N/A');
       const pkgKey = buildPackageMergeKey(dispPkgNo, dispPkgName);

@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import * as XLSX from 'xlsx';
 import type {
   InboundItemDetail,
   InventoryStockRecord,
@@ -13,6 +14,7 @@ import {
   parsePastedNumber,
   shouldHandleBulkExcelPaste
 } from './inboundExcelPaste.ts';
+import { parseInboundExcel, parseOutboundExcel } from '../services/excelService.ts';
 
 function makeBlankRow(idx: number): InboundItemDetail {
   return {
@@ -287,9 +289,11 @@ describe('outboundExcelPaste', () => {
     assert.equal(result.matchedCatalogCount, 1);
 
     // Row 0: matched from stock (800kg / 8 = 100kg per unit * qty 1 = 100kg)
+    // batchCode must remain empty (never copied from packageNo or shipment)
     assert.equal(result.items[0].materialCode, 'VT-001');
     assert.equal(result.items[0].materialName, 'Ống thép đúc DN200 SCH40');
-    assert.equal(result.items[0].batchCode, 'PKG-STK-01');
+    assert.equal(result.items[0].batchCode, '');
+    assert.equal(result.items[0].packageNo, 'PKG-STK-01');
     assert.equal(result.items[0].packingListNo, 'PL-2026-88');
     assert.equal(result.items[0].shipment, 'SHP-88');
     assert.equal(result.items[0].unit, 'Cây');
@@ -298,7 +302,8 @@ describe('outboundExcelPaste', () => {
     // Row 1: matched from catalog fallback (18kg * 1)
     assert.equal(result.items[1].materialCode, 'VT-002');
     assert.equal(result.items[1].materialName, 'Mặt bích hàn cổ 8 inch 150#');
-    assert.equal(result.items[1].batchCode, 'PKG-02');
+    assert.equal(result.items[1].batchCode, '');
+    assert.equal(result.items[1].packageNo, 'PKG-02');
     assert.equal(result.items[1].unit, 'Cái');
     assert.equal(result.items[1].weightKg, 18);
 
@@ -361,13 +366,86 @@ describe('outboundExcelPaste', () => {
     assert.equal(result.items[0].weightKg, 420.5);
     assert.equal(result.items[0].note, 'Xuất tổ lắp ống');
 
-    // Row 1: blank name/batch/drawing/unit/weight auto-filled from catalog (5 * 18kg = 90kg)
+    // Row 1: blank name/drawing/unit/weight auto-filled from catalog (5 * 18kg = 90kg);
+    // blank batchCode must remain empty and never copy packageNo
     assert.equal(result.items[1].materialName, 'Mặt bích hàn cổ 8 inch 150#');
-    assert.equal(result.items[1].batchCode, 'PKG-02');
+    assert.equal(result.items[1].batchCode, '');
+    assert.equal(result.items[1].packageNo, 'PKG-02');
     assert.equal(result.items[1].drawingNo, 'DWG-002');
     assert.equal(result.items[1].unit, 'Cái');
     assert.equal(result.items[1].quantity, 5);
     assert.equal(result.items[1].weightKg, 90);
     assert.equal(result.items[1].note, 'Xuất dự phòng');
+  });
+
+  it('keeps batchCode empty in parseInboundExcel and parseOutboundExcel when Package No. is provided but Mã lô is blank', async () => {
+    const buildFile = (rows: Record<string, any>[], name: string): File => {
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+      const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+      return new File([buf], name, {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+    };
+
+    const inboundFile = buildFile(
+      [
+        {
+          'Số phiếu (*)': 'PN-TEST-01',
+          'Kho tiếp nhận (*)': 'Kho Long Phú 1',
+          'Mã vật tư (*)': 'VT-001',
+          'Tên vật tư (*)': 'Ống thép đúc DN200',
+          'Mã lô': '',
+          'Package No.': 'S09-HUK-2026',
+          'Số lượng (cây/tấm) (*)': 10,
+          'ĐVT (*)': 'Ống',
+          'Khối lượng (Kg) (*)': 100
+        },
+        {
+          'Số phiếu (*)': 'PN-TEST-01',
+          'Kho tiếp nhận (*)': 'Kho Long Phú 1',
+          'Mã vật tư (*)': 'VT-002',
+          'Tên vật tư (*)': 'Mặt bích 8 inch',
+          'Mã lô': 'HEAT-8821',
+          'Package No.': '',
+          'Số lượng (cây/tấm) (*)': 5,
+          'ĐVT (*)': 'Cái',
+          'Khối lượng (Kg) (*)': 50
+        }
+      ],
+      'inbound_batch_test.xlsx'
+    );
+
+    const inRes = await parseInboundExcel(inboundFile);
+    assert.equal(inRes.success, true);
+    assert.equal(inRes.data.length, 2);
+    assert.equal(inRes.data[0].packageNo, 'S09-HUK-2026');
+    assert.equal(inRes.data[0].batchCode, '');
+    assert.equal(inRes.data[1].batchCode, 'HEAT-8821');
+    assert.equal(inRes.data[1].packageNo, '');
+
+    const outboundFile = buildFile(
+      [
+        {
+          'Số phiếu (*)': 'PX-TEST-01',
+          'Kho xuất (*)': 'Kho Long Phú 1',
+          'Mã vật tư (*)': 'VT-001',
+          'Tên vật tư (*)': 'Ống thép đúc DN200',
+          'Mã lô': '',
+          'Package No.': 'S09-HUK-2026',
+          'Số lượng (cây/tấm) (*)': 2,
+          'ĐVT (*)': 'Ống',
+          'Khối lượng (Kg) (*)': 20
+        }
+      ],
+      'outbound_batch_test.xlsx'
+    );
+
+    const outRes = await parseOutboundExcel(outboundFile);
+    assert.equal(outRes.success, true);
+    assert.equal(outRes.data.length, 1);
+    assert.equal(outRes.data[0].packageNo, 'S09-HUK-2026');
+    assert.equal(outRes.data[0].batchCode, '');
   });
 });

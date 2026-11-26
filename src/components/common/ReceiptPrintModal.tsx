@@ -269,30 +269,9 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
   };
 
   const getItemBatchDisplay = (item: any): string => {
-    if (item.batchCode && String(item.batchCode).trim()) {
-      return String(item.batchCode).trim();
-    }
-    if (
-      item.packageNo &&
-      item.packageNo !== 'N/A' &&
-      !String(item.packageNo).startsWith('PKG-') &&
-      !String(item.packageNo).startsWith('LO-') &&
-      String(item.packageNo).trim()
-    ) {
-      return String(item.packageNo).trim();
-    }
-    if (item.packageNo && item.packageNo !== 'N/A' && !String(item.packageNo).startsWith('LO-')) {
-      return String(item.packageNo).trim();
-    }
-    if (
-      item.shipment &&
-      item.shipment !== 'N/A' &&
-      item.shipment !== 'SHP-CHUA-RO' &&
-      item.shipment !== 'SHP-EXCEL'
-    ) {
-      return String(item.shipment).trim();
-    }
-    return '';
+    const cleaned = String(item.batchCode || '').trim();
+    if (!cleaned || cleaned.toUpperCase() === 'N/A') return '';
+    return cleaned;
   };
 
   const getInboundItemNote = (item: any): string => {

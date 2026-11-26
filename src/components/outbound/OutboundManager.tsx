@@ -119,7 +119,7 @@ function getStockItemMatchKey(item: {
   const shp = norm(item.shipment);
   const code = norm(item.materialCode);
   const name = norm(item.materialName);
-  const pkg = norm(item.packageNo || item.batchCode);
+  const pkg = norm(item.packageNo);
   const dwg = norm(item.drawingNo);
   const cat = norm(item.category);
   return `${pl}__${shp}__${code}__${name}__${pkg}__${dwg}__${cat}`;
@@ -128,19 +128,13 @@ function getStockItemMatchKey(item: {
 function buildOutboundItemFromStock(st: InventoryStockRecord, idxOffset = 0): OutboundItemDetail {
   const defaultQty = st.currentQuantity > 0 ? roundQty(st.currentQuantity) : 0;
   const defaultWeight = Math.max(0, Math.round((Number(st.currentWeightKg) || 0) * 100) / 100);
-  const defaultBatch =
-    st.packageNo && st.packageNo !== 'N/A'
-      ? st.packageNo
-      : st.shipment && st.shipment !== 'N/A'
-        ? st.shipment
-        : '';
 
   return {
     id: `out-item-${Date.now()}-${idxOffset}-${Math.random().toString(36).substring(2, 6)}`,
     materialCode: st.materialCode,
     materialName: st.materialName,
     unit: st.unit,
-    batchCode: defaultBatch,
+    batchCode: '',
     packingListNo: st.packingListNo,
     shipment: st.shipment,
     packageNo: st.packageNo,
@@ -476,7 +470,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       }
       for (let j = 0; j < editingReceipt.items.length; j++) {
         const it = editingReceipt.items[j];
-        const key = `${editingReceipt.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.materialName || 'N/A'}__${it.packageNo || it.batchCode || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
+        const key = `${editingReceipt.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.materialName || 'N/A'}__${it.packageNo || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
         const idx = stockIndexMap.get(key);
         if (idx !== undefined) {
           baseStock[idx].currentQuantity = roundQty(
@@ -613,7 +607,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     }
     for (let j = 0; j < (rcp.items || []).length; j++) {
       const it = rcp.items[j];
-      const key = `${rcp.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.materialName || 'N/A'}__${it.packageNo || it.batchCode || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
+      const key = `${rcp.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.materialName || 'N/A'}__${it.packageNo || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
       const idx = stockIndexMap.get(key);
       if (idx !== undefined) {
         baseStock[idx].currentQuantity = roundQty(
@@ -643,6 +637,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
     const initialItems: OutboundItemDetail[] = (rcp.items || []).map((it, idx) => ({
       ...it,
       id: it.id || `out-edit-${Date.now()}-${idx}`,
+      batchCode: it.batchCode && it.batchCode !== 'N/A' ? it.batchCode : '',
       drawingNo: it.drawingNo && it.drawingNo !== 'N/A' ? it.drawingNo : '',
       note: it.note ?? it.purpose ?? ''
     }));
@@ -896,8 +891,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
         if (found) {
           copy[idx].materialName = found.name;
           copy[idx].unit = found.unit;
-          if (found.packageNo && !copy[idx].batchCode) {
-            copy[idx].batchCode = found.packageNo;
+          if (found.packageNo && found.packageNo !== 'N/A' && (!copy[idx].packageNo || copy[idx].packageNo === 'N/A')) {
             copy[idx].packageNo = found.packageNo;
           }
           if (found.category) copy[idx].category = found.category;
@@ -923,10 +917,6 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
         } else if (prevQty > 0 && currW > 0 && nextQty > 0) {
           copy[idx].weightKg = Math.round((currW / prevQty) * nextQty * 100) / 100;
         }
-      }
-
-      if (field === 'batchCode' && (!copy[idx].packingListNo || copy[idx].packingListNo === 'N/A')) {
-        copy[idx].packageNo = String(val);
       }
 
       return copy;
@@ -1194,11 +1184,9 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
           const meta = validation.matchedStockMetadata;
           const qty = validation.requestedQty;
           const weight = validation.requestedWeightKg;
-          const batchVal = String(
-            item.batchCode || item.packageNo || meta?.packageNo || ''
-          ).trim();
+          const batchVal = String(item.batchCode || '').trim();
           const pkgNo = String(
-            item.packageNo || batchVal || meta?.packageNo || `PKG-${idx + 1}`
+            (!isBlankOutboundField(item.packageNo) ? item.packageNo : meta?.packageNo) || ''
           ).trim();
           const matCode = validation.resolvedMaterialCode;
           const matName =
@@ -1369,7 +1357,8 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
       extraCodes: formItems.map((it) => it.materialCode)
     });
     const normalizedItems: OutboundItemDetail[] = formItems.map((it) => {
-      const batch = (it.batchCode || it.packageNo || '').trim();
+      const batch = (it.batchCode || '').trim();
+      const pkg = (it.packageNo || '').trim();
       const noteText = (it.note ?? it.purpose ?? '').trim();
       const rawMatCode = it.materialCode.trim();
       const rawDwg = (it.drawingNo || '').trim();
@@ -1381,7 +1370,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
         materialName: it.materialName.trim(),
         unit: it.unit.trim() || 'Ống',
         batchCode: batch,
-        packageNo: it.packageNo || batch || 'N/A',
+        packageNo: pkg && pkg.toUpperCase() !== 'N/A' ? pkg : 'N/A',
         drawingNo: rawDwg && rawDwg.toUpperCase() !== 'N/A' ? rawDwg : 'N/A',
         warehouseName: wh?.name || it.warehouseName || 'Kho Dự Án',
         quantity: Math.max(0, roundQty(it.quantity)),
@@ -2973,7 +2962,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                             <td className="p-2">
                               <input
                                 type="text"
-                                value={item.batchCode ?? item.packageNo ?? ''}
+                                value={item.batchCode ?? ''}
                                 onChange={(e) =>
                                   updateItemRow(realIdx, 'batchCode', e.target.value)
                                 }
@@ -3595,8 +3584,7 @@ export const OutboundManager: React.FC<OutboundManagerProps> = ({
                         pagedDetailItems.map((it, idx) => {
                           const globalIdx = (detailPage - 1) * detailPageSize + idx;
                           const batchText =
-                            it.batchCode ||
-                            (it.packageNo && it.packageNo !== 'N/A' ? it.packageNo : '');
+                            it.batchCode && it.batchCode !== 'N/A' ? it.batchCode : '-';
                           const drawingText =
                             it.drawingNo && it.drawingNo !== 'N/A' ? it.drawingNo : '-';
                           return (

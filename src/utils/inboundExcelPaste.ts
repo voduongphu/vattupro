@@ -439,15 +439,6 @@ function applyStockMetadataToOutboundRow(
     row.unit = st.unit;
   }
 
-  const defaultBatch = !isBlankOrNA(st.packageNo)
-    ? st.packageNo
-    : !isBlankOrNA(st.shipment)
-      ? st.shipment
-      : '';
-  if (!explicitFields.has('batchCode') && !(row.batchCode || '').trim() && defaultBatch) {
-    row.batchCode = defaultBatch;
-  }
-
   if (isBlankOrNA(row.packingListNo) && !isBlankOrNA(st.packingListNo)) {
     row.packingListNo = st.packingListNo;
   }
@@ -504,15 +495,8 @@ function applyCatalogMetadataToOutboundRow(
     row.unit = found.unit;
   }
 
-  if (
-    !explicitFields.has('batchCode') &&
-    !(row.batchCode || '').trim() &&
-    !isBlankOrNA(found.packageNo)
-  ) {
-    row.batchCode = found.packageNo!;
-    if (isBlankOrNA(row.packageNo)) {
-      row.packageNo = found.packageNo!;
-    }
+  if (isBlankOrNA(row.packageNo) && !isBlankOrNA(found.packageNo)) {
+    row.packageNo = found.packageNo!;
   }
 
   if ((!row.category || row.category === 'Vật tư dự án') && found.category && found.category !== 'Chung') {
@@ -615,9 +599,6 @@ export function applyExcelPasteToOutboundItems(
       } else {
         rowCopy[field] = cellVal;
         explicitFields.add(field);
-        if (field === 'batchCode' && isBlankOrNA(rowCopy.packingListNo)) {
-          rowCopy.packageNo = cellVal;
-        }
       }
     }
 

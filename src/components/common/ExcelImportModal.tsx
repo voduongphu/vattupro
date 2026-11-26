@@ -890,6 +890,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           <th className="p-2.5">Bộ phận & Chứng từ</th>
                           <th className="p-2.5">{type === 'inbound' ? 'Đơn vị giao hàng' : 'Người nhận & Đơn vị'}</th>
                           <th className="p-2.5">Mã vật tư & Tên vật tư</th>
+                          <th className="p-2.5">Số kiện</th>
                           <th className="p-2.5">Mã lô</th>
                           <th className="p-2.5">Bản vẽ</th>
                           <th className="p-2.5 text-right">SL (cây/tấm)</th>
@@ -908,12 +909,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           const customCode = rowAny.receiptCode || rowAny.issueCode;
                           const batchCodeVal = String(rowAny.batchCode || '').trim();
                           const packageNoVal = String(r.packageNo || '').trim();
-                          const batchOrPkg = batchCodeVal || packageNoVal || '-';
-                          const showSeparatePkg =
-                            packageNoVal &&
-                            packageNoVal !== 'N/A' &&
-                            packageNoVal !== batchCodeVal &&
-                            batchCodeVal;
+                          const displayPkg = packageNoVal && packageNoVal !== 'N/A' ? packageNoVal : '-';
+                          const displayBatch = batchCodeVal && batchCodeVal !== 'N/A' ? batchCodeVal : '-';
                           const isReturnInbound = type === 'inbound' && rowAny.inboundType === 'return';
                           const isTransferOutbound = type === 'outbound' && rowAny.outboundType === 'transfer';
                           const lineAmount =
@@ -1036,13 +1033,11 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                   )}
                                 </div>
                               </td>
-                              <td className="p-2.5 font-mono font-semibold text-indigo-700">
-                                <div data-user-content="true">{batchOrPkg}</div>
-                                {showSeparatePkg && (
-                                  <div className="text-[10px] font-sans font-medium text-teal-700">
-                                    <span>Kiện:</span> <span data-user-content="true">{packageNoVal}</span>
-                                  </div>
-                                )}
+                              <td className="p-2.5 font-mono font-semibold text-indigo-700" data-user-content="true">
+                                {displayPkg}
+                              </td>
+                              <td className="p-2.5 font-mono text-slate-800" data-user-content="true">
+                                {displayBatch}
                               </td>
                               <td className="p-2.5 font-mono text-slate-700" data-user-content="true">
                                 {r.drawingNo && r.drawingNo !== 'N/A' ? r.drawingNo : '-'}

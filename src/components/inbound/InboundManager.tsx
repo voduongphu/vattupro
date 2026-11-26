@@ -1374,8 +1374,8 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
             Number(item.totalPrice) > 0
               ? Math.round(Number(item.totalPrice) * 100) / 100
               : Math.round(qty * uPrice * 100) / 100;
-          const batchVal = String(item.batchCode || item.packageNo || '').trim();
-          const pkgNo = String(item.packageNo || batchVal || `PKG-${idx + 1}`).trim();
+          const batchVal = String(item.batchCode || '').trim();
+          const pkgNo = String(item.packageNo || '').trim();
           const matCode = materialCodeResolver.resolve(item.materialCode, item.materialName);
           const plNo = String(item.packingListNo || first?.packingListNo || 'PL-EXCEL-01').trim();
           const dwgNo = String(item.drawingNo || 'N/A').trim();
@@ -1393,7 +1393,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
             packingListNo: plNo,
             shipment: item.shipment || first?.shipment || 'SHP-EXCEL',
             packageNo: pkgNo,
-            packageName: item.packageName || `Kiện ${pkgNo}`,
+            packageName: item.packageName || (pkgNo ? `Kiện ${pkgNo}` : ''),
             category: item.category || 'Hạng mục dự án',
             drawingNo: dwgNo,
             manufacturer: item.manufacturer || first?.manufacturer || 'N/A',
@@ -1574,8 +1574,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
 
     const normalizedItems: InboundItemDetail[] = formItems.map((it) => {
       const batch = (it.batchCode || '').trim();
-      const explicitPkg = (it.packageNo || '').trim();
-      const pkg = explicitPkg || batch;
+      const pkg = (it.packageNo || '').trim();
       const qty = Math.max(0, roundQty(it.quantity));
       const uPrice = Math.max(0, Number(it.unitPrice) || 0);
       const tPrice =
@@ -1647,7 +1646,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         unit: it.unit.trim() || 'Ống',
         batchCode: batch,
         packageNo: pkg,
-        packageName: it.packageName?.trim() || (explicitPkg ? `Kiện ${explicitPkg}` : batch ? `Lô ${batch}` : ''),
+        packageName: it.packageName?.trim() || (pkg ? `Kiện ${pkg}` : ''),
         packingListNo: resolvedPl || '',
         shipment: resolvedShp || 'N/A',
         supplier: resolvedItemSup,
@@ -4054,7 +4053,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                         pagedDetailItems.map((it, idx) => {
                           const globalIdx = (detailPage - 1) * detailPageSize + idx;
                           const pkgText = it.packageNo && it.packageNo !== 'N/A' ? it.packageNo : '-';
-                          const batchText = it.batchCode || '';
+                          const batchText = it.batchCode && it.batchCode !== 'N/A' ? it.batchCode : '';
                           const drawingText = it.drawingNo && it.drawingNo !== 'N/A' ? it.drawingNo : '-';
                           const lineTotal =
                             it.totalPrice && it.totalPrice > 0
