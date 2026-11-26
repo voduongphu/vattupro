@@ -14,6 +14,7 @@ export interface User {
   allowedWarehouseIds?: string[];
   createdAt: string;
   lastLogin?: string;
+  authUid?: string;
   sessionRevokedAt?: number;
   updatedAt?: number;
 }
@@ -314,4 +315,23 @@ export interface ActiveUserSession {
   lastSeenAt: number;
 }
 
+export type LoginHistoryMethod = 'google' | 'account';
+export type LoginHistoryStatus = 'success' | 'replaced_other_device';
 
+export interface LoginHistoryEntry {
+  id: string;
+  userId: string;
+  username: string;
+  fullName: string;
+  email?: string;
+  role: UserRole;
+  authUid?: string;
+  userKey: string;
+  deviceId: string;
+  deviceLabel: string;
+  loginAt: string;
+  loginAtMs: number;
+  method: LoginHistoryMethod;
+  status: LoginHistoryStatus;
+  replacedDeviceLabel?: string;
+}

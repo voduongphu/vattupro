@@ -49,7 +49,8 @@ import type {
   ActiveUserSession,
   OsdReceipt,
   OsdItemDetail,
-  OsdPdfAttachment
+  OsdPdfAttachment,
+  LoginHistoryEntry
 } from '../types/inventory';
 import {
   normKey,
@@ -70,8 +71,16 @@ import {
   roundQty,
   canonicalUserSessionKey,
   computeOsdDigest,
-  normalizeAllowedWarehouseIds
+  normalizeAllowedWarehouseIds,
+  isUserAdmin
 } from '../utils/additiveMerge';
+import {
+  deserializeLoginHistoryEntry,
+  MAX_LOGIN_HISTORY_PER_USER,
+  MAX_LOCAL_LOGIN_HISTORY,
+  mergeLoginHistoryEntries,
+  sanitizeLoginHistoryEntryForCloud
+} from '../utils/loginHistory';
 import {
   computeUsersDomainDigest,
   computeWarehousesDomainDigest,
@@ -1551,6 +1560,7 @@ function serializeAccountPublic(u: User): Record<string, any> {
     allowedWarehouseIds,
     createdAt: cleanStr(u.createdAt, 64, new Date().toISOString()),
     lastLogin: cleanStr(u.lastLogin, 64, ''),
+    authUid: cleanStr(u.authUid, 128, ''),
     sessionRevokedAt: cleanNum(u.sessionRevokedAt, 0),
     updatedAt: cleanNum(u.updatedAt, 1)
   };
@@ -1579,6 +1589,7 @@ function deserializeAccountPublic(m: Record<string, any>): User {
     allowedWarehouseIds,
     createdAt: cleanStr(m.createdAt, 64, '2026-01-01T00:00:00Z'),
     lastLogin: cleanStr(m.lastLogin, 64, '') || undefined,
+    authUid: cleanStr(m.authUid, 128, '') || undefined,
     sessionRevokedAt: Number(m.sessionRevokedAt) > 0 ? Number(m.sessionRevokedAt) : undefined,
     updatedAt: Number(m.updatedAt) || 1
   };
@@ -6569,6 +6580,7 @@ export const FirestoreSyncService = {
             {
               email: emailLower,
               lastLogin: nowIso,
+              authUid: fbUser.uid,
               sessionRevokedAt: forceLogoutOtherDevice
                 ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
                 : matched.sessionRevokedAt
@@ -6580,7 +6592,8 @@ export const FirestoreSyncService = {
           ) || {
             ...matched,
             email: emailLower,
-            lastLogin: nowIso
+            lastLogin: nowIso,
+            authUid: fbUser.uid
           };
 
         if (shouldSyncUserMetaToCloud) {
@@ -7564,6 +7577,279 @@ export const FirestoreSyncService = {
       };
     } finally {
       cloudTransferTracker.end();
+    }
+  },
+
+  // ==========================================================================
+  // Login History Recording & Admin Audit Retrieval
+  // ==========================================================================
+  async recordLoginHistoryToCloud(entries: LoginHistoryEntry[]): Promise<boolean> {
+    if (!Array.isArray(entries) || entries.length === 0) return false;
+    const fbUser = auth.currentUser;
+    if (!fbUser || !fbUser.emailVerified || isFirestoreCircuitOpen()) {
+      return false;
+    }
+
+    try {
+      const ok = await ensureWorkspaceReady(fbUser, {
+        readTimeoutMs: 5000,
+        maxRetries: 0
+      });
+      if (!ok) return false;
+
+      const historyUid = cleanStr(fbUser.uid, 128, '');
+      if (!historyUid) return false;
+
+      const docPath = `workspaces/${WORKSPACE_ID}/loginHistory/${historyUid}`;
+      const docRef = doc(db, 'workspaces', WORKSPACE_ID, 'loginHistory', historyUid);
+      const snap = await safeGetDoc(docRef, docPath, 5000, 0);
+
+      const existingEntries: LoginHistoryEntry[] = [];
+      let existingUserKey = '';
+      if (snap.exists()) {
+        const data = snap.data();
+        existingUserKey = cleanStr(data?.userKey, 160, '');
+        if (Array.isArray(data?.entries)) {
+          for (const rawItem of data.entries) {
+            const parsed = deserializeLoginHistoryEntry(rawItem, historyUid);
+            if (parsed) existingEntries.push(parsed);
+          }
+        }
+      }
+
+      const existingIds = new Set(existingEntries.map((e) => e.id));
+      const hasNewEntry = entries.some((e) => !existingIds.has(e.id));
+      if (!hasNewEntry && snap.exists()) {
+        return true;
+      }
+
+      const normalizedIncoming = entries.map((e) => ({
+        ...e,
+        authUid: e.authUid || historyUid
+      }));
+      const mergedEntries = mergeLoginHistoryEntries(
+        existingEntries,
+        normalizedIncoming,
+        MAX_LOGIN_HISTORY_PER_USER
+      );
+      const cloudEntries = mergedEntries.map(sanitizeLoginHistoryEntryForCloud);
+      const userKey = cleanStr(
+        existingUserKey || normalizedIncoming[0]?.userKey || fbUser.email || historyUid,
+        160,
+        'user'
+      );
+
+      if (snap.exists()) {
+        try {
+          await updateDoc(docRef, {
+            entries: cloudEntries,
+            updatedByUid: historyUid,
+            updatedAt: serverTimestamp()
+          });
+          knownExistingPaths.add(docRef.path);
+          return true;
+        } catch (err) {
+          if (isPermissionError(err)) {
+            handleFirestoreError(err, OperationType.UPDATE, docPath);
+          }
+          throw err;
+        }
+      } else {
+        try {
+          await setDoc(docRef, {
+            workspaceId: WORKSPACE_ID,
+            historyDocId: historyUid,
+            ownerUid: historyUid,
+            userKey,
+            entries: cloudEntries,
+            updatedByUid: historyUid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+          knownExistingPaths.add(docRef.path);
+          return true;
+        } catch (err) {
+          if (isPermissionError(err)) {
+            handleFirestoreError(err, OperationType.CREATE, docPath);
+          }
+          throw err;
+        }
+      }
+    } catch (err) {
+      if (isQuotaExceededError(err)) {
+        notifyFirestoreQuotaExceeded(300_000, err);
+      }
+      return false;
+    }
+  },
+
+  async fetchAllUsersLoginHistoryFromCloud(
+    actingUser?: User | null
+  ): Promise<{ success: boolean; entries: LoginHistoryEntry[]; message?: string }> {
+    const fbUser = auth.currentUser;
+    const isAllowedAdmin = isCloudAdmin(fbUser) || isUserAdmin(actingUser);
+    if (!isAllowedAdmin) {
+      return {
+        success: false,
+        entries: [],
+        message: 'Chỉ tài khoản Quản trị viên (Admin) mới được phép xem lịch sử đăng nhập của tất cả người dùng.'
+      };
+    }
+
+    const localCached = StorageService.getLoginHistory();
+    if (!fbUser || !fbUser.emailVerified || isFirestoreCircuitOpen()) {
+      return {
+        success: false,
+        entries: localCached,
+        message: 'Đang hiển thị lịch sử lưu tại thiết bị (chưa kết nối Cloud Firestore).'
+      };
+    }
+
+    try {
+      const ok = await ensureWorkspaceReady(fbUser, {
+        readTimeoutMs: 6000,
+        maxRetries: 1
+      });
+      if (!ok) {
+        return {
+          success: false,
+          entries: localCached,
+          message: 'Không thể kết nối Cloud Firestore lúc này. Đang hiển thị dữ liệu lưu tại máy.'
+        };
+      }
+
+      // Đảm bảo danh sách tài khoản (và authUid) mới nhất được tải về cho Admin trước khi đọc lịch sử
+      const wsSnap = await safeGetDoc(
+        doc(db, 'workspaces', WORKSPACE_ID),
+        `workspaces/${WORKSPACE_ID}`
+      );
+      if (wsSnap.exists()) {
+        const wsManifest = wsSnap.data() as WorkspaceManifestDoc;
+        cachedWsManifest = { data: wsManifest, atMs: Date.now() };
+        await pullMetaFromCloud(wsManifest, fbUser, {
+          pullUsers: true,
+          pullWarehouses: false,
+          pullTombstones: true,
+          pullOsd: false
+        });
+      }
+
+      const allUsers = StorageService.getUsers();
+      const candidateUids = new Set<string>();
+      if (fbUser.uid) {
+        candidateUids.add(cleanStr(fbUser.uid, 128, ''));
+      }
+      for (const u of allUsers) {
+        if (u.authUid) {
+          const cleanUid = cleanStr(u.authUid, 128, '');
+          if (cleanUid) candidateUids.add(cleanUid);
+        }
+      }
+
+      // Bổ sung khám phá authUid từ collection sessions của các tài khoản nếu user chưa kịp sync authUid
+      const sessionKeys = Array.from(
+        new Set(
+          allUsers
+            .map((u) => canonicalUserSessionKey(u))
+            .filter(Boolean)
+        )
+      );
+      const fallbackEntriesFromSessions: LoginHistoryEntry[] = [];
+      await runWithConcurrencyLimit(sessionKeys, 6, async (uKey) => {
+        try {
+          const sessId = makeSafeDocId('sess', uKey);
+          const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessId}`;
+          const sessSnap = await safeGetDoc(
+            doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessId),
+            sessPath,
+            4000,
+            0
+          );
+          if (sessSnap.exists()) {
+            const sData = sessSnap.data();
+            const writerUid = cleanStr(sData?.updatedByUid, 128, '');
+            if (writerUid) candidateUids.add(writerUid);
+            const sessLoginAt = cleanStr(sData?.loginAt, 64, '');
+            const sessLoginMs = sessLoginAt ? Date.parse(sessLoginAt) : 0;
+            if (sessLoginAt && Number.isFinite(sessLoginMs) && sessLoginMs > 0) {
+              const matchedUser = allUsers.find(
+                (u) =>
+                  u.id === sData?.userId ||
+                  canonicalUserSessionKey(u) === uKey ||
+                  normUserKey(u.username) === normUserKey(String(sData?.username || ''))
+              );
+              if (matchedUser) {
+                const parsedSessionEntry = deserializeLoginHistoryEntry(
+                  {
+                    userId: matchedUser.id,
+                    username: matchedUser.username,
+                    fullName: matchedUser.fullName,
+                    email: matchedUser.email,
+                    role: matchedUser.role,
+                    authUid: writerUid,
+                    userKey: uKey,
+                    deviceId: sData?.deviceId || '',
+                    deviceLabel: sData?.deviceLabel || 'Thiết bị Web',
+                    loginAt: sessLoginAt,
+                    loginAtMs: sessLoginMs,
+                    method: 'google',
+                    status: sData?.forceLogoutDeviceLabel ? 'replaced_other_device' : 'success',
+                    replacedDeviceLabel: sData?.forceLogoutDeviceLabel || ''
+                  },
+                  writerUid || undefined
+                );
+                if (parsedSessionEntry) {
+                  fallbackEntriesFromSessions.push(parsedSessionEntry);
+                }
+              }
+            }
+          }
+        } catch {
+          // ignore per-session fallback failure
+        }
+      });
+
+      const uidList = Array.from(candidateUids).filter((uid) => /^[a-zA-Z0-9_-]{1,128}$/.test(uid));
+      const cloudEntries: LoginHistoryEntry[] = [];
+
+      await runWithConcurrencyLimit(uidList, 6, async (uid) => {
+        const histPath = `workspaces/${WORKSPACE_ID}/loginHistory/${uid}`;
+        const histSnap = await safeGetDoc(
+          doc(db, 'workspaces', WORKSPACE_ID, 'loginHistory', uid),
+          histPath,
+          5000,
+          0
+        );
+        if (!histSnap.exists()) return;
+        const data = histSnap.data();
+        if (!Array.isArray(data?.entries)) return;
+        for (const rawItem of data.entries) {
+          const parsed = deserializeLoginHistoryEntry(rawItem, uid);
+          if (parsed) cloudEntries.push(parsed);
+        }
+      });
+
+      // Kết hợp dữ liệu Cloud chính thức; chỉ dùng fallback từ session nếu tài khoản chưa có bản ghi lịch sử nào ở cùng thời điểm
+      const mergedCloudAndFallback = mergeLoginHistoryEntries(
+        cloudEntries,
+        fallbackEntriesFromSessions,
+        MAX_LOCAL_LOGIN_HISTORY
+      );
+      const saved = StorageService.replaceLoginHistory(mergedCloudAndFallback);
+      return {
+        success: true,
+        entries: saved
+      };
+    } catch (err: any) {
+      if (isQuotaExceededError(err)) {
+        const msg = notifyFirestoreQuotaExceeded(300_000, err);
+        return { success: false, entries: localCached, message: msg };
+      }
+      return {
+        success: false,
+        entries: localCached,
+        message: err?.message || 'Không thể tải lịch sử đăng nhập từ Cloud Firestore.'
+      };
     }
   }
 };

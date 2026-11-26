@@ -17,9 +17,11 @@ import {
   Mail,
   Lock,
   Unlock,
-  Warehouse as WarehouseIcon
+  Warehouse as WarehouseIcon,
+  History
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
+import { LoginHistoryModal } from './LoginHistoryModal';
 import { ModalGuard, ModalCloseButton } from '../../context/ModalContext';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
@@ -53,6 +55,7 @@ export const UserManager: React.FC = () => {
 
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isLoginHistoryOpen, setIsLoginHistoryOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
 
@@ -392,6 +395,14 @@ export const UserManager: React.FC = () => {
 
         {isAdmin ? (
           <div className="flex items-center gap-2 flex-wrap w-full md:w-auto">
+            <button
+              type="button"
+              onClick={() => setIsLoginHistoryOpen(true)}
+              className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-semibold text-xs sm:text-sm transition active:scale-95 min-h-[42px]"
+            >
+              <History className="w-4 h-4 shrink-0" />
+              <span>Lịch Sử Đăng Nhập</span>
+            </button>
             <button
               type="button"
               onClick={openAddModal}
@@ -1168,6 +1179,17 @@ export const UserManager: React.FC = () => {
         itemType="tài khoản người sử dụng"
         warningText="Tài khoản này sẽ bị xóa khỏi danh sách phân quyền của hệ thống. Bạn có chắc chắn muốn xóa không?"
       />
+
+      {/* Modal Lịch Sử Đăng Nhập (chỉ dành cho Admin) */}
+      {isAdmin && (
+        <LoginHistoryModal
+          isOpen={isLoginHistoryOpen}
+          onClose={() => setIsLoginHistoryOpen(false)}
+          users={users}
+          currentUser={currentUser}
+          isAdmin={isAdmin}
+        />
+      )}
     </div>
   );
 };

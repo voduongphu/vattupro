@@ -8,7 +8,8 @@ import {
   StockFilterParams,
   OsdReceipt,
   OsdStatus,
-  TombstoneMap
+  TombstoneMap,
+  LoginHistoryEntry
 } from '../types/inventory';
 import {
   createEmptyTombstones,
@@ -37,6 +38,10 @@ import {
   cleanupLegacyOutboundReceipts
 } from '../utils/batchPackageCleanup';
 import { incrementVersionVector } from '../utils/versionVector';
+import {
+  MAX_LOCAL_LOGIN_HISTORY,
+  mergeLoginHistoryEntries
+} from '../utils/loginHistory';
 
 function getLocalActorId(): string {
   try {
@@ -61,6 +66,7 @@ const STORAGE_KEYS = {
   OSD: 'vtp_inventory_osd_v2',
   CURRENT_USER: 'vtp_inventory_current_user_v2',
   TOMBSTONES: 'vtp_inventory_tombstones_v2',
+  LOGIN_HISTORY: 'vtp_inventory_login_history_v1',
   DELETED_INBOUND: 'vtp_deleted_inbound_ids_v2',
   DELETED_OUTBOUND: 'vtp_deleted_outbound_ids_v2',
   DELETED_MATERIALS: 'vtp_deleted_material_ids_v2',
@@ -1771,6 +1777,11 @@ export const StorageService = {
       setItem(STORAGE_KEYS.OSD, []);
     }
 
+    // 7. Login History
+    if (!memoryCache.has(STORAGE_KEYS.LOGIN_HISTORY) && safeLocalGetRaw(STORAGE_KEYS.LOGIN_HISTORY) === null) {
+      setItem(STORAGE_KEYS.LOGIN_HISTORY, []);
+    }
+
     try {
       localStorage.setItem(SEED_FLAG_KEY, 'true');
     } catch {
@@ -3327,6 +3338,29 @@ export const StorageService = {
     };
     this.saveOsdReceipts(list);
     return true;
+  },
+
+  getLoginHistory(): LoginHistoryEntry[] {
+    this.ensureInitialized();
+    const list = getItem<LoginHistoryEntry[]>(STORAGE_KEYS.LOGIN_HISTORY, []);
+    return Array.isArray(list) ? list : [];
+  },
+
+  appendLoginHistoryEntries(entries: LoginHistoryEntry[]): LoginHistoryEntry[] {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return this.getLoginHistory();
+    }
+    const current = this.getLoginHistory();
+    const merged = mergeLoginHistoryEntries(current, entries, MAX_LOCAL_LOGIN_HISTORY);
+    setItem(STORAGE_KEYS.LOGIN_HISTORY, merged);
+    return merged;
+  },
+
+  replaceLoginHistory(entries: LoginHistoryEntry[]): LoginHistoryEntry[] {
+    const current = this.getLoginHistory();
+    const merged = mergeLoginHistoryEntries(current, entries || [], MAX_LOCAL_LOGIN_HISTORY);
+    setItem(STORAGE_KEYS.LOGIN_HISTORY, merged);
+    return merged;
   },
 
   // Reset về dữ liệu gốc (cả IndexedDB và localStorage)

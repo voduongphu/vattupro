@@ -176,13 +176,14 @@ export function resolveGoogleUserRecord(
     if (existingAdmin) {
       const nextFullName =
         existingAdmin.fullName?.trim() || cleanDisplay || 'Võ Dương Phú (Tổng Quản Trị)';
+      const cleanUid = (input.uid || '').trim();
       const needsUpdate =
         existingAdmin.role !== 'admin' ||
         !existingAdmin.isActive ||
         (existingAdmin.email || '').trim().toLowerCase() !== BOOTSTRAPPED_ADMIN_EMAIL ||
         existingAdmin.emailDigest !== emailDigest ||
-        existingAdmin.fullName !== nextFullName;
-
+        existingAdmin.fullName !== nextFullName ||
+        (Boolean(cleanUid) && existingAdmin.authUid !== cleanUid);
       const adminUser: User = needsUpdate
         ? {
             ...existingAdmin,
@@ -191,6 +192,7 @@ export function resolveGoogleUserRecord(
             isActive: true,
             email: BOOTSTRAPPED_ADMIN_EMAIL,
             emailDigest,
+            authUid: cleanUid || existingAdmin.authUid,
             password: existingAdmin.password || 'google-oauth',
             updatedAt: Math.max(nowMs, (Number(existingAdmin.updatedAt) || 0) + 1)
           }
@@ -216,6 +218,7 @@ export function resolveGoogleUserRecord(
         password: 'google-oauth',
         email: BOOTSTRAPPED_ADMIN_EMAIL,
         emailDigest,
+        authUid: (input.uid || '').trim() || undefined,
         department: 'Ban Giám Đốc / QL Dự Án',
         isActive: true,
         createdAt: nowIso,
@@ -249,10 +252,12 @@ export function resolveGoogleUserRecord(
         ? matched.fullName
         : cleanDisplay || matched.fullName || matched.username;
 
+    const cleanUid = (input.uid || '').trim();
     // Không kích hoạt cloudMetaDirty/bumping updatedAt chỉ vì accounts_0 ẩn PII email khi emailDigest đã khớp
     const needsSyncMutation =
       matched.emailDigest !== emailDigest ||
-      matched.fullName !== nextFullName;
+      matched.fullName !== nextFullName ||
+      (Boolean(cleanUid) && matched.authUid !== cleanUid);
     const needsLocalEmail =
       (matched.email || '').trim().toLowerCase() !== emailLower ||
       !matched.password;
@@ -264,6 +269,7 @@ export function resolveGoogleUserRecord(
             fullName: nextFullName,
             email: emailLower,
             emailDigest,
+            authUid: cleanUid || matched.authUid,
             password: matched.password || 'google-oauth',
             updatedAt: needsSyncMutation
               ? Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1)
@@ -712,6 +718,7 @@ export function mergeUsersAdditive(
           password: inc.password || curr.password,
           allowedWarehouseIds: nextAllowedWarehouseIds,
           lastLogin: inc.lastLogin || curr.lastLogin,
+          authUid: inc.authUid || curr.authUid,
           sessionRevokedAt: maxRevokedAt,
           updatedAt: targetUpdatedAt
         };
@@ -725,6 +732,7 @@ export function mergeUsersAdditive(
           nextUser.phone !== curr.phone ||
           nextUser.email !== curr.email ||
           nextUser.emailDigest !== curr.emailDigest ||
+          nextUser.authUid !== curr.authUid ||
           nextUser.department !== curr.department ||
           !areStringArraysEqual(nextUser.allowedWarehouseIds, curr.allowedWarehouseIds) ||
           nextUser.sessionRevokedAt !== curr.sessionRevokedAt ||
@@ -746,6 +754,7 @@ export function mergeUsersAdditive(
         const mergedPhone = curr.phone || inc.phone;
         const mergedDept = curr.department || inc.department;
         const mergedPass = curr.password || inc.password;
+        const mergedAuthUid = curr.authUid || inc.authUid;
         const mergedRole = protectAdmin ? 'admin' : curr.role;
         const mergedActive = protectAdmin ? true : curr.isActive;
         const mergedAllowedWarehouseIds =
@@ -763,6 +772,7 @@ export function mergeUsersAdditive(
           mergedPhone !== curr.phone ||
           mergedDept !== curr.department ||
           mergedPass !== curr.password ||
+          mergedAuthUid !== curr.authUid ||
           mergedRole !== curr.role ||
           mergedActive !== curr.isActive ||
           !areStringArraysEqual(mergedAllowedWarehouseIds, curr.allowedWarehouseIds) ||
@@ -778,6 +788,7 @@ export function mergeUsersAdditive(
             phone: mergedPhone,
             department: mergedDept,
             password: mergedPass,
+            authUid: mergedAuthUid,
             allowedWarehouseIds: mergedAllowedWarehouseIds,
             sessionRevokedAt: maxRevokedAt
           };

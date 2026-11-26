@@ -66,6 +66,12 @@ service cloud.firestore {
         (listVal.size() == 0 || (listVal.size() > 0 && listVal[0] is map && listVal[0].keys().size() <= 48));
     }
 
+    function isBoundedLoginHistoryList(listVal) {
+      return listVal is list &&
+        listVal.size() <= 100 &&
+        (listVal.size() == 0 || (listVal.size() > 0 && listVal[0] is map && listVal[0].keys().size() <= 24));
+    }
+
     function isNonNegNumber(n) {
       return n is number && n >= 0 && n <= 100000000000000;
     }
@@ -411,6 +417,26 @@ service cloud.firestore {
         data.deviceLabel is string && data.deviceLabel.size() <= 200 &&
         data.loginAt is string && data.loginAt.size() <= 64 &&
         isNonNegNumber(data.lastSeenAt) &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLoginHistoryRecord(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'historyDocId', 'ownerUid', 'userKey',
+          'entries', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'historyDocId', 'ownerUid', 'userKey',
+          'entries', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        isValidId(data.historyDocId) &&
+        isValidId(data.ownerUid) &&
+        data.userKey is string && data.userKey.size() >= 1 && data.userKey.size() <= 160 &&
+        isBoundedLoginHistoryList(data.entries) &&
         data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
         data.updatedByUid == request.auth.uid &&
         data.createdAt is timestamp &&
@@ -1054,6 +1080,58 @@ service cloud.firestore {
         );
 
         allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(sessionDocId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 16. /workspaces/{workspaceId}/loginHistory/{historyUid}
+      // =======================================================================
+      match /loginHistory/{historyUid} {
+        allow get: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(historyUid) &&
+          isActiveMember(workspaceId) &&
+          (isAdmin() || historyUid == request.auth.uid);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(historyUid) &&
+          isValidLoginHistoryRecord(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().historyDocId == historyUid &&
+          incoming().ownerUid == historyUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId) &&
+          (isAdmin() || historyUid == request.auth.uid);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(historyUid) &&
+          isValidLoginHistoryRecord(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().historyDocId == existing().historyDocId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            (
+              isAdmin() &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'entries', 'userKey', 'updatedByUid', 'updatedAt'
+              ])
+            ) || (
+              isActiveMember(workspaceId) &&
+              historyUid == request.auth.uid &&
+              incoming().userKey == existing().userKey &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'entries', 'updatedByUid', 'updatedAt'
+              ])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(historyUid) && isAdmin();
       }
     }
   }

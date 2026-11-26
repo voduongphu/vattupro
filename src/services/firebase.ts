@@ -18,6 +18,8 @@ import {
   type UserCredential
 } from 'firebase/auth';
 import {
+  doc,
+  getDocFromServer,
   getFirestore,
   initializeFirestore,
   type Firestore
@@ -67,6 +69,18 @@ function createFastFirestore(): Firestore {
 
 /* CRITICAL: Connect explicitly to the provisioned named Firestore database */
 export const db = createFastFirestore();
+
+async function testConnection(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error('Please check your Firebase configuration.');
+    }
+  }
+}
+void testConnection();
 
 function createResilientAuth(): Auth {
   if (typeof window === 'undefined') {

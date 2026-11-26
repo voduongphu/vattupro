@@ -786,6 +786,30 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
   'Xác Nhận Xóa Tài Khoản Google': 'Confirm Delete Google Account',
   'Tài khoản này sẽ bị xóa khỏi danh sách phân quyền của hệ thống. Bạn có chắc chắn muốn xóa không?':
     'This account will be removed from the system\'s authorized user list. Are you sure you want to delete it?',
+  'Lịch Sử Đăng Nhập': 'Login History',
+  'Lịch Sử Đăng Nhập Hệ Thống': 'System Login History',
+  'Lịch Sử Đăng Nhập Tất Cả Người Dùng': 'All Users Login History',
+  'Chỉ Quản trị viên (Admin) được phép theo dõi thời gian, tài khoản và thiết bị đăng nhập hệ thống.':
+    'Only Administrators (Admin) can view login timestamps, accounts, and devices across the system.',
+  'Tổng Lượt Đăng Nhập': 'Total Logins',
+  'Tài Khoản Đã Đăng Nhập': 'Signed-In Accounts',
+  'Đăng Nhập Gần Nhất (GMT+7)': 'Latest Sign-In (GMT+7)',
+  'Tìm kiếm nhanh': 'Quick Search',
+  'Họ tên, email, mã định danh, thiết bị...': 'Full name, email, username, device...',
+  'Người sử dụng': 'User',
+  'Tất cả người dùng': 'All Users',
+  'Tất cả vai trò': 'All Roles',
+  'Thời Gian (GMT+7)': 'Time (GMT+7)',
+  'Email Google': 'Google Email',
+  'Thiết Bị / Trình Duyệt': 'Device / Browser',
+  'Trạng Thái Phiên': 'Session Status',
+  'Chuyển phiên thiết bị': 'Switched Device Session',
+  'Đăng nhập thành công': 'Signed In Successfully',
+  'Đang tải lịch sử đăng nhập từ Cloud Firestore...': 'Loading login history from Cloud Firestore...',
+  'Chưa có bản ghi lịch sử đăng nhập nào phù hợp với bộ lọc hiện tại.':
+    'No login history entries match the current filters.',
+  'lượt đăng nhập': 'login records',
+  'Làm mới': 'Refresh',
 
   // ===== EXCEL IMPORT MODAL =====
   '1. Tải lên file Excel': '1. Upload Excel File',

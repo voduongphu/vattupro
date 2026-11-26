@@ -615,11 +615,6 @@ export const InventoryReport: React.FC = () => {
                     </td>
                     <td className="p-3">
                       <span className="font-semibold text-slate-900 block text-xs" data-user-content="true">{r.materialName}</span>
-                      {r.drawingNo && r.drawingNo !== 'N/A' && (
-                        <span className="text-[11px] font-mono text-indigo-700 block mt-0.5">
-                          <span>Bản vẽ:</span> <span data-user-content="true">{r.drawingNo}</span>
-                        </span>
-                      )}
                     </td>
                     <td className="p-3">
                       {r.storageLocation ? (

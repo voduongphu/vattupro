@@ -1228,6 +1228,70 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "LoginHistoryRecord": {
+      "title": "LoginHistoryRecord",
+      "description": "Bounded per-user login history log (up to 100 latest logins) readable by administrators and the owner user.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "historyDocId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userKey": {
+          "type": "string",
+          "description": "Canonical normalized warehouse username/email key.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "entries": {
+          "type": "array",
+          "description": "Bounded list (<= 100) of LoginHistoryEntry maps."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "historyDocId",
+        "ownerUid",
+        "userKey",
+        "entries",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -1290,6 +1354,10 @@
     "/workspaces/{workspaceId}/sessions/{sessionDocId}": {
       "schema": "ActiveDeviceSession",
       "description": "Single-device active session lock records."
+    },
+    "/workspaces/{workspaceId}/loginHistory/{historyUid}": {
+      "schema": "LoginHistoryRecord",
+      "description": "Admin-auditable per-user login history records."
     }
   }
 }

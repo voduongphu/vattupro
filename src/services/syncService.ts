@@ -9,7 +9,9 @@ import type {
   OutboundReceipt,
   TombstoneMap,
   ActiveUserSession,
-  OsdReceipt
+  OsdReceipt,
+  LoginHistoryEntry,
+  LoginHistoryMethod
 } from '../types/inventory';
 import {
   normKey,
@@ -22,8 +24,13 @@ import {
   computeMaterialsDigest,
   computeInboundReceiptDigest,
   computeOutboundReceiptDigest,
-  canonicalUserSessionKey
+  canonicalUserSessionKey,
+  isUserAdmin
 } from '../utils/additiveMerge';
+import {
+  createLoginHistoryEntry,
+  enrichLoginHistoryEntriesWithUsers
+} from '../utils/loginHistory';
 import {
   compareVersionVectors,
   mergeVersionVectors,
@@ -2838,6 +2845,26 @@ export const SyncService = {
       const current = getStoredUnifiedSession();
       if (current) {
         void FirestoreSyncService.syncActiveSessionToCloudIfConnected(current.session);
+        const fbUid = FirestoreSyncService.getCurrentFirebaseUser()?.uid || current.user.authUid;
+        const entry = createLoginHistoryEntry({
+          user: current.user,
+          userKey: current.session.userKey,
+          deviceId: current.session.deviceId,
+          deviceLabel: current.session.deviceLabel,
+          loginAt: current.session.loginAt,
+          loginAtMs: Date.parse(current.session.loginAt) || current.session.issuedAtMs || Date.now(),
+          authUid: fbUid || undefined,
+          method: 'google'
+        });
+        StorageService.appendLoginHistoryEntries([entry]);
+        const myCloudEntries = StorageService.getLoginHistory().filter(
+          (e) =>
+            (fbUid && e.authUid === fbUid) ||
+            normUserKey(e.username) === normUserKey(current.user.username)
+        );
+        void FirestoreSyncService.recordLoginHistoryToCloud(
+          myCloudEntries.length > 0 ? myCloudEntries.slice(0, 20) : [entry]
+        );
       }
     }
     return res;
@@ -3099,6 +3126,20 @@ export const SyncService = {
             session: cloudRes.session
           });
 
+          const loginEntry = createLoginHistoryEntry({
+            user: cloudRes.user,
+            userKey: cloudRes.session.userKey,
+            deviceId: cloudRes.session.deviceId,
+            deviceLabel: cloudRes.session.deviceLabel,
+            loginAt: cloudRes.session.loginAt,
+            loginAtMs: Date.parse(cloudRes.session.loginAt) || cloudRes.session.issuedAtMs || Date.now(),
+            authUid: uid || cloudRes.user.authUid || undefined,
+            method: 'google',
+            replacedDeviceLabel: cloudRes.replacedSession?.deviceLabel
+          });
+          StorageService.appendLoginHistoryEntries([loginEntry]);
+          void FirestoreSyncService.recordLoginHistoryToCloud([loginEntry]);
+
           // Đồng bộ ngầm tài khoản Google lên máy chủ /api để luôn đồng nhất dữ liệu
           void fetch('/api/auth/google-login', {
             method: 'POST',
@@ -3206,6 +3247,22 @@ export const SyncService = {
           user: res.user,
           session: issuedServerSession
         });
+
+        const serverLoginEntry = createLoginHistoryEntry({
+          user: res.user,
+          userKey: issuedServerSession.userKey,
+          deviceId: issuedServerSession.deviceId,
+          deviceLabel: issuedServerSession.deviceLabel,
+          loginAt: issuedServerSession.loginAt,
+          loginAtMs: Date.parse(issuedServerSession.loginAt) || issuedServerSession.issuedAtMs || Date.now(),
+          authUid: uid || res.user.authUid || undefined,
+          method: 'google',
+          replacedDeviceLabel: res.replacedSession?.deviceLabel
+        });
+        StorageService.appendLoginHistoryEntries([serverLoginEntry]);
+        if (authRes.fbUser && !FirestoreSyncService.isQuotaExhausted()) {
+          void FirestoreSyncService.recordLoginHistoryToCloud([serverLoginEntry]);
+        }
 
         if (Array.isArray(res.users) && res.users.length > 0) {
           StorageService.applyRemoteMeta({ users: res.users });
@@ -3319,6 +3376,22 @@ export const SyncService = {
           session: staticSession
         });
 
+        const fallbackLoginEntry = createLoginHistoryEntry({
+          user: matched,
+          userKey: staticSession.userKey,
+          deviceId: staticSession.deviceId,
+          deviceLabel: staticSession.deviceLabel,
+          loginAt: staticSession.loginAt,
+          loginAtMs: staticSession.issuedAtMs || nowMs,
+          authUid: uid || matched.authUid || undefined,
+          method: 'google',
+          replacedDeviceLabel: prevStatic && prevStatic.deviceId !== deviceId ? prevStatic.deviceLabel : undefined
+        });
+        StorageService.appendLoginHistoryEntries([fallbackLoginEntry]);
+        if (authRes.fbUser && !FirestoreSyncService.isQuotaExhausted()) {
+          void FirestoreSyncService.recordLoginHistoryToCloud([fallbackLoginEntry]);
+        }
+
         setTimeout(() => {
           if (!FirestoreSyncService.isQuotaExhausted()) {
             void reconcileInternal({ trigger: 'startup', forceManifestRefresh: true });
@@ -3399,6 +3472,20 @@ export const SyncService = {
           session: cloudRes.session
         });
 
+        const redirectLoginEntry = createLoginHistoryEntry({
+          user: cloudRes.user,
+          userKey: cloudRes.session.userKey,
+          deviceId: cloudRes.session.deviceId,
+          deviceLabel: cloudRes.session.deviceLabel,
+          loginAt: cloudRes.session.loginAt,
+          loginAtMs: Date.parse(cloudRes.session.loginAt) || cloudRes.session.issuedAtMs || Date.now(),
+          authUid: uid || cloudRes.user.authUid || undefined,
+          method: 'google',
+          replacedDeviceLabel: cloudRes.replacedSession?.deviceLabel
+        });
+        StorageService.appendLoginHistoryEntries([redirectLoginEntry]);
+        void FirestoreSyncService.recordLoginHistoryToCloud([redirectLoginEntry]);
+
         setTimeout(() => {
           void reconcileInternal({
             trigger: 'startup',
@@ -3448,6 +3535,21 @@ export const SyncService = {
             user: res.user,
             session: res.session
           });
+          const redirectServerEntry = createLoginHistoryEntry({
+            user: res.user,
+            userKey: res.session.userKey,
+            deviceId: res.session.deviceId,
+            deviceLabel: res.session.deviceLabel,
+            loginAt: res.session.loginAt,
+            loginAtMs: Date.parse(res.session.loginAt) || res.session.issuedAtMs || Date.now(),
+            authUid: uid || res.user.authUid || undefined,
+            method: 'google',
+            replacedDeviceLabel: res.replacedSession?.deviceLabel
+          });
+          StorageService.appendLoginHistoryEntries([redirectServerEntry]);
+          if (!FirestoreSyncService.isQuotaExhausted()) {
+            void FirestoreSyncService.recordLoginHistoryToCloud([redirectServerEntry]);
+          }
           if (Array.isArray(res.users) && res.users.length > 0) {
             StorageService.applyRemoteMeta({ users: res.users });
           } else {
@@ -3822,6 +3924,20 @@ export const SyncService = {
               user: cloudRes.user,
               session: cloudRes.session
             });
+
+            const accountCloudEntry = createLoginHistoryEntry({
+              user: cloudRes.user,
+              userKey: cloudRes.session.userKey,
+              deviceId: cloudRes.session.deviceId,
+              deviceLabel: cloudRes.session.deviceLabel,
+              loginAt: cloudRes.session.loginAt,
+              loginAtMs: Date.parse(cloudRes.session.loginAt) || cloudRes.session.issuedAtMs || Date.now(),
+              authUid: FirestoreSyncService.getCurrentFirebaseUser()?.uid || cloudRes.user.authUid || undefined,
+              method: 'account' as LoginHistoryMethod,
+              replacedDeviceLabel: cloudRes.replacedSession?.deviceLabel
+            });
+            StorageService.appendLoginHistoryEntries([accountCloudEntry]);
+            void FirestoreSyncService.recordLoginHistoryToCloud([accountCloudEntry]);
 
             try {
               authChannel?.postMessage({
@@ -4494,6 +4610,35 @@ export const SyncService = {
 
   resolveConcurrentOsd(curr: OsdReceipt, inc: OsdReceipt, actorId?: string): OsdReceipt {
     return resolveConcurrentOsd(curr, inc, actorId || this.getActorId());
+  },
+
+  getCachedLoginHistory(actingUser?: User | null): LoginHistoryEntry[] {
+    const current = getStoredUnifiedSession();
+    const actor = actingUser || current?.user || null;
+    if (!isUserAdmin(actor)) return [];
+    return enrichLoginHistoryEntriesWithUsers(
+      StorageService.getLoginHistory(),
+      StorageService.getUsers()
+    );
+  },
+
+  async fetchAllUsersLoginHistory(
+    actingUser?: User | null
+  ): Promise<{ success: boolean; entries: LoginHistoryEntry[]; message?: string }> {
+    const current = getStoredUnifiedSession();
+    const actor = actingUser || current?.user || null;
+    if (!isUserAdmin(actor)) {
+      return {
+        success: false,
+        entries: [],
+        message: 'Chỉ tài khoản Quản trị viên (Admin) mới được phép xem lịch sử đăng nhập của tất cả người dùng.'
+      };
+    }
+    const res = await FirestoreSyncService.fetchAllUsersLoginHistoryFromCloud(actor);
+    return {
+      ...res,
+      entries: enrichLoginHistoryEntriesWithUsers(res.entries, StorageService.getUsers())
+    };
   },
 
   stop(): void {
