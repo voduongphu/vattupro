@@ -20,8 +20,7 @@ import {
   ShieldAlert, 
   X,
   FileSpreadsheet,
-  Boxes,
-  RefreshCw
+  Boxes
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { ExcelImportModal } from '../common/ExcelImportModal';
@@ -53,7 +52,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
   // Multi-selection states for deletion
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleteSelectedModalOpen, setIsDeleteSelectedModalOpen] = useState(false);
-  const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
 
   // Modal states
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -209,22 +207,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     showToast(`Đã cập nhật vật tư "${name}".`);
   };
 
-  const handleSyncFromReceipts = () => {
-    const res = StorageService.syncMaterialsFromReceipts({
-      forceFromReceipts: true,
-      emitMutation: true,
-      notify: true
-    });
-    loadMaterials();
-    if (res.added > 0 || res.updated > 0) {
-      showToast(
-        `Đã đồng bộ Danh mục vật tư từ Phiếu nhập & Phiếu xuất (Thêm mới: ${res.added}, Cập nhật mới nhất: ${res.updated})!`
-      );
-    } else {
-      showToast('Danh mục vật tư đã được đồng bộ đầy đủ với dữ liệu mới nhất từ Phiếu nhập & Phiếu xuất.');
-    }
-  };
-
   const confirmDeleteMaterial = () => {
     if (!itemToDelete) return;
     StorageService.deleteMaterial(itemToDelete.id);
@@ -245,14 +227,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     loadMaterials();
     showToast(`Đã xóa thành công ${count} vật tư đã chọn khỏi danh mục!`);
     setIsDeleteSelectedModalOpen(false);
-  };
-
-  const confirmDeleteAll = () => {
-    const count = StorageService.deleteAllMaterials();
-    setSelectedIds(new Set());
-    loadMaterials();
-    showToast(`Đã xóa toàn bộ ${count} vật tư trong danh mục thành công!`);
-    setIsDeleteAllModalOpen(false);
   };
 
   const handleExcelImportSuccess = (importedItems: Partial<MaterialItem>[], _wh?: string, mode?: 'upsert' | 'skip') => {
@@ -412,18 +386,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
         </div>
 
         <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 sm:flex-wrap w-full md:w-auto">
-          {/* Nút đồng bộ từ Phiếu nhập & Phiếu xuất */}
-          {isAdmin && (
-            <button
-              onClick={handleSyncFromReceipts}
-              title="Đồng bộ và cập nhật dữ liệu mới nhất từ toàn bộ Phiếu nhập kho và Phiếu xuất kho"
-              className="flex items-center justify-center gap-1.5 px-3 py-2.5 sm:py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-semibold transition active:scale-95 min-h-[40px]"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-              <span>Đồng Bộ Nhập/Xuất</span>
-            </button>
-          )}
-
           {/* Nút tải mẫu Excel */}
           <button
             onClick={downloadMaterialTemplate}
@@ -467,18 +429,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
             >
               <Trash2 className="w-3.5 h-3.5 shrink-0" />
               <span>Xóa ({selectedIds.size})</span>
-            </button>
-          )}
-
-          {/* Nút Xóa toàn bộ danh mục */}
-          {isAdmin && materials.length > 0 && (
-            <button
-              onClick={() => setIsDeleteAllModalOpen(true)}
-              className="flex items-center justify-center gap-1.5 px-3 py-2.5 sm:py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-semibold transition min-h-[40px]"
-              title="Xóa toàn bộ vật tư trong danh mục"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-              <span>Xóa Toàn Bộ</span>
             </button>
           )}
 
@@ -1078,17 +1028,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
         itemName={`${selectedIds.size} vật tư được chọn bằng checkbox`}
         itemType="các vật tư đã chọn"
         warningText={`CẢNH BÁO: Bạn đang thực hiện xóa ${selectedIds.size} vật tư khỏi danh mục hệ thống. Thao tác này không thể hoàn tác.`}
-      />
-
-      {/* Modal Xác Nhận Xóa Toàn Bộ Danh Mục */}
-      <ConfirmDeleteModal
-        isOpen={isDeleteAllModalOpen}
-        onClose={() => setIsDeleteAllModalOpen(false)}
-        onConfirm={confirmDeleteAll}
-        title="Xác Nhận XÓA TOÀN BỘ Danh Mục Vật Tư"
-        itemName={`Toàn bộ ${materials.length} vật tư & thiết bị trong hệ thống`}
-        itemType="toàn bộ danh mục vật tư"
-        warningText="CẢNH BÁO NGUY HIỂM: Toàn bộ danh mục vật tư trong cơ sở dữ liệu sẽ bị xóa hoàn toàn. Bạn có chắc chắn muốn xóa tất cả không?"
       />
 
       {/* Modal Import Excel Danh Mục Vật Tư */}

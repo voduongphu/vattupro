@@ -142,7 +142,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
     <div className="space-y-4 sm:space-y-6">
       {/* Welcome Banner */}
       <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-r from-slate-900 via-blue-900 to-indigo-950 p-4 sm:p-6 md:p-8 text-white shadow-xl">
-        <div className="relative z-10 max-w-2xl space-y-2">
+        <div className="relative z-10 space-y-2">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-500/20 text-blue-200 border border-blue-400/20 text-[11px] sm:text-xs font-semibold">
             <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
             <span>{t('Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư Dự Án')}</span>
@@ -154,7 +154,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
             </span>
             !
           </h1>
-          <p className="text-slate-300 text-xs md:text-sm leading-relaxed">
+          <p className="text-slate-300 text-xs md:text-sm leading-relaxed max-w-2xl">
             {language === 'en' ? (
               <>
                 The system is currently managing <strong className="text-white font-semibold tabular-nums">{stats.totalPLCount.toLocaleString('en-US')} Packing Lists</strong> and{' '}
@@ -170,31 +170,31 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
             )}
           </p>
 
-          <div className="pt-2.5 grid grid-cols-1 sm:flex sm:flex-wrap gap-2 sm:gap-2.5 text-xs">
+          <div className="pt-2.5 grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2 text-xs">
             <button
               onClick={() => onNavigate('inbound')}
-              className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold shadow-md transition min-h-[42px]"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold shadow-md transition min-h-[42px] whitespace-nowrap"
             >
               <ArrowDownLeft className="w-4 h-4 shrink-0" />
               <span>{t('Nhập Kho Mới / Import Excel')}</span>
             </button>
             <button
               onClick={() => onNavigate('outbound')}
-              className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold border border-white/20 transition min-h-[42px]"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold border border-white/20 transition min-h-[42px] whitespace-nowrap"
             >
               <ArrowUpRight className="w-4 h-4 shrink-0" />
               <span>{t('Lập Phiếu Xuất Kho')}</span>
             </button>
             <button
               onClick={() => onNavigate('report')}
-              className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-semibold shadow transition min-h-[42px]"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-semibold shadow transition min-h-[42px] whitespace-nowrap"
             >
               <TrendingUp className="w-4 h-4 shrink-0" />
               <span>{t('Xem Báo Cáo NXT Đa Chiều')}</span>
             </button>
             <button
               onClick={() => onNavigate('osd')}
-              className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-semibold shadow transition min-h-[42px]"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-semibold shadow transition min-h-[42px] whitespace-nowrap"
             >
               <FileWarning className="w-4 h-4 shrink-0" />
               <span>{t('Quản Lý Vật Tư OSD')}</span>
