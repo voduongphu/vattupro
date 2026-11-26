@@ -3877,8 +3877,8 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
             onClose={() => setViewingReceipt(null)}
           />
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
-            <div className="flex items-start justify-between gap-3 p-4 sm:p-5 border-b border-slate-100 bg-slate-50">
-              <div className="flex flex-wrap items-center justify-between gap-2.5 flex-1 min-w-0">
+            <div className="p-4 sm:p-5 border-b border-slate-100 bg-slate-50 space-y-3">
+              <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div className="p-2 bg-blue-100 text-blue-700 rounded-xl shrink-0">
                     <Eye className="w-5 h-5" />
@@ -3898,56 +3898,63 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                     </p>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={() => handleExportReceiptExcel(viewingReceipt)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition min-h-[36px]"
-                    title="Xuất phiếu nhập kho ra Excel (.xlsx)"
-                  >
-                    <FileSpreadsheet className="w-4 h-4" />
-                    <span>Xuất Excel</span>
-                  </button>
+                <ModalCloseButton onClick={() => setViewingReceipt(null)} />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => handleExportReceiptExcel(viewingReceipt)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition min-h-[36px]"
+                  title="Xuất phiếu nhập kho ra Excel (.xlsx)"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>Xuất Excel</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedReceiptForPrint(viewingReceipt);
+                    setViewingReceipt(null);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition min-h-[36px]"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Xem & In Phiếu (FM05.01)</span>
+                </button>
+                {isAdmin && (
                   <button
                     onClick={() => {
-                      setSelectedReceiptForPrint(viewingReceipt);
+                      const target = viewingReceipt;
                       setViewingReceipt(null);
+                      openEditModal(target);
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition min-h-[36px]"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition min-h-[36px]"
+                    title="Sửa phiếu nhập kho này (Admin)"
                   >
-                    <Printer className="w-4 h-4" />
-                    <span>Xem & In Phiếu (FM05.01)</span>
+                    <Pencil className="w-4 h-4" />
+                    <span>Sửa Phiếu</span>
                   </button>
-                  {isAdmin && (
-                    <button
-                      onClick={() => {
-                        const target = viewingReceipt;
-                        setViewingReceipt(null);
-                        openEditModal(target);
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition min-h-[36px]"
-                      title="Sửa phiếu nhập kho này (Admin)"
-                    >
-                      <Pencil className="w-4 h-4" />
-                      <span>Sửa Phiếu</span>
-                    </button>
-                  )}
-                  {isAdmin && (
-                    <button
-                      onClick={() => {
-                        const toDelete = viewingReceipt;
-                        setViewingReceipt(null);
-                        setReceiptToDelete(toDelete);
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition min-h-[36px]"
-                      title="Xóa phiếu nhập kho này"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      <span>Xóa Phiếu</span>
-                    </button>
-                  )}
-                </div>
+                )}
+                {isAdmin && (
+                  <button
+                    onClick={() => {
+                      const toDelete = viewingReceipt;
+                      setViewingReceipt(null);
+                      setReceiptToDelete(toDelete);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition min-h-[36px]"
+                    title="Xóa phiếu nhập kho này"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Xóa Phiếu</span>
+                  </button>
+                )}
+                {viewingReceiptAudit && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded-lg bg-amber-50/80 border border-amber-200/90 text-xs text-amber-900 flex-1 min-w-[260px]">
+                    <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span className="leading-snug">{viewingReceiptAudit.message}</span>
+                  </div>
+                )}
               </div>
-              <ModalCloseButton onClick={() => setViewingReceipt(null)} />
             </div>
 
             <div className="p-4 sm:p-6 overflow-y-auto overscroll-contain space-y-4 flex-1">
@@ -3997,13 +4004,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                   </span>
                 </div>
               </div>
-
-              {viewingReceiptAudit && (
-                <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50/70 border border-amber-200/80 text-xs text-amber-900">
-                  <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span>{viewingReceiptAudit.message}</span>
-                </div>
-              )}
 
               {/* Tìm kiếm nhanh trong chi tiết phiếu */}
               <div className="relative">

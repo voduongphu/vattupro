@@ -183,6 +183,7 @@ export function downloadInboundTemplate(): void {
       'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG2-1.0.G.0',
       'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, UG',
       'Mã lô': '183A0108',
+      'Bản vẽ': 'DWG-PIP-UG-001',
       'Số lượng (cây/tấm) (*)': 1,
       'ĐVT (*)': 'Ống',
       'Khối lượng (Kg) (*)': 2202.0,
@@ -209,6 +210,7 @@ export function downloadInboundTemplate(): void {
       'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG2-1.0.G.0',
       'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, UG',
       'Mã lô': '183A0248',
+      'Bản vẽ': 'DWG-PIP-UG-001',
       'Số lượng (cây/tấm) (*)': 1,
       'ĐVT (*)': 'Ống',
       'Khối lượng (Kg) (*)': 2202.0,
@@ -235,6 +237,7 @@ export function downloadInboundTemplate(): void {
       'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG1-1.0.G.0',
       'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, AG',
       'Mã lô': '183A0494',
+      'Bản vẽ': 'DWG-PIP-AG-002',
       'Số lượng (cây/tấm) (*)': 1,
       'ĐVT (*)': 'Ống',
       'Khối lượng (Kg) (*)': 2202.0,
@@ -254,7 +257,7 @@ export function downloadInboundTemplate(): void {
   ws['!cols'] = [
     { wch: 16 }, { wch: 14 }, { wch: 18 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
     { wch: 16 }, { wch: 16 }, { wch: 32 }, { wch: 28 }, { wch: 44 },
-    { wch: 15 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 15 },
+    { wch: 15 }, { wch: 18 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 15 },
     { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 18 }, { wch: 15 },
     { wch: 20 }, { wch: 22 }, { wch: 26 }
   ];
@@ -263,9 +266,10 @@ export function downloadInboundTemplate(): void {
     { 'HƯỚNG DẪN': 'QUY TẮC TẠO PHIẾU NHẬP KHO (MẪU QN-OPR-PR11-FM05.01) TỪ FILE EXCEL', 'CHI TIẾT': '' },
     { 'HƯỚNG DẪN': '1. Cột Số phiếu (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu (ví dụ PNK25-0019) sẽ được gom lại thành 1 Phiếu Nhập Kho duy nhất.' },
     { 'HƯỚNG DẪN': '2. Cột Hình thức nhập', 'CHI TIẾT': 'Điền "Nhập mới" hoặc "Nhập trả kho" (nếu để trống sẽ mặc định là "Nhập mới"). Các dòng "Nhập trả kho" sẽ tự động cộng vào cột NHẬP TRẢ KHO trong Báo cáo Nhập-Xuất-Tồn.' },
-    { 'HƯỚNG DẪN': '3. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Đơn vị giao hàng, Hợp đồng, Đề xuất số, Nội dung, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Đơn giá (VNĐ), Thành tiền (VNĐ), Vị trí lưu kho/bãi, Ghi chú.' },
-    { 'HƯỚNG DẪN': '4. Vị trí lưu kho/bãi', 'CHI TIẾT': 'Nhập khu vực/kệ/bãi cụ thể (ví dụ: Bãi A - Khu 01 - Hàng 03, Kho kín K1 - Kệ B2) để dễ dàng truy xuất vị trí vật tư khi cần.' },
-    { 'HƯỚNG DẪN': '5. Tương thích ngược', 'CHI TIẾT': 'Tương thích hoàn toàn với cả các file Excel mẫu cũ theo Packing List, Shipment, Package No.' }
+    { 'HƯỚNG DẪN': '3. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Đơn vị giao hàng, Hợp đồng, Đề xuất số, Nội dung, Mã vật tư, Tên vật tư, Mã lô, Bản vẽ (DWG no.), Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Đơn giá (VNĐ), Thành tiền (VNĐ), Vị trí lưu kho/bãi, Ghi chú.' },
+    { 'HƯỚNG DẪN': '4. Cột Bản vẽ (DWG no.)', 'CHI TIẾT': 'Nhập số bản vẽ kỹ thuật (ví dụ: DWG-PIP-UG-001) để tra cứu nhanh toàn bộ vật tư theo từng bản vẽ.' },
+    { 'HƯỚNG DẪN': '5. Vị trí lưu kho/bãi', 'CHI TIẾT': 'Nhập khu vực/kệ/bãi cụ thể (ví dụ: Bãi A - Khu 01 - Hàng 03, Kho kín K1 - Kệ B2) để dễ dàng truy xuất vị trí vật tư khi cần.' },
+    { 'HƯỚNG DẪN': '6. Tương thích ngược', 'CHI TIẾT': 'Tương thích hoàn toàn với cả các file Excel mẫu cũ theo Packing List, Shipment, Package No.' }
   ];
   const wsGuide = XLSX.utils.json_to_sheet(guideRows);
   wsGuide['!cols'] = [{ wch: 30 }, { wch: 88 }];
@@ -292,6 +296,7 @@ export function downloadOutboundTemplate(): void {
       'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG2-1.0.G.0',
       'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, UG',
       'Mã lô': '76C-061.35',
+      'Bản vẽ': 'DWG-PIP-UG-001',
       'Số lượng (cây/tấm) (*)': 8,
       'ĐVT (*)': 'Ống',
       'Khối lượng (Kg) (*)': 17616.0,
@@ -313,6 +318,7 @@ export function downloadOutboundTemplate(): void {
       'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG2-1.0.G.0',
       'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, UG',
       'Mã lô': '76E-005.50',
+      'Bản vẽ': 'DWG-PIP-UG-001',
       'Số lượng (cây/tấm) (*)': 7,
       'ĐVT (*)': 'Ống',
       'Khối lượng (Kg) (*)': 15414.0,
@@ -334,6 +340,7 @@ export function downloadOutboundTemplate(): void {
       'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG1-1.0.G.0',
       'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, AG',
       'Mã lô': '183A0494',
+      'Bản vẽ': 'DWG-PIP-AG-002',
       'Số lượng (cây/tấm) (*)': 1,
       'ĐVT (*)': 'Ống',
       'Khối lượng (Kg) (*)': 2202.0,
@@ -348,7 +355,7 @@ export function downloadOutboundTemplate(): void {
   ws['!cols'] = [
     { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
     { wch: 20 }, { wch: 16 }, { wch: 34 }, { wch: 28 }, { wch: 44 },
-    { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 22 },
+    { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 22 },
     { wch: 18 }, { wch: 18 }, { wch: 16 }
   ];
 
@@ -356,7 +363,8 @@ export function downloadOutboundTemplate(): void {
     { 'HƯỚNG DẪN': 'QUY TẮC TẠO PHIẾU XUẤT KHO (MẪU QN-OPR-PR11-FM06) TỪ FILE EXCEL', 'CHI TIẾT': '' },
     { 'HƯỚNG DẪN': '1. Cột Số phiếu (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu (ví dụ PXK25-0001) sẽ được gom lại thành 1 Phiếu Xuất Kho duy nhất.' },
     { 'HƯỚNG DẪN': '2. Cột Hình thức xuất', 'CHI TIẾT': 'Điền "Xuất mới" hoặc "Xuất điều chuyển" (nếu để trống sẽ mặc định là "Xuất mới"). Các dòng "Xuất điều chuyển" sẽ tự động cộng vào cột TÁI XUẤT trong Báo cáo Nhập-Xuất-Tồn.' },
-    { 'HƯỚNG DẪN': '3. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Lý do xuất kho, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Ghi chú.' }
+    { 'HƯỚNG DẪN': '3. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Lý do xuất kho, Mã vật tư, Tên vật tư, Mã lô, Bản vẽ (DWG no.), Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Ghi chú.' },
+    { 'HƯỚNG DẪN': '4. Cột Bản vẽ (DWG no.)', 'CHI TIẾT': 'Nhập số bản vẽ kỹ thuật (ví dụ: DWG-PIP-UG-001) để tra cứu nhanh toàn bộ vật tư theo từng bản vẽ.' }
   ];
   const wsGuide = XLSX.utils.json_to_sheet(guideRows);
   wsGuide['!cols'] = [{ wch: 30 }, { wch: 88 }];
@@ -1241,7 +1249,7 @@ export async function parseInboundExcel(
     if (norm.includes('donvitinh') || norm === 'dvt' || norm === 'unit' || norm === 'uom') return 'unit';
     if ((norm.includes('khoiluong') || norm.includes('trongluong') || norm.includes('weight') || norm === 'kg' || norm === 'kl') && !norm.includes('tongkhoiluong')) return 'weightKg';
     if (norm.includes('hangmuc') || norm.includes('category') || norm.includes('discipline')) return 'category';
-    if (norm.includes('banve') || norm.includes('drawing') || norm === 'dwg') return 'drawingNo';
+    if (norm.includes('banve') || norm.includes('drawing') || norm === 'dwg' || norm.includes('dwgno')) return 'drawingNo';
     if (norm.includes('nhasanxuat') || norm.includes('nsx') || norm.includes('manufacturer') || norm.includes('maker')) return 'manufacturer';
     if (norm.includes('nhacungcap') || norm.includes('ncc') || norm.includes('supplier') || norm.includes('vendor')) return 'supplier';
     if (norm.includes('dongia') || norm.includes('unitprice') || norm === 'gia') return 'unitPrice';
@@ -1442,7 +1450,7 @@ export async function parseOutboundExcel(
     if (norm.includes('donvitinh') || norm === 'dvt' || norm === 'unit' || norm === 'uom') return 'unit';
     if ((norm.includes('khoiluong') || norm.includes('trongluong') || norm.includes('weight') || norm === 'kg' || norm === 'kl') && !norm.includes('tongkhoiluong')) return 'weightKg';
     if (norm.includes('hangmuc') || norm.includes('category') || norm.includes('discipline')) return 'category';
-    if (norm.includes('banve') || norm.includes('drawing') || norm === 'dwg') return 'drawingNo';
+    if (norm.includes('banve') || norm.includes('drawing') || norm === 'dwg' || norm.includes('dwgno')) return 'drawingNo';
     if (norm.includes('nhasanxuat') || norm.includes('nsx') || norm.includes('manufacturer') || norm.includes('maker')) return 'manufacturer';
     if (norm.includes('nhacungcap') || norm.includes('ncc') || norm.includes('supplier') || norm.includes('vendor')) return 'supplier';
     if (norm === 'ghichu' || norm === 'note' || norm === 'remarks' || norm === 'remark') return 'note';

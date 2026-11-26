@@ -815,6 +815,7 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
   '• Mã vật tư & Tên vật tư (*)': '• Material Code & Name (*)',
   'VT-PIPE-01, Ống thép đúc...': 'VT-PIPE-01, Seamless steel pipe...',
   '• Mã lô / Package No.': '• Batch / Package No.',
+  '• Bản vẽ (DWG no.)': '• DWG no.',
   '• Số lượng, ĐVT & KL (Kg) (*)': '• Quantity, Unit & Weight (Kg) (*)',
   'Số lượng (cây/tấm), ĐVT, Kg': 'Quantity (pcs/sheets), Unit, Kg',
   '• Vị trí lưu kho/bãi': '• Storage Location',

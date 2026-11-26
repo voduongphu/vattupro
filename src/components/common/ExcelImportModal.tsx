@@ -568,6 +568,10 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                       <span className="text-[11px] text-slate-400">HEAT-8821, LOT-01, PKG-01</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
+                      <span className="font-semibold text-blue-800 block">• Bản vẽ (DWG no.)</span>
+                      <span className="text-[11px] text-slate-400">DWG-PIP-UG-001, DWG-02...</span>
+                    </div>
+                    <div className="bg-white p-2 rounded-lg border border-slate-200/70">
                       <span className="font-semibold text-slate-900 block">• Số lượng, ĐVT & KL (Kg) (*)</span>
                       <span className="text-[11px] text-slate-400">Số lượng (cây/tấm), ĐVT, Kg</span>
                     </div>
@@ -887,6 +891,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           <th className="p-2.5">{type === 'inbound' ? 'Đơn vị giao hàng' : 'Người nhận & Đơn vị'}</th>
                           <th className="p-2.5">Mã vật tư & Tên vật tư</th>
                           <th className="p-2.5">Mã lô</th>
+                          <th className="p-2.5">Bản vẽ</th>
                           <th className="p-2.5 text-right">SL (cây/tấm)</th>
                           <th className="p-2.5 text-center">ĐVT</th>
                           <th className="p-2.5 text-right">KL (Kg)</th>
@@ -1038,6 +1043,9 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                     <span>Kiện:</span> <span data-user-content="true">{packageNoVal}</span>
                                   </div>
                                 )}
+                              </td>
+                              <td className="p-2.5 font-mono text-slate-700" data-user-content="true">
+                                {r.drawingNo && r.drawingNo !== 'N/A' ? r.drawingNo : '-'}
                               </td>
                               <td className="p-2.5 text-right font-bold text-slate-800">
                                 {Number(r.quantity || 0).toLocaleString('vi-VN')}
