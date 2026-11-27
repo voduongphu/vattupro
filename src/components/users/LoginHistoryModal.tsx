@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   History,
   RefreshCw,
@@ -53,6 +53,7 @@ export const LoginHistoryModal: React.FC<LoginHistoryModalProps> = ({
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null);
 
   const loadHistory = useCallback(async () => {
     if (!isAdmin) return;
@@ -75,6 +76,9 @@ export const LoginHistoryModal: React.FC<LoginHistoryModalProps> = ({
 
   useEffect(() => {
     if (isOpen && isAdmin) {
+      if (bodyScrollRef.current) {
+        bodyScrollRef.current.scrollTop = 0;
+      }
       void loadHistory();
     }
   }, [isOpen, isAdmin, loadHistory]);
@@ -134,6 +138,12 @@ export const LoginHistoryModal: React.FC<LoginHistoryModalProps> = ({
     () => filteredEntries.slice(pageStartIdx, pageStartIdx + pageSize),
     [filteredEntries, pageStartIdx, pageSize]
   );
+
+  useEffect(() => {
+    if (bodyScrollRef.current) {
+      bodyScrollRef.current.scrollTop = 0;
+    }
+  }, [safePage]);
 
   const handleResetFilters = () => {
     setSearch('');
@@ -220,7 +230,7 @@ export const LoginHistoryModal: React.FC<LoginHistoryModalProps> = ({
       <ModalGuard title="Lịch Sử Đăng Nhập Hệ Thống" onClose={onClose} />
       <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-[1280px] max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
         {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5 border-b border-slate-100 bg-slate-50/90">
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5 border-b border-slate-100 bg-slate-50/90 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="p-2.5 bg-indigo-100 text-indigo-700 rounded-xl shrink-0">
               <History className="w-5 h-5" />
@@ -260,8 +270,12 @@ export const LoginHistoryModal: React.FC<LoginHistoryModalProps> = ({
           </div>
         </div>
 
-        {/* Body */}
-        <div className="p-4 sm:p-5 space-y-4 overflow-y-auto overscroll-contain flex-1 bg-slate-50/40">
+        {/* Body (zero padding on scroll container so sticky table header pins flush at 0px against modal header) */}
+        <div
+          ref={bodyScrollRef}
+          className="overflow-y-auto overscroll-contain flex-1 bg-slate-50/40"
+        >
+          <div className="p-4 sm:p-5 space-y-4">
           {notice && (
             <div className="px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
               <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
@@ -491,6 +505,7 @@ export const LoginHistoryModal: React.FC<LoginHistoryModalProps> = ({
               pageSizeOptions={[25, 50, 100]}
               itemLabel="lượt đăng nhập"
             />
+          </div>
           </div>
         </div>
       </div>

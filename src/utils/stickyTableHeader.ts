@@ -281,3 +281,69 @@ export function resolveOpaqueHeaderBg(
 
   return `rgb(${current.r}, ${current.g}, ${current.b})`;
 }
+
+export interface ScrollAncestorCheckInput {
+  classList: Iterable<string>;
+  overflowX: string;
+  overflowY: string;
+  scrollHeight: number;
+  clientHeight: number;
+  hasVerticalScrollAncestor: boolean;
+}
+
+export interface ScrollAncestorCheckResult {
+  isExplicitVerticalScroller: boolean;
+  isExplicitXWrapper: boolean;
+  isVerticallyScrollable: boolean;
+  isBlockingAncestor: boolean;
+}
+
+function isScrollableOverflowValue(val: string): boolean {
+  return val === 'auto' || val === 'scroll';
+}
+
+/**
+ * Classifies an ancestor element of a table for sticky-header management.
+ * Explicit vertical scroll containers (`overflow-y-auto`, `overflow-y-scroll`, `overflow-auto`)
+ * MUST always be treated as vertical scroll ancestors and NEVER turned into `overflow: clip`
+ * blocking ancestors, even when temporarily short during initial async data loading.
+ */
+export function classifyTableAncestor(input: ScrollAncestorCheckInput): ScrollAncestorCheckResult {
+  const classes = new Set<string>(input.classList);
+  const hasClipX = classes.has('vtp-sticky-clip-x');
+  const hasClipAncestor = classes.has('vtp-sticky-clip-ancestor');
+
+  const isExplicitVerticalScroller =
+    classes.has('overflow-y-auto') ||
+    classes.has('overflow-y-scroll') ||
+    classes.has('overflow-auto');
+
+  const isExplicitXWrapper =
+    classes.has('overflow-x-auto') ||
+    hasClipX ||
+    (!isExplicitVerticalScroller && isScrollableOverflowValue(input.overflowX));
+
+  const isVerticallyScrollable =
+    isExplicitVerticalScroller ||
+    (isScrollableOverflowValue(input.overflowY) &&
+      !hasClipX &&
+      input.scrollHeight - input.clientHeight > 2);
+
+  const isBlockingAncestor =
+    !isVerticallyScrollable &&
+    !input.hasVerticalScrollAncestor &&
+    (input.overflowX === 'hidden' ||
+      input.overflowY === 'hidden' ||
+      isScrollableOverflowValue(input.overflowX) ||
+      isScrollableOverflowValue(input.overflowY) ||
+      hasClipAncestor ||
+      hasClipX);
+
+  return {
+    isExplicitVerticalScroller,
+    isExplicitXWrapper,
+    isVerticallyScrollable,
+    isBlockingAncestor
+  };
+}
+

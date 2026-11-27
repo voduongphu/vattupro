@@ -1,5 +1,9 @@
 import React, { useEffect } from 'react';
-import { computeFixedHeaderLayout, resolveOpaqueHeaderBg } from '../../utils/stickyTableHeader';
+import {
+  classifyTableAncestor,
+  computeFixedHeaderLayout,
+  resolveOpaqueHeaderBg
+} from '../../utils/stickyTableHeader';
 
 const EXCLUDED_TABLE_SELECTOR = '.vtp-voucher-table, [data-no-sticky-header="true"]';
 const SPACER_ATTR = 'data-vtp-sticky-spacer';
@@ -28,10 +32,6 @@ interface AncestorScan {
   hasInnerVerticalBox: boolean;
 }
 
-function isScrollableValue(val: string): boolean {
-  return val === 'auto' || val === 'scroll';
-}
-
 function getMainNavbarBottom(): number {
   const header = document.querySelector<HTMLElement>('header');
   if (!header) return 0;
@@ -54,11 +54,17 @@ function getFixedContainingBlockOrigin(el: HTMLElement): { top: number; left: nu
     const hasTransform = style.transform && style.transform !== 'none';
     const hasPerspective = style.perspective && style.perspective !== 'none';
     const hasFilter = style.filter && style.filter !== 'none';
+    const webkitBackdrop = (style as unknown as { webkitBackdropFilter?: string }).webkitBackdropFilter;
+    const hasBackdropFilter =
+      (style.backdropFilter && style.backdropFilter !== 'none') ||
+      (webkitBackdrop && webkitBackdrop !== 'none');
     const hasWillChange =
       style.willChange &&
-      (style.willChange.includes('transform') || style.willChange.includes('filter'));
+      (style.willChange.includes('transform') ||
+        style.willChange.includes('filter') ||
+        style.willChange.includes('backdrop-filter'));
 
-    if (hasTransform || hasPerspective || hasFilter || hasWillChange) {
+    if (hasTransform || hasPerspective || hasFilter || hasBackdropFilter || hasWillChange) {
       const rect = node.getBoundingClientRect();
       return { top: rect.top, left: rect.left };
     }
@@ -76,32 +82,29 @@ function scanTableAncestors(table: HTMLTableElement): AncestorScan {
   let el: HTMLElement | null = table.parentElement;
   while (el && el !== document.body && el !== document.documentElement) {
     const style = window.getComputedStyle(el);
+    const classified = classifyTableAncestor({
+      classList: el.classList,
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      hasVerticalScrollAncestor: verticalScrollAncestors.length > 0
+    });
 
-    const isExplicitXWrapper =
-      el.classList.contains('overflow-x-auto') ||
-      el.classList.contains('vtp-sticky-clip-x') ||
-      isScrollableValue(style.overflowX);
+    if (
+      classified.isExplicitVerticalScroller &&
+      (el.classList.contains('vtp-sticky-clip-ancestor') || el.classList.contains('vtp-sticky-clip-x'))
+    ) {
+      el.classList.remove('vtp-sticky-clip-ancestor', 'vtp-sticky-clip-x');
+    }
 
-    if (!xWrapper && isExplicitXWrapper) {
+    if (!xWrapper && classified.isExplicitXWrapper) {
       xWrapper = el;
     }
 
-    const isVerticallyScrollable =
-      isScrollableValue(style.overflowY) &&
-      !el.classList.contains('vtp-sticky-clip-x') &&
-      el.scrollHeight - el.clientHeight > 2;
-
-    if (isVerticallyScrollable) {
+    if (classified.isVerticallyScrollable) {
       verticalScrollAncestors.push(el);
-    } else if (
-      verticalScrollAncestors.length === 0 &&
-      (style.overflowX === 'hidden' ||
-        style.overflowY === 'hidden' ||
-        isScrollableValue(style.overflowX) ||
-        isScrollableValue(style.overflowY) ||
-        el.classList.contains('vtp-sticky-clip-ancestor') ||
-        el.classList.contains('vtp-sticky-clip-x'))
-    ) {
+    } else if (classified.isBlockingAncestor) {
       blockingAncestors.push(el);
     }
 
@@ -438,7 +441,7 @@ export const StickyTableHeadersController: React.FC = () => {
         hasInnerVerticalBox
       } = scanTableAncestors(table);
 
-      // Observe table and wrapper for width changes (window resize / sidebar toggle / data changes)
+      // Observe table, horizontal wrapper, and vertical scroller for size changes
       if (resizeObserver) {
         if (!observedElements.has(table)) {
           resizeObserver.observe(table);
@@ -447,6 +450,11 @@ export const StickyTableHeadersController: React.FC = () => {
         if (xWrapper && !observedElements.has(xWrapper)) {
           resizeObserver.observe(xWrapper);
           observedElements.add(xWrapper);
+        }
+        const primaryScroller = verticalScrollAncestors[0];
+        if (primaryScroller && !observedElements.has(primaryScroller)) {
+          resizeObserver.observe(primaryScroller);
+          observedElements.add(primaryScroller);
         }
       }
 

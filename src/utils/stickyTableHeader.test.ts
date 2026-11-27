@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  classifyTableAncestor,
   computeFixedHeaderLayout,
   computeStickyHeaderOffset,
   resolveOpaqueHeaderBg
@@ -166,5 +167,63 @@ describe('resolveOpaqueHeaderBg', () => {
   it('supports modern CSS color(srgb ...) syntax', () => {
     const bg = resolveOpaqueHeaderBg('color(srgb 0.945 0.96 0.976 / 1)', 'transparent');
     assert.equal(bg, 'rgb(241, 245, 249)');
+  });
+});
+
+describe('classifyTableAncestor', () => {
+  it('never marks an explicit overflow-y-auto modal body as a blocking clip ancestor while loading', () => {
+    const res = classifyTableAncestor({
+      classList: ['overflow-y-auto', 'overscroll-contain', 'flex-1'],
+      overflowX: 'auto',
+      overflowY: 'auto',
+      scrollHeight: 320,
+      clientHeight: 600,
+      hasVerticalScrollAncestor: false
+    });
+
+    assert.equal(res.isExplicitVerticalScroller, true);
+    assert.equal(res.isVerticallyScrollable, true);
+    assert.equal(res.isBlockingAncestor, false);
+    assert.equal(res.isExplicitXWrapper, false);
+  });
+
+  it('still converts non-scrolling overflow-x-auto and overflow-hidden card wrappers to clip ancestors', () => {
+    const xWrap = classifyTableAncestor({
+      classList: ['overflow-x-auto'],
+      overflowX: 'auto',
+      overflowY: 'auto',
+      scrollHeight: 400,
+      clientHeight: 400,
+      hasVerticalScrollAncestor: false
+    });
+    assert.equal(xWrap.isExplicitXWrapper, true);
+    assert.equal(xWrap.isVerticallyScrollable, false);
+    assert.equal(xWrap.isBlockingAncestor, true);
+
+    const card = classifyTableAncestor({
+      classList: ['bg-white', 'rounded-xl', 'overflow-hidden'],
+      overflowX: 'hidden',
+      overflowY: 'hidden',
+      scrollHeight: 400,
+      clientHeight: 400,
+      hasVerticalScrollAncestor: false
+    });
+    assert.equal(card.isVerticallyScrollable, false);
+    assert.equal(card.isBlockingAncestor, true);
+  });
+
+  it('recognizes inner table box with both overflow-x-auto and overflow-y-auto as a vertical scroller and xWrapper', () => {
+    const innerBox = classifyTableAncestor({
+      classList: ['max-h-[54dvh]', 'overflow-x-auto', 'overflow-y-auto'],
+      overflowX: 'auto',
+      overflowY: 'auto',
+      scrollHeight: 200,
+      clientHeight: 400,
+      hasVerticalScrollAncestor: false
+    });
+    assert.equal(innerBox.isExplicitVerticalScroller, true);
+    assert.equal(innerBox.isExplicitXWrapper, true);
+    assert.equal(innerBox.isVerticallyScrollable, true);
+    assert.equal(innerBox.isBlockingAncestor, false);
   });
 });
