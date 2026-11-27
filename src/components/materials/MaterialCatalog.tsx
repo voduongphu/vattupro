@@ -7,11 +7,7 @@ import {
   collectUsedMaterialCodeKeys,
   normKey
 } from '../../utils/additiveMerge';
-import {
-  generateMaterialCodeWithAI,
-  generateOfflineSmartMaterialCodesBatch,
-  isAiKeyOrQuotaUnavailableError
-} from '../../services/materialCodeAiService';
+import { generateMaterialCodeWithAI } from '../../services/materialCodeAiService';
 import { 
   Package, 
   Plus, 
@@ -82,7 +78,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
   const [isGeneratingAiCode, setIsGeneratingAiCode] = useState(false);
   const [aiCodeReason, setAiCodeReason] = useState('');
   const [aiCodeError, setAiCodeError] = useState('');
-  const [aiNeedsOfflineOption, setAiNeedsOfflineOption] = useState(false);
   const isCodeManuallyEditedRef = useRef(false);
   const aiDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiAbortRef = useRef<AbortController | null>(null);
@@ -145,7 +140,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     aiAbortRef.current = controller;
     setIsGeneratingAiCode(true);
     setAiCodeError('');
-    setAiNeedsOfflineOption(false);
 
     try {
       const usedCodes = collectAllUsedMaterialCodes();
@@ -165,51 +159,19 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
       setCode(result.code);
       setAiCodeReason(result.reason || '');
       setAiCodeError('');
-      setAiNeedsOfflineOption(false);
       setFormError('');
       return result.code;
     } catch (err: any) {
       if (err?.name === 'AbortError' || controller.signal.aborted) {
         return null;
       }
-      setAiCodeError(err?.message || 'Không thể tạo mã vật tư bằng AI lúc này.');
-      setAiNeedsOfflineOption(isAiKeyOrQuotaUnavailableError(err));
+      setAiCodeError(err?.message || 'Không thể tạo mã vật tư lúc này.');
       return null;
     } finally {
       if (aiAbortRef.current === controller) {
         aiAbortRef.current = null;
         setIsGeneratingAiCode(false);
       }
-    }
-  };
-
-  const handleOfflineGenerateCode = () => {
-    const cleanName = name.trim();
-    if (!cleanName) {
-      setAiCodeError('Vui lòng nhập Tên vật tư trước khi tạo mã.');
-      return;
-    }
-    cancelPendingAiCode();
-    isCodeManuallyEditedRef.current = false;
-    const usedCodes = collectAllUsedMaterialCodes();
-    const res = generateOfflineSmartMaterialCodesBatch(
-      [
-        {
-          materialName: cleanName,
-          unit: unit.trim() || undefined,
-          category: category.trim() || undefined,
-          specification: specification.trim() || undefined,
-          drawingNo: drawingNo.trim() || undefined
-        }
-      ],
-      usedCodes
-    );
-    if (res[0]?.code) {
-      setCode(res[0].code);
-      setAiCodeReason(res[0].reason || 'Tạo tự động nội bộ (Offline, 8–20 ký tự)');
-      setAiCodeError('');
-      setAiNeedsOfflineOption(false);
-      setFormError('');
     }
   };
 
@@ -225,7 +187,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
         setCode('');
         setAiCodeReason('');
         setAiCodeError('');
-        setAiNeedsOfflineOption(false);
       }
       return;
     }
@@ -266,7 +227,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     setFormError('');
     setAiCodeReason('');
     setAiCodeError('');
-    setAiNeedsOfflineOption(false);
     setIsGeneratingAiCode(false);
     setIsAddModalOpen(true);
   };
@@ -904,7 +864,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                         setCode(nextVal);
                         setAiCodeReason('');
                         setAiCodeError('');
-                        setAiNeedsOfflineOption(false);
                       }}
                       placeholder={isGeneratingAiCode ? 'AI đang phân tích tạo mã...' : 'Tự tạo bằng AI khi nhập tên'}
                       className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono font-medium"
@@ -940,19 +899,7 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                     </p>
                   )}
                   {!isGeneratingAiCode && aiCodeError && (
-                    <div className="mt-1 space-y-1.5">
-                      <p className="text-[11px] text-rose-600">{aiCodeError}</p>
-                      {aiNeedsOfflineOption && name.trim() && (
-                        <button
-                          type="button"
-                          onClick={handleOfflineGenerateCode}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-semibold transition"
-                        >
-                          <Sparkles className="w-3 h-3 shrink-0" />
-                          <span>Tạo mã nội bộ (Offline)</span>
-                        </button>
-                      )}
-                    </div>
+                    <p className="mt-1 text-[11px] text-rose-600">{aiCodeError}</p>
                   )}
                 </div>
 

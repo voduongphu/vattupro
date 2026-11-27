@@ -8,6 +8,10 @@ import {
   ensureUniqueValidMaterialCode,
   generateSmartDeterministicMaterialCode
 } from './materialCodeAi.ts';
+import {
+  generateMaterialCodesBatchWithAI,
+  resetAiQuotaCooldown
+} from '../services/materialCodeAiService.ts';
 
 describe('materialCodeAi utilities', () => {
   it('validates 8 to 20 character uppercase alphanumeric + hyphen codes', () => {
@@ -75,5 +79,68 @@ describe('materialCodeAi utilities', () => {
       assert.equal(c.startsWith('VT-'), false, `Should not force VT prefix: ${c}`);
     }
     assert.notEqual(codeA, codeB);
+  });
+
+  it('automatically switches to internal smart codes on 402/429 quota exhaustion and uses AI on 200', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      // Case 1: Free-tier quota/credits depleted -> auto-generates internal codes without throwing
+      resetAiQuotaCooldown();
+      let fetchCalls = 0;
+      globalThis.fetch = (async () => {
+        fetchCalls++;
+        return new Response(
+          JSON.stringify({ error: 'Quota exhausted', code: 'CREDITS_DEPLETED' }),
+          { status: 402, headers: { 'Content-Type': 'application/json' } }
+        );
+      }) as typeof fetch;
+
+      const fallbackBatch = await generateMaterialCodesBatchWithAI(
+        [
+          { materialName: 'Van cầu áp lực cao Class 600 DN200' },
+          { materialName: 'Van cầu áp lực cao Class 600 DN200' },
+          { materialName: 'Ống thép đúc API 5L Gr.B DN150 SCH40' }
+        ],
+        []
+      );
+
+      assert.equal(fetchCalls, 1);
+      assert.equal(fallbackBatch.length, 3);
+      assert.equal(fallbackBatch[0].source, 'local');
+      assert.equal(fallbackBatch[0].code, fallbackBatch[1].code); // duplicate name shares code
+      assert.notEqual(fallbackBatch[0].code, fallbackBatch[2].code);
+      assert.equal(isValidMaterialCodeFormat(fallbackBatch[0].code), true);
+      assert.equal(isValidMaterialCodeFormat(fallbackBatch[2].code), true);
+
+      // Immediate second call reuses cooldown without hitting failing endpoint again
+      const secondBatch = await generateMaterialCodesBatchWithAI(
+        [{ materialName: 'Mặt bích hàn cổ DN200 Class 300 A105' }],
+        [fallbackBatch[0].code, fallbackBatch[2].code]
+      );
+      assert.equal(fetchCalls, 1);
+      assert.equal(secondBatch[0].source, 'local');
+      assert.equal(isValidMaterialCodeFormat(secondBatch[0].code), true);
+
+      // Case 2: Once AI is available (200 OK), returns AI-generated codes with source='ai'
+      resetAiQuotaCooldown();
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            items: [{ index: 0, code: 'GLV-C600-DN200', reason: 'Van cầu áp lực 600 DN200' }]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )) as typeof fetch;
+
+      const aiBatch = await generateMaterialCodesBatchWithAI(
+        [{ materialName: 'Van cầu áp lực cao Class 600 DN200' }],
+        []
+      );
+      assert.equal(aiBatch.length, 1);
+      assert.equal(aiBatch[0].source, 'ai');
+      assert.equal(aiBatch[0].code, 'GLV-C600-DN200');
+    } finally {
+      resetAiQuotaCooldown();
+      globalThis.fetch = originalFetch;
+    }
   });
 });

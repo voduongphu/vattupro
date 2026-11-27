@@ -834,12 +834,9 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
     'Please enter the Material Name on this row before generating a code with AI.',
   'Tất cả dòng vật tư có tên đều đã có Mã vật tư.':
     'All named material rows already have a Material Code.',
-  'Tạo mã nội bộ (Offline)': 'Generate Local Code (Offline)',
-  'Tạo tự động nội bộ (Offline, 8–20 ký tự)': 'Auto-generated locally (Offline, 8-20 chars)',
+  'Tự động tạo mã nội bộ (8–20 ký tự)': 'Auto-generated internal code (8-20 chars)',
   'Vui lòng nhập Tên vật tư trước khi tạo mã.':
     'Please enter the Material Name before generating a code.',
-  'Khóa Gemini API hiện tại đang hết hạn mức tín dụng trả trước (402). Vui lòng chọn khóa API miễn phí (Free tier) hoặc nạp thêm tín dụng trong Settings > Secrets.':
-    'Current Gemini API key has depleted prepayment credits (402). Please select a Free-tier API key or top up credits in Settings > Secrets.',
 
   // ===== EXCEL IMPORT MODAL =====
   '1. Tải lên file Excel': '1. Upload Excel File',
@@ -1926,7 +1923,7 @@ export const SYSTEM_UI_PATTERN_RULES_EN: SystemUiPatternRule[] = [
     replace: (_, n) => `AI analyzed & generated smart codes (8-20 chars) for ${n} material rows.`
   },
   {
-    pattern: /^Đã tạo mã nội bộ \(Offline, 8–20 ký tự\) cho\s+([0-9.,]+)\s+dòng vật tư\.$/i,
-    replace: (_, n) => `Generated local codes (Offline, 8-20 chars) for ${n} material rows.`
+    pattern: /^Đã tự động tạo mã vật tư \(8–20 ký tự\) cho\s+([0-9.,]+)\s+dòng vật tư\.$/i,
+    replace: (_, n) => `Auto-generated material codes (8-20 chars) for ${n} material rows.`
   }
 ];

@@ -48,9 +48,7 @@ import {
 } from '../../utils/additiveMerge';
 import {
   generateMaterialCodeWithAI,
-  generateMaterialCodesBatchWithAI,
-  generateOfflineSmartMaterialCodesBatch,
-  isAiKeyOrQuotaUnavailableError
+  generateMaterialCodesBatchWithAI
 } from '../../services/materialCodeAiService';
 import {
   ArrowDownLeft,
@@ -213,7 +211,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
   // Trạng thái AI phân tích tạo mã vật tư thông minh (8-20 ký tự)
   const [aiGeneratingRowIds, setAiGeneratingRowIds] = useState<Set<string>>(new Set());
   const [isBatchGeneratingAiCodes, setIsBatchGeneratingAiCodes] = useState(false);
-  const [aiOfflineFallbackAvailable, setAiOfflineFallbackAvailable] = useState(false);
   const aiRowTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const aiRowAbortsRef = useRef<Map<string, AbortController>>(new Map());
   const aiAutoCodedRowIdsRef = useRef<Set<string>>(new Set());
@@ -226,7 +223,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     aiAutoCodedRowIdsRef.current.clear();
     setAiGeneratingRowIds(new Set());
     setIsBatchGeneratingAiCodes(false);
-    setAiOfflineFallbackAvailable(false);
   };
 
   useEffect(() => {
@@ -712,7 +708,6 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     setFormDriverVehicle('');
     setFormStorageLocation('');
     setFormError('');
-    setAiOfflineFallbackAvailable(false);
     setFormItemSearch('');
     setFormItemPage(1);
     setQuickCatalogQuery('');
@@ -1173,12 +1168,10 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       );
       aiAutoCodedRowIdsRef.current.add(rowId);
       setFormError('');
-      setAiOfflineFallbackAvailable(false);
     } catch (err: any) {
       if (err?.name === 'AbortError' || controller.signal.aborted) return;
       if (!options?.silentError) {
-        setFormError(err?.message || 'Không thể gọi AI tạo mã vật tư lúc này.');
-        setAiOfflineFallbackAvailable(isAiKeyOrQuotaUnavailableError(err));
+        setFormError(err?.message || 'Không thể tạo mã vật tư lúc này.');
       }
     } finally {
       if (aiRowAbortsRef.current.get(rowId) === controller) {
@@ -1239,9 +1232,10 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       }
     }
 
+    let usedAiCount = 0;
+
     if (aiNeeded.length > 0) {
       setIsBatchGeneratingAiCodes(true);
-      setAiOfflineFallbackAvailable(false);
       setAiGeneratingRowIds((prev) => {
         const next = new Set(prev);
         aiNeeded.forEach((r) => next.add(r.id));
@@ -1267,11 +1261,11 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
           if (row && res.code) {
             resolvedById.set(row.id, res.code);
             aiAutoCodedRowIdsRef.current.add(row.id);
+            if (res.source === 'ai') usedAiCount++;
           }
         }
       } catch (err: any) {
-        setFormError(err?.message || 'Không thể phân tích tạo mã vật tư bằng AI.');
-        setAiOfflineFallbackAvailable(isAiKeyOrQuotaUnavailableError(err));
+        setFormError(err?.message || 'Không thể phân tích tạo mã vật tư.');
         return null;
       } finally {
         setIsBatchGeneratingAiCodes(false);
@@ -1292,71 +1286,16 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
         })
       );
       setFormError('');
-      setAiOfflineFallbackAvailable(false);
       if (aiNeeded.length > 0) {
         showPasteNotice(
-          `AI đã phân tích & tạo mã thông minh (8–20 ký tự) cho ${aiNeeded.length.toLocaleString('vi-VN')} dòng vật tư.`
+          usedAiCount > 0
+            ? `AI đã phân tích & tạo mã thông minh (8–20 ký tự) cho ${aiNeeded.length.toLocaleString('vi-VN')} dòng vật tư.`
+            : `Đã tự động tạo mã vật tư (8–20 ký tự) cho ${aiNeeded.length.toLocaleString('vi-VN')} dòng vật tư.`
         );
       }
     }
 
     return resolvedById;
-  };
-
-  const handleOfflineGenerateBlankCodes = () => {
-    const sourceItems = formItemsRef.current;
-    const targets = sourceItems.filter(
-      (it) => !it.materialCode.trim() && it.materialName.trim().length > 0
-    );
-    if (targets.length === 0) return;
-
-    const resolvedById = new Map<string, string>();
-    const localNeeded: InboundItemDetail[] = [];
-
-    for (const row of targets) {
-      const cat = materialNameMap.get(row.materialName.normalize('NFC').trim().toLowerCase());
-      if (cat?.code) {
-        resolvedById.set(row.id, cat.code);
-      } else {
-        localNeeded.push(row);
-      }
-    }
-
-    if (localNeeded.length > 0) {
-      const usedCodes = collectAllUsedCodesForForm(sourceItems);
-      resolvedById.forEach((codeVal) => usedCodes.add(normKey(codeVal)));
-      const offlineResults = generateOfflineSmartMaterialCodesBatch(
-        localNeeded.map((r) => ({
-          materialName: r.materialName.trim(),
-          unit: r.unit?.trim() || undefined,
-          category: r.category?.trim() || undefined,
-          drawingNo: r.drawingNo && r.drawingNo !== 'N/A' ? r.drawingNo.trim() : undefined
-        })),
-        usedCodes
-      );
-      for (const res of offlineResults) {
-        const row = localNeeded[res.index];
-        if (row && res.code) {
-          resolvedById.set(row.id, res.code);
-          aiAutoCodedRowIdsRef.current.add(row.id);
-        }
-      }
-    }
-
-    if (resolvedById.size > 0) {
-      setFormItems((prev) =>
-        prev.map((it) => {
-          const generated = resolvedById.get(it.id);
-          if (!generated || it.materialCode.trim()) return it;
-          return { ...it, materialCode: generated };
-        })
-      );
-      setFormError('');
-      setAiOfflineFallbackAvailable(false);
-      showPasteNotice(
-        `Đã tạo mã nội bộ (Offline, 8–20 ký tự) cho ${targets.length.toLocaleString('vi-VN')} dòng vật tư.`
-      );
-    }
   };
 
   const updateItemRow = (idx: number, field: keyof InboundItemDetail, val: any) => {
@@ -3200,22 +3139,9 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
             >
               <div className="p-4 sm:p-6 space-y-4">
               {formError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{formError}</span>
-                  </div>
-                  {aiOfflineFallbackAvailable &&
-                    formItems.some((it) => !it.materialCode.trim() && it.materialName.trim()) && (
-                      <button
-                        type="button"
-                        onClick={handleOfflineGenerateBlankCodes}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-semibold transition shrink-0"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                        <span>Tạo mã nội bộ (Offline)</span>
-                      </button>
-                    )}
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{formError}</span>
                 </div>
               )}
 
