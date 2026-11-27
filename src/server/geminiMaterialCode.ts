@@ -23,12 +23,14 @@ export interface AiMaterialCodeOutputItem {
 export class GeminiMaterialCodeError extends Error {
   status: number;
   errorCode: string;
+  detail?: string;
 
-  constructor(message: string, status = 500, errorCode = 'AI_GENERATION_FAILED') {
+  constructor(message: string, status = 500, errorCode = 'AI_GENERATION_FAILED', detail?: string) {
     super(message);
     this.name = 'GeminiMaterialCodeError';
     this.status = status;
     this.errorCode = errorCode;
+    this.detail = detail;
   }
 }
 
@@ -63,6 +65,7 @@ function classifyGeminiError(err: unknown): GeminiMaterialCodeError {
   const rawMessage = String((err as { message?: string })?.message || err || '');
   const statusNum = Number((err as { status?: number })?.status || 0);
   const lower = rawMessage.toLowerCase();
+  console.error('[GeminiMaterialCode] Upstream error:', statusNum, rawMessage);
 
   if (
     statusNum === 403 ||
@@ -74,7 +77,21 @@ function classifyGeminiError(err: unknown): GeminiMaterialCodeError {
     return new GeminiMaterialCodeError(
       'Khóa Gemini API không hợp lệ hoặc không có quyền truy cập. Vui lòng kiểm tra lại API key trong mục Settings > Secrets.',
       403,
-      'API_KEY_INVALID'
+      'API_KEY_INVALID',
+      rawMessage.slice(0, 300)
+    );
+  }
+
+  if (
+    statusNum === 402 ||
+    lower.includes('prepayment credits are depleted') ||
+    lower.includes('billing')
+  ) {
+    return new GeminiMaterialCodeError(
+      'Khóa Gemini API hiện tại đang hết hạn mức tín dụng trả trước (402). Vui lòng chọn khóa API miễn phí (Free tier) hoặc nạp thêm tín dụng trong Settings > Secrets.',
+      402,
+      'CREDITS_DEPLETED',
+      rawMessage.slice(0, 300)
     );
   }
 
@@ -87,7 +104,8 @@ function classifyGeminiError(err: unknown): GeminiMaterialCodeError {
     return new GeminiMaterialCodeError(
       'Hệ thống AI tạm thời vượt giới hạn lượt gọi (quota). Vui lòng thử lại sau ít giây.',
       429,
-      'RESOURCE_EXHAUSTED'
+      'RESOURCE_EXHAUSTED',
+      rawMessage.slice(0, 300)
     );
   }
 
@@ -95,14 +113,16 @@ function classifyGeminiError(err: unknown): GeminiMaterialCodeError {
     return new GeminiMaterialCodeError(
       'Model AI không khả dụng trên cấu hình hiện tại. Vui lòng thử lại sau.',
       502,
-      'MODEL_NOT_FOUND'
+      'MODEL_NOT_FOUND',
+      rawMessage.slice(0, 300)
     );
   }
 
   return new GeminiMaterialCodeError(
     `Không thể phân tích tạo mã vật tư bằng AI lúc này: ${rawMessage.slice(0, 180)}`,
     statusNum >= 400 && statusNum < 600 ? statusNum : 502,
-    'UPSTREAM_AI_ERROR'
+    'UPSTREAM_AI_ERROR',
+    rawMessage.slice(0, 300)
   );
 }
 
@@ -206,67 +226,92 @@ export async function generateMaterialCodesWithGemini(params: {
     })
   };
 
+  const freeTierModels: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
+    { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
+    { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW }
+  ];
+
   let lastError: unknown = null;
   let responseText = '';
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: `Phân tích danh sách vật tư sau và tạo mã vật tư (8-20 ký tự, chỉ gồm A-Z, 0-9, "-", không nhất thiết có "VT"):\n${JSON.stringify(userPayload)}`,
-        config: {
-          systemInstruction: SYSTEM_INSTRUCTION,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              items: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    index: {
-                      type: Type.INTEGER,
-                      description: 'Original index from materialsToCode'
-                    },
-                    code: {
-                      type: Type.STRING,
-                      description:
-                        'Uppercase material code, 8 to 20 chars, only A-Z, 0-9, and hyphen (-), no forced VT prefix'
-                    },
-                    reason: {
-                      type: Type.STRING,
-                      description: 'Short Vietnamese explanation of the code structure (max 10 words)'
-                    }
-                  },
-                  required: ['index', 'code', 'reason']
-                }
-              }
-            },
-            required: ['items']
-          }
-        }
-      });
+  for (let mIdx = 0; mIdx < freeTierModels.length; mIdx++) {
+    const { model, thinkingLevel } = freeTierModels[mIdx];
+    let shouldTryNextModel = false;
 
-      responseText = String(response.text || '').trim();
-      if (!responseText) {
-        throw new Error('Empty JSON response from Gemini model');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: `Phân tích danh sách vật tư sau và tạo mã vật tư (8-20 ký tự, chỉ gồm A-Z, 0-9, "-", không nhất thiết có "VT"):\n${JSON.stringify(userPayload)}`,
+          config: {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            thinkingConfig: { thinkingLevel },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                items: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      index: {
+                        type: Type.INTEGER,
+                        description: 'Original index from materialsToCode'
+                      },
+                      code: {
+                        type: Type.STRING,
+                        description:
+                          'Uppercase material code, 8 to 20 chars, only A-Z, 0-9, and hyphen (-), no forced VT prefix'
+                      },
+                      reason: {
+                        type: Type.STRING,
+                        description: 'Short Vietnamese explanation of the code structure (max 10 words)'
+                      }
+                    },
+                    required: ['index', 'code', 'reason']
+                  }
+                }
+              },
+              required: ['items']
+            }
+          }
+        });
+
+        responseText = String(response.text || '').trim();
+        if (!responseText) {
+          throw new Error('Empty JSON response from Gemini model');
+        }
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+        const classified = classifyGeminiError(err);
+        if (attempt === 0 && isRetryableError(err)) {
+          await sleep(400);
+          continue;
+        }
+        // Only try secondary free-tier model if first model returned 404 or rate-limit 429 (not 402/403/503)
+        if (
+          mIdx < freeTierModels.length - 1 &&
+          (classified.errorCode === 'MODEL_NOT_FOUND' ||
+            classified.errorCode === 'RESOURCE_EXHAUSTED')
+        ) {
+          shouldTryNextModel = true;
+          break;
+        }
+        throw classified;
       }
-      lastError = null;
-      break;
-    } catch (err) {
-      lastError = err;
-      if (attempt < 2 && isRetryableError(err)) {
-        await sleep(400 * Math.pow(2, attempt));
-        continue;
-      }
-      throw classifyGeminiError(err);
+    }
+
+    if (!lastError && responseText) break;
+    if (!shouldTryNextModel && lastError) {
+      throw classifyGeminiError(lastError);
     }
   }
 
-  if (lastError) {
-    throw classifyGeminiError(lastError);
+  if (lastError || !responseText) {
+    throw classifyGeminiError(lastError || new Error('No response from Gemini free-tier models'));
   }
 
   let parsed: { items?: Array<{ index?: number; code?: string; reason?: string }> };

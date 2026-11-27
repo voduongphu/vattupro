@@ -181,8 +181,35 @@ function trimCodeToMaxLength(code: string, maxLen: number): string {
   return trimmed;
 }
 
+function normalizeEngineeringPhrases(input: string): string {
+  return foldAsciiUpper(input)
+    .replace(/\bVAN\s+CAU\b/g, 'GLV')
+    .replace(/\bGLOBE\s+VALVE\b/g, 'GLV')
+    .replace(/\bVAN\s+BI\b/g, 'BLV')
+    .replace(/\bBALL\s+VALVE\b/g, 'BLV')
+    .replace(/\bVAN\s+CONG\b/g, 'GTV')
+    .replace(/\bGATE\s+VALVE\b/g, 'GTV')
+    .replace(/\bVAN\s+BUOM\b/g, 'BFV')
+    .replace(/\bBUTTERFLY\s+VALVE\b/g, 'BFV')
+    .replace(/\bVAN\s+MOT\s+CHIEU\b/g, 'CKV')
+    .replace(/\bCHECK\s+VALVE\b/g, 'CKV')
+    .replace(/\bMAT\s+BICH\b/g, 'FLG')
+    .replace(/\bONG\s+THEP\b/g, 'PIPE')
+    .replace(/\bCAP\s+DIEN\b/g, 'CBL')
+    .replace(/\bDONG\s+HO\s+AP\b/g, 'PGAG')
+    .replace(/\bDONG\s+HO\b/g, 'GAG')
+    .replace(/\bCLASS\s*(\d+)\b/g, 'C$1')
+    .replace(/\bCL\s*(\d+)\b/g, 'C$1')
+    .replace(/\bSCH(?:EDULE)?\s*(\d+S?)\b/g, 'S$1')
+    .replace(/\bDN\s*(\d+)\b/g, 'DN$1')
+    .replace(/\bPN\s*(\d+)\b/g, 'PN$1')
+    .replace(/\bINOX\s*(\d+L?)\b/g, 'SS$1')
+    .replace(/\bAPI\s*5L\b/g, 'API5L')
+    .replace(/\bGR\.?\s*([A-Z0-9]+)\b/g, 'GR$1');
+}
+
 function extractDescriptiveTokens(materialName?: string | null): string[] {
-  const folded = foldAsciiUpper(materialName);
+  const folded = normalizeEngineeringPhrases(String(materialName || ''));
   const rawTokens = folded
     .replace(/[^A-Z0-9]+/g, ' ')
     .trim()
@@ -194,7 +221,7 @@ function extractDescriptiveTokens(materialName?: string | null): string[] {
 
   for (const tok of rawTokens) {
     if (/\d/.test(tok)) {
-      // Keep technical specs like DN200, M24X120, 3X50, CL600, 316L, API5L, SCH40
+      // Keep technical specs like DN200, M24X120, 3X50, C600, SS316L, API5L, S40
       const cleanSpec = tok.slice(0, 8);
       if (cleanSpec && !specTokens.includes(cleanSpec)) {
         specTokens.push(cleanSpec);

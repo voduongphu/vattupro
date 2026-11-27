@@ -1,5 +1,6 @@
 import {
   ensureUniqueValidMaterialCode,
+  generateSmartDeterministicMaterialCode,
   normCodeKey
 } from '../utils/materialCodeAi';
 import { normalizeMaterialNameLookupKey } from '../utils/additiveMerge';
@@ -21,6 +22,33 @@ export interface MaterialCodeAiBatchItemResult {
   index: number;
   code: string;
   reason: string;
+}
+
+export class MaterialCodeAiError extends Error {
+  status: number;
+  errorCode: string;
+
+  constructor(message: string, status = 500, errorCode = 'AI_GENERATION_FAILED') {
+    super(message);
+    this.name = 'MaterialCodeAiError';
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+export function isAiKeyOrQuotaUnavailableError(err: unknown): boolean {
+  const code = String((err as { errorCode?: string })?.errorCode || '');
+  const status = Number((err as { status?: number })?.status || 0);
+  return (
+    code === 'CREDITS_DEPLETED' ||
+    code === 'API_KEY_MISSING' ||
+    code === 'API_KEY_INVALID' ||
+    code === 'RESOURCE_EXHAUSTED' ||
+    status === 402 ||
+    status === 403 ||
+    status === 429 ||
+    status === 503
+  );
 }
 
 const MAX_ITEMS_PER_REQUEST = 25;
@@ -53,11 +81,18 @@ async function postGenerateMaterialCodes(
     const errMsg =
       (payload && typeof payload.error === 'string' && payload.error.trim()) ||
       `Không thể gọi AI tạo mã vật tư (HTTP ${response.status}).`;
-    throw new Error(errMsg);
+    const errCode =
+      (payload && typeof payload.code === 'string' && payload.code.trim()) ||
+      `HTTP_${response.status}`;
+    throw new MaterialCodeAiError(errMsg, response.status, errCode);
   }
 
   if (!payload || !Array.isArray(payload.items)) {
-    throw new Error('Phản hồi AI không hợp lệ. Vui lòng thử lại.');
+    throw new MaterialCodeAiError(
+      'Phản hồi AI không hợp lệ. Vui lòng thử lại.',
+      502,
+      'INVALID_RESPONSE'
+    );
   }
 
   return payload.items.map((it: any) => ({
@@ -68,7 +103,7 @@ async function postGenerateMaterialCodes(
 }
 
 /**
- * Generates a single intelligent 8–20 char material code via server-side Gemini AI.
+ * Generates a single intelligent 8–20 char material code via server-side free-tier Gemini AI.
  */
 export async function generateMaterialCodeWithAI(
   input: MaterialCodeAiRequestItem,
@@ -78,7 +113,11 @@ export async function generateMaterialCodeWithAI(
   const results = await generateMaterialCodesBatchWithAI([input], existingCodes, signal);
   const first = results[0];
   if (!first || !first.code) {
-    throw new Error('AI không trả về mã vật tư hợp lệ. Vui lòng thử lại.');
+    throw new MaterialCodeAiError(
+      'AI không trả về mã vật tư hợp lệ. Vui lòng thử lại.',
+      502,
+      'INCOMPLETE_AI_RESPONSE'
+    );
   }
   return {
     code: first.code,
@@ -87,7 +126,7 @@ export async function generateMaterialCodeWithAI(
 }
 
 /**
- * Generates intelligent 8–20 char material codes in batch via server-side Gemini AI.
+ * Generates intelligent 8–20 char material codes in batch via server-side free-tier Gemini AI.
  * Deduplicates identical material names so duplicate rows receive the exact same code
  * while distinct materials receive unique, non-colliding codes.
  */
@@ -106,7 +145,6 @@ export async function generateMaterialCodesBatchWithAI(
     if (k) usedSet.add(k);
   }
 
-  // Group identical material names to avoid duplicate AI tokens and guarantee identical codes for identical names
   const uniqueGroups: Array<{
     nameKey: string;
     representative: MaterialCodeAiRequestItem;
@@ -164,8 +202,10 @@ export async function generateMaterialCodesBatchWithAI(
       const group = chunk[j];
       const match = responseByChunkIdx.get(j);
       if (!match || !match.code) {
-        throw new Error(
-          `AI chưa tạo được mã cho vật tư "${group.representative.materialName}". Vui lòng thử lại.`
+        throw new MaterialCodeAiError(
+          `AI chưa tạo được mã cho vật tư "${group.representative.materialName}". Vui lòng thử lại.`,
+          502,
+          'INCOMPLETE_AI_RESPONSE'
         );
       }
 
@@ -186,4 +226,42 @@ export async function generateMaterialCodesBatchWithAI(
   }
 
   return Array.from(resultsByOriginalIndex.values()).sort((a, b) => a.index - b.index);
+}
+
+/**
+ * Explicit offline rule-based code generator (only invoked when the user explicitly requests
+ * local non-AI fallback after inspecting an upstream Gemini API error).
+ */
+export function generateOfflineSmartMaterialCodesBatch(
+  items: MaterialCodeAiRequestItem[],
+  existingCodes: Iterable<string> = []
+): MaterialCodeAiBatchItemResult[] {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const usedSet = new Set<string>();
+  for (const c of existingCodes) {
+    const k = normCodeKey(c);
+    if (k) usedSet.add(k);
+  }
+
+  const nameToCode = new Map<string, string>();
+  const results: MaterialCodeAiBatchItemResult[] = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const rawName = String(items[i]?.materialName || '').trim();
+    if (!rawName) continue;
+    const nameKey = normalizeMaterialNameLookupKey(rawName);
+    let code = nameToCode.get(nameKey);
+    if (!code) {
+      code = generateSmartDeterministicMaterialCode(usedSet, rawName);
+      nameToCode.set(nameKey, code);
+    }
+    results.push({
+      index: i,
+      code,
+      reason: 'Tạo tự động nội bộ (Offline, 8–20 ký tự)'
+    });
+  }
+
+  return results;
 }

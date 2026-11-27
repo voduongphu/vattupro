@@ -64,8 +64,11 @@ describe('materialCodeAi utilities', () => {
   it('generates deterministic fallback codes strictly 8-20 chars without mandatory VT prefix', () => {
     const used = new Set<string>();
     const codeA = generateSmartDeterministicMaterialCode(used, 'Van cầu áp lực cao Class 600 DN200');
-    const codeB = generateSmartDeterministicMaterialCode(used, 'Ống thép đúc API 5L Gr.B DN150');
+    const codeB = generateSmartDeterministicMaterialCode(used, 'Ống thép đúc API 5L Gr.B DN150 SCH40');
     const codeC = generateSmartDeterministicMaterialCode(used, 'Đinh');
+
+    assert.ok(codeA.startsWith('GLV-C600-DN200'), `Expected GLV-C600-DN200 prefix, got ${codeA}`);
+    assert.ok(codeB.startsWith('PIPE-API5L-DN150'), `Expected PIPE-API5L-DN150 prefix, got ${codeB}`);
 
     for (const c of [codeA, codeB, codeC]) {
       assert.equal(isValidMaterialCodeFormat(c), true, `Invalid code format: ${c}`);
