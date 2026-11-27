@@ -779,7 +779,8 @@ export function buildAggregatedRecords(
   outbounds: OutboundReceipt[],
   whMap: Map<string, string>,
   startDate?: string,
-  endDate?: string
+  endDate?: string,
+  strictEndDate = false
 ): InventoryStockRecord[] {
   const groupMap = new Map<string, AggEntry>();
   const entryMetaByKey = new Map<string, AggKeyMeta>();
@@ -872,8 +873,9 @@ export function buildAggregatedRecords(
 
   for (let i = 0; i < inbounds.length; i++) {
     const receipt = inbounds[i];
-    if (startDate && receipt.receiptDate < startDate) continue;
-    if (endDate && receipt.receiptDate > endDate) continue;
+    const rDateYmd = (receipt.receiptDate || '').slice(0, 10);
+    if (startDate && rDateYmd < startDate) continue;
+    if (endDate && (strictEndDate ? rDateYmd >= endDate : rDateYmd > endDate)) continue;
 
     const whName = receipt.warehouseName || whMap.get(receipt.warehouseId) || 'Kho mặc định';
     const items = receipt.items;
@@ -983,8 +985,9 @@ export function buildAggregatedRecords(
 
   for (let i = 0; i < outbounds.length; i++) {
     const receipt = outbounds[i];
-    if (startDate && receipt.issueDate < startDate) continue;
-    if (endDate && receipt.issueDate > endDate) continue;
+    const iDateYmd = (receipt.issueDate || '').slice(0, 10);
+    if (startDate && iDateYmd < startDate) continue;
+    if (endDate && (strictEndDate ? iDateYmd >= endDate : iDateYmd > endDate)) continue;
 
     const whName = receipt.warehouseName || whMap.get(receipt.warehouseId) || 'Kho mặc định';
     const items = receipt.items;
@@ -3209,6 +3212,59 @@ export const StorageService = {
     }
 
     return applyStockAttributeFilters(mergedRecords, filter, true);
+  },
+
+  // BÁO CÁO NHẬP - XUẤT - TỒN THEO KỲ (MẪU QN-OPR-PR11-FM09):
+  // Tách riêng Tồn đầu kỳ (trước startDate) và Phát sinh trong kỳ ([startDate, endDate])
+  // với đầy đủ điều kiện lọc kho, Packing List, Shipment, Bản vẽ, Hạng mục, Package No., Vị trí...
+  calculateFm09PeriodRecords(filter?: StockFilterParams): {
+    openingRecords: InventoryStockRecord[];
+    periodRecords: InventoryStockRecord[];
+  } {
+    const periodRecords = this.calculateMergedInventoryReport(filter);
+    const startDate = filter?.startDate?.trim();
+    if (!startDate) {
+      return { openingRecords: [], periodRecords };
+    }
+
+    const whId = filter?.warehouseId && filter.warehouseId !== 'all' ? filter.warehouseId : '';
+    const hasAllowedScope = Array.isArray(filter?.allowedWarehouseIds);
+    const allowedSet = hasAllowedScope ? new Set(filter!.allowedWarehouseIds!) : null;
+    if (allowedSet && allowedSet.size === 0) {
+      return { openingRecords: [], periodRecords: [] };
+    }
+
+    const inbounds = this.getInboundReceipts();
+    const outbounds = this.getOutboundReceipts();
+    const warehouses = this.getWarehouses();
+    const whMap = new Map<string, string>();
+    for (let i = 0; i < warehouses.length; i++) {
+      whMap.set(warehouses[i].id, warehouses[i].name);
+    }
+
+    let preRecords = buildAggregatedRecords(
+      inbounds,
+      outbounds,
+      whMap,
+      undefined,
+      startDate,
+      true
+    );
+
+    if (whId || allowedSet) {
+      const whFiltered: InventoryStockRecord[] = [];
+      for (let i = 0; i < preRecords.length; i++) {
+        const rec = preRecords[i];
+        if (allowedSet && !allowedSet.has(rec.warehouseId)) continue;
+        if (whId && rec.warehouseId !== whId) continue;
+        whFiltered.push(rec);
+      }
+      preRecords = whFiltered;
+    }
+
+    const mergedPre = mergeRecordsForInventoryReport(preRecords);
+    const openingRecords = applyStockAttributeFilters(mergedPre, filter, true);
+    return { openingRecords, periodRecords };
   },
 
   // ==========================================================================

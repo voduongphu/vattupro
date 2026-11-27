@@ -5,9 +5,11 @@ import { StorageService } from '../../services/storage';
 import { exportToExcel } from '../../services/excelService';
 import { getAuthorizedWarehouses, roundQty } from '../../utils/additiveMerge';
 import { PaginationBar } from '../common/PaginationBar';
+import { InventoryReportPrintModal } from './InventoryReportPrintModal';
 import { 
   BarChart3, 
   Download, 
+  FileText,
   Search, 
   Filter, 
   RotateCcw,
@@ -48,6 +50,7 @@ export const InventoryReport: React.FC = () => {
   const defSearchQuery = useDeferredValue(searchQuery);
 
   const [syncTick, setSyncTick] = useState(0);
+  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
 
   useEffect(() => {
     setWarehouses(StorageService.getWarehouses());
@@ -73,8 +76,8 @@ export const InventoryReport: React.FC = () => {
     }
   }, [isAdmin, authorizedWarehouses, warehouseId]);
 
-  const records = useMemo(() => {
-    const filter: StockFilterParams = {
+  const currentFilter = useMemo<StockFilterParams>(
+    () => ({
       warehouseId: warehouseId === 'all' ? undefined : warehouseId,
       allowedWarehouseIds,
       packingListNo: defPackingListNo || undefined,
@@ -88,24 +91,32 @@ export const InventoryReport: React.FC = () => {
       searchQuery: defSearchQuery || undefined,
       startDate: startDate || undefined,
       endDate: endDate || undefined
-    };
-    return StorageService.calculateMergedInventoryReport(filter);
-  }, [
-    syncTick,
-    warehouseId,
-    allowedWarehouseIds,
-    defPackingListNo,
-    defShipment,
-    defManufacturer,
-    defSupplier,
-    defPackageNo,
-    defCategory,
-    defDrawingNo,
-    defStorageLocation,
-    defSearchQuery,
-    startDate,
-    endDate
-  ]);
+    }),
+    [
+      warehouseId,
+      allowedWarehouseIds,
+      defPackingListNo,
+      defShipment,
+      defManufacturer,
+      defSupplier,
+      defPackageNo,
+      defCategory,
+      defDrawingNo,
+      defStorageLocation,
+      defSearchQuery,
+      startDate,
+      endDate
+    ]
+  );
+
+  const records = useMemo(() => {
+    return StorageService.calculateMergedInventoryReport(currentFilter);
+  }, [syncTick, currentFilter]);
+
+  const selectedWarehouseName = useMemo(() => {
+    if (warehouseId === 'all') return '';
+    return authorizedWarehouses.find((w) => w.id === warehouseId)?.name || '';
+  }, [warehouseId, authorizedWarehouses]);
 
   // Lấy danh sách gợi ý đã được cache O(1) từ StorageService (giới hạn 150 mục/loại)
   const {
@@ -249,10 +260,20 @@ export const InventoryReport: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full md:w-auto">
           <button
+            type="button"
+            onClick={() => setIsPrintModalOpen(true)}
+            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-rose-600/20 transition active:scale-95 min-h-[42px]"
+          >
+            <FileText className="w-4 h-4 shrink-0" />
+            <span>Xuất PDF / In A4 (FM09)</span>
+          </button>
+
+          <button
+            type="button"
             onClick={handleExportExcel}
-            className="w-full md:w-auto flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-700/20 transition active:scale-95 min-h-[42px]"
+            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-700/20 transition active:scale-95 min-h-[42px]"
           >
             <Download className="w-4 h-4 shrink-0" />
             <span>Xuất Báo Cáo Ra Excel</span>
@@ -709,6 +730,14 @@ export const InventoryReport: React.FC = () => {
           itemLabel="bản ghi tồn kho"
         />
       </div>
+
+      <InventoryReportPrintModal
+        isOpen={isPrintModalOpen}
+        onClose={() => setIsPrintModalOpen(false)}
+        baseFilter={currentFilter}
+        defaultDepartmentName={selectedWarehouseName || currentUser?.department || ''}
+        defaultReporterName=""
+      />
     </div>
   );
 };
