@@ -37,6 +37,10 @@ import {
   mergeOsdReceiptsAdditive,
   canonicalUserSessionKey
 } from '../utils/additiveMerge.ts';
+import {
+  generateMaterialCodesWithGemini,
+  GeminiMaterialCodeError
+} from './geminiMaterialCode.ts';
 
 const SESSION_HMAC_SECRET =
   process.env.SESSION_SECRET || 'vtp-inventory-single-device-hmac-secret-2026-v2';
@@ -2027,6 +2031,50 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     }
 
     res.status(400).json({ error: 'Invalid type' });
+  });
+
+  app.post('/api/ai/generate-material-codes', async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const rawItems = Array.isArray(body.items) ? body.items : [];
+      if (rawItems.length === 0) {
+        res.status(400).json({
+          error: 'Danh sách vật tư cần phân tích tạo mã đang trống.',
+          code: 'EMPTY_ITEMS'
+        });
+        return;
+      }
+
+      const existingCodes: string[] = Array.isArray(body.existingCodes)
+        ? body.existingCodes.map((c: unknown) => String(c || '').trim()).filter(Boolean)
+        : [];
+
+      // Also include known server store material codes to help avoid cross-device collisions
+      for (let i = 0; i < store.materials.length && existingCodes.length < 200; i++) {
+        const mc = String(store.materials[i]?.code || '').trim();
+        if (mc) existingCodes.push(mc);
+      }
+
+      const items = await generateMaterialCodesWithGemini({
+        items: rawItems.slice(0, 40),
+        existingCodes
+      });
+
+      res.json({ items });
+    } catch (err) {
+      if (err instanceof GeminiMaterialCodeError) {
+        res.status(err.status).json({
+          error: err.message,
+          code: err.errorCode
+        });
+        return;
+      }
+      const message = String((err as { message?: string })?.message || 'Lỗi không xác định khi gọi AI.');
+      res.status(500).json({
+        error: message,
+        code: 'INTERNAL_AI_ERROR'
+      });
+    }
   });
 
   return {

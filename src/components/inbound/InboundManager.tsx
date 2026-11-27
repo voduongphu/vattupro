@@ -41,10 +41,15 @@ import {
   resolveEditedInboundVoucherCode,
   voucherCodeHasDatePrecision,
   deriveWarehouseAbbrev,
+  collectUsedMaterialCodeKeys,
   createInboundMaterialCodeResolver,
   getAuthorizedWarehouses,
   isWarehouseAuthorized
 } from '../../utils/additiveMerge';
+import {
+  generateMaterialCodeWithAI,
+  generateMaterialCodesBatchWithAI
+} from '../../services/materialCodeAiService';
 import {
   ArrowDownLeft,
   Plus,
@@ -61,6 +66,7 @@ import {
   RefreshCw,
   PackageSearch,
   Sparkles,
+  Loader2,
   ChevronDown,
   X,
   ArrowUpDown,
@@ -194,11 +200,42 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
 
   // Danh sách dòng vật tư trong phiếu + tìm kiếm/phân trang cho phiếu lớn
   const [formItems, setFormItems] = useState<InboundItemDetail[]>([]);
+  const formItemsRef = useRef<InboundItemDetail[]>([]);
+  formItemsRef.current = formItems;
   const [formItemSearch, setFormItemSearch] = useState('');
   const [formItemPage, setFormItemPage] = useState(1);
   const [formError, setFormError] = useState('');
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
   const pasteNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Trạng thái AI phân tích tạo mã vật tư thông minh (8-20 ký tự)
+  const [aiGeneratingRowIds, setAiGeneratingRowIds] = useState<Set<string>>(new Set());
+  const [isBatchGeneratingAiCodes, setIsBatchGeneratingAiCodes] = useState(false);
+  const aiRowTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const aiRowAbortsRef = useRef<Map<string, AbortController>>(new Map());
+  const aiAutoCodedRowIdsRef = useRef<Set<string>>(new Set());
+
+  const clearAllPendingAiCodeTasks = () => {
+    aiRowTimersRef.current.forEach((timer) => clearTimeout(timer));
+    aiRowTimersRef.current.clear();
+    aiRowAbortsRef.current.forEach((ctrl) => ctrl.abort());
+    aiRowAbortsRef.current.clear();
+    aiAutoCodedRowIdsRef.current.clear();
+    setAiGeneratingRowIds(new Set());
+    setIsBatchGeneratingAiCodes(false);
+  };
+
+  useEffect(() => {
+    if (!isCreateModalOpen) {
+      clearAllPendingAiCodeTasks();
+    }
+  }, [isCreateModalOpen]);
+
+  useEffect(() => {
+    return () => {
+      clearAllPendingAiCodeTasks();
+    };
+  }, []);
 
   // Trường chọn nhanh & hộp thoại chọn nhiều từ Danh mục vật tư có sẵn
   const [quickCatalogQuery, setQuickCatalogQuery] = useState('');
@@ -1020,14 +1057,258 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     });
   };
 
+  const collectAllUsedCodesForForm = (itemsSnapshot: InboundItemDetail[], excludeRowId?: string) =>
+    collectUsedMaterialCodeKeys({
+      materials: StorageService.getMaterials(),
+      inbounds: StorageService.getInboundReceipts(),
+      outbounds: StorageService.getOutboundReceipts(),
+      osd: StorageService.getOsdReceipts(),
+      extraCodes: itemsSnapshot
+        .filter((it) => !excludeRowId || it.id !== excludeRowId)
+        .map((it) => it.materialCode)
+    });
+
+  const cancelRowAiCodeTask = (rowId: string) => {
+    const t = aiRowTimersRef.current.get(rowId);
+    if (t) {
+      clearTimeout(t);
+      aiRowTimersRef.current.delete(rowId);
+    }
+    const ctrl = aiRowAbortsRef.current.get(rowId);
+    if (ctrl) {
+      ctrl.abort();
+      aiRowAbortsRef.current.delete(rowId);
+    }
+    setAiGeneratingRowIds((prev) => {
+      if (!prev.has(rowId)) return prev;
+      const next = new Set(prev);
+      next.delete(rowId);
+      return next;
+    });
+  };
+
+  const generateAiCodeForRowById = async (
+    rowId: string,
+    options?: { forceAi?: boolean; silentError?: boolean }
+  ) => {
+    const snapshot = formItemsRef.current;
+    const targetRow = snapshot.find((it) => it.id === rowId);
+    if (!targetRow) return;
+
+    const cleanName = (targetRow.materialName || '').trim();
+    if (!cleanName) {
+      if (!options?.silentError) {
+        setFormError('Vui lòng nhập Tên vật tư ở dòng này trước khi dùng AI tạo mã.');
+      }
+      return;
+    }
+
+    // Nếu không ép buộc gọi AI mới và tên khớp chính xác Danh mục sẵn có -> dùng mã từ Danh mục
+    if (!options?.forceAi) {
+      const existingCatalog = materialNameMap.get(cleanName.normalize('NFC').toLowerCase());
+      if (existingCatalog?.code) {
+        setFormItems((prev) =>
+          prev.map((it) =>
+            it.id === rowId
+              ? {
+                  ...it,
+                  materialCode: existingCatalog.code,
+                  unit: it.unit || existingCatalog.unit || 'Ống',
+                  category: it.category || existingCatalog.category || it.category,
+                  drawingNo:
+                    (!it.drawingNo || it.drawingNo === 'N/A') && existingCatalog.drawingNo
+                      ? existingCatalog.drawingNo
+                      : it.drawingNo
+                }
+              : it
+          )
+        );
+        aiAutoCodedRowIdsRef.current.delete(rowId);
+        return;
+      }
+    }
+
+    cancelRowAiCodeTask(rowId);
+    const controller = new AbortController();
+    aiRowAbortsRef.current.set(rowId, controller);
+    setAiGeneratingRowIds((prev) => {
+      const next = new Set(prev);
+      next.add(rowId);
+      return next;
+    });
+
+    try {
+      const usedCodes = collectAllUsedCodesForForm(formItemsRef.current, rowId);
+      const res = await generateMaterialCodeWithAI(
+        {
+          materialName: cleanName,
+          unit: targetRow.unit?.trim() || undefined,
+          category: targetRow.category?.trim() || undefined,
+          drawingNo:
+            targetRow.drawingNo && targetRow.drawingNo !== 'N/A'
+              ? targetRow.drawingNo.trim()
+              : undefined
+        },
+        usedCodes,
+        controller.signal
+      );
+
+      if (controller.signal.aborted) return;
+
+      setFormItems((prev) =>
+        prev.map((it) => {
+          if (it.id !== rowId) return it;
+          // Chỉ cập nhật nếu tên vật tư chưa bị người dùng đổi sang tên khác trong lúc AI đang xử lý
+          if ((it.materialName || '').trim() !== cleanName) return it;
+          if (!options?.forceAi && it.materialCode.trim() && !aiAutoCodedRowIdsRef.current.has(rowId)) {
+            return it;
+          }
+          return { ...it, materialCode: res.code };
+        })
+      );
+      aiAutoCodedRowIdsRef.current.add(rowId);
+      setFormError('');
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) return;
+      if (!options?.silentError) {
+        setFormError(err?.message || 'Không thể gọi AI tạo mã vật tư lúc này.');
+      }
+    } finally {
+      if (aiRowAbortsRef.current.get(rowId) === controller) {
+        aiRowAbortsRef.current.delete(rowId);
+      }
+      setAiGeneratingRowIds((prev) => {
+        if (!prev.has(rowId)) return prev;
+        const next = new Set(prev);
+        next.delete(rowId);
+        return next;
+      });
+    }
+  };
+
+  const scheduleRowAiMaterialCode = (rowId: string, nextName: string) => {
+    const prevTimer = aiRowTimersRef.current.get(rowId);
+    if (prevTimer) {
+      clearTimeout(prevTimer);
+      aiRowTimersRef.current.delete(rowId);
+    }
+    const cleanName = nextName.trim();
+    if (cleanName.length < 3) {
+      cancelRowAiCodeTask(rowId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      aiRowTimersRef.current.delete(rowId);
+      void generateAiCodeForRowById(rowId, { forceAi: false, silentError: false });
+    }, 800);
+    aiRowTimersRef.current.set(rowId, timer);
+  };
+
+  const generateAiCodesForBlankRows = async (
+    itemsSnapshot?: InboundItemDetail[],
+    options?: { silentIfNone?: boolean }
+  ): Promise<Map<string, string> | null> => {
+    const sourceItems = itemsSnapshot || formItemsRef.current;
+    const targets = sourceItems.filter(
+      (it) => !it.materialCode.trim() && it.materialName.trim().length > 0
+    );
+    if (targets.length === 0) {
+      if (!options?.silentIfNone) {
+        showPasteNotice('Tất cả dòng vật tư có tên đều đã có Mã vật tư.');
+      }
+      return new Map();
+    }
+
+    // Bước 1: Khớp ngay các dòng có tên trùng với Danh mục vật tư sẵn có
+    const resolvedById = new Map<string, string>();
+    const aiNeeded: InboundItemDetail[] = [];
+
+    for (const row of targets) {
+      const cat = materialNameMap.get(row.materialName.normalize('NFC').trim().toLowerCase());
+      if (cat?.code) {
+        resolvedById.set(row.id, cat.code);
+      } else {
+        aiNeeded.push(row);
+      }
+    }
+
+    if (aiNeeded.length > 0) {
+      setIsBatchGeneratingAiCodes(true);
+      setAiGeneratingRowIds((prev) => {
+        const next = new Set(prev);
+        aiNeeded.forEach((r) => next.add(r.id));
+        return next;
+      });
+
+      try {
+        const usedCodes = collectAllUsedCodesForForm(sourceItems);
+        resolvedById.forEach((codeVal) => usedCodes.add(normKey(codeVal)));
+
+        const aiResults = await generateMaterialCodesBatchWithAI(
+          aiNeeded.map((r) => ({
+            materialName: r.materialName.trim(),
+            unit: r.unit?.trim() || undefined,
+            category: r.category?.trim() || undefined,
+            drawingNo: r.drawingNo && r.drawingNo !== 'N/A' ? r.drawingNo.trim() : undefined
+          })),
+          usedCodes
+        );
+
+        for (const res of aiResults) {
+          const row = aiNeeded[res.index];
+          if (row && res.code) {
+            resolvedById.set(row.id, res.code);
+            aiAutoCodedRowIdsRef.current.add(row.id);
+          }
+        }
+      } catch (err: any) {
+        setFormError(err?.message || 'Không thể phân tích tạo mã vật tư bằng AI.');
+        return null;
+      } finally {
+        setIsBatchGeneratingAiCodes(false);
+        setAiGeneratingRowIds((prev) => {
+          const next = new Set(prev);
+          aiNeeded.forEach((r) => next.delete(r.id));
+          return next;
+        });
+      }
+    }
+
+    if (resolvedById.size > 0) {
+      setFormItems((prev) =>
+        prev.map((it) => {
+          const generated = resolvedById.get(it.id);
+          if (!generated || it.materialCode.trim()) return it;
+          return { ...it, materialCode: generated };
+        })
+      );
+      if (aiNeeded.length > 0) {
+        showPasteNotice(
+          `AI đã phân tích & tạo mã thông minh (8–20 ký tự) cho ${aiNeeded.length.toLocaleString('vi-VN')} dòng vật tư.`
+        );
+      }
+    }
+
+    return resolvedById;
+  };
+
   const updateItemRow = (idx: number, field: keyof InboundItemDetail, val: any) => {
+    let rowIdForAi: string | null = null;
+    let nameForAi = '';
+
     setFormItems((prev) => {
       const copy = [...prev];
       const prevRow = prev[idx];
+      if (!prevRow) return prev;
       copy[idx] = { ...prevRow, [field]: val };
 
       if (field === 'materialCode') {
-        const found = materialMap.get(String(val).trim().toLowerCase());
+        const nextCode = String(val || '').trim();
+        if (nextCode) {
+          aiAutoCodedRowIdsRef.current.delete(prevRow.id);
+        }
+        cancelRowAiCodeTask(prevRow.id);
+        const found = materialMap.get(nextCode.toLowerCase());
         if (found) {
           copy[idx].materialName = found.name;
           copy[idx].unit = found.unit;
@@ -1040,6 +1321,37 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
           if (found.supplier) copy[idx].supplier = found.supplier;
           if (found.unitWeightKg && copy[idx].quantity) {
             copy[idx].weightKg = Math.round(found.unitWeightKg * roundQty(copy[idx].quantity) * 100) / 100;
+          }
+        }
+      }
+
+      if (field === 'materialName') {
+        const nextName = String(val || '');
+        const cleanName = nextName.trim();
+        const canAutoFillCode =
+          !prevRow.materialCode.trim() || aiAutoCodedRowIdsRef.current.has(prevRow.id);
+
+        if (canAutoFillCode) {
+          const foundByName = cleanName
+            ? materialNameMap.get(cleanName.normalize('NFC').toLowerCase())
+            : undefined;
+
+          if (foundByName) {
+            copy[idx].materialCode = foundByName.code;
+            if (!copy[idx].unit.trim() && foundByName.unit) copy[idx].unit = foundByName.unit;
+            if (!copy[idx].category && foundByName.category) copy[idx].category = foundByName.category;
+            if ((!copy[idx].drawingNo || copy[idx].drawingNo === 'N/A') && foundByName.drawingNo) {
+              copy[idx].drawingNo = foundByName.drawingNo;
+            }
+            aiAutoCodedRowIdsRef.current.delete(prevRow.id);
+            cancelRowAiCodeTask(prevRow.id);
+          } else {
+            if (!cleanName && aiAutoCodedRowIdsRef.current.has(prevRow.id)) {
+              copy[idx].materialCode = '';
+              aiAutoCodedRowIdsRef.current.delete(prevRow.id);
+            }
+            rowIdForAi = prevRow.id;
+            nameForAi = nextName;
           }
         }
       }
@@ -1064,6 +1376,10 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
 
       return copy;
     });
+
+    if (rowIdForAi) {
+      scheduleRowAiMaterialCode(rowIdForAi, nameForAi);
+    }
   };
 
   const showPasteNotice = (message: string) => {
@@ -1115,9 +1431,20 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       details.push(`khớp ${result.matchedCatalogCount.toLocaleString('vi-VN')} vật tư từ Danh mục`);
     }
     const suffix = details.length > 0 ? ` (${details.join(' · ')})` : '';
-    showPasteNotice(
-      `Đã dán ${result.pastedRowCount.toLocaleString('vi-VN')} dòng từ Excel${suffix}.`
-    );
+    const blankCodePastedCount = result.items.filter(
+      (it) => !it.materialCode.trim() && it.materialName.trim().length > 0
+    ).length;
+
+    if (blankCodePastedCount > 0) {
+      showPasteNotice(
+        `Đã dán ${result.pastedRowCount.toLocaleString('vi-VN')} dòng từ Excel${suffix}. AI đang phân tích tạo mã thông minh cho ${blankCodePastedCount.toLocaleString('vi-VN')} vật tư mới...`
+      );
+      void generateAiCodesForBlankRows(result.items, { silentIfNone: true });
+    } else {
+      showPasteNotice(
+        `Đã dán ${result.pastedRowCount.toLocaleString('vi-VN')} dòng từ Excel${suffix}.`
+      );
+    }
     return true;
   };
 
@@ -1167,20 +1494,9 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
   };
 
   const handleAutoGenerateRowMaterialCode = (rowIdx: number) => {
-    setFormItems((prev) => {
-      if (rowIdx < 0 || rowIdx >= prev.length) return prev;
-      const resolver = createInboundMaterialCodeResolver({
-        materials: StorageService.getMaterials(),
-        inbounds: StorageService.getInboundReceipts(),
-        outbounds: StorageService.getOutboundReceipts(),
-        osd: StorageService.getOsdReceipts(),
-        extraItems: prev
-      });
-      const generatedCode = resolver.resolve(prev[rowIdx]?.materialCode, prev[rowIdx]?.materialName);
-      const copy = [...prev];
-      copy[rowIdx] = { ...copy[rowIdx], materialCode: generatedCode };
-      return copy;
-    });
+    const row = formItemsRef.current[rowIdx];
+    if (!row) return;
+    void generateAiCodeForRowById(row.id, { forceAi: true, silentError: false });
   };
 
   // Xử lý import từ file Excel tối ưu O(N) cho trên 100.000 dòng
@@ -1464,7 +1780,7 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
     void SyncService.syncNow();
   };
 
-  const handleSaveCreate = (e: React.FormEvent) => {
+  const handleSaveCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedCode = receiptCode.trim();
     if (!trimmedCode) {
@@ -1522,6 +1838,22 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       return;
     }
 
+    // Nếu còn dòng vật tư chưa có mã, gọi AI phân tích tạo mã thông minh (8-20 ký tự) trước khi lưu
+    let workingFormItems = formItems;
+    const hasBlankCodes = workingFormItems.some(
+      (it) => !it.materialCode.trim() && it.materialName.trim().length > 0
+    );
+    if (hasBlankCodes) {
+      const resolvedMap = await generateAiCodesForBlankRows(workingFormItems, { silentIfNone: true });
+      if (!resolvedMap) {
+        return;
+      }
+      workingFormItems = workingFormItems.map((it) => {
+        const gen = resolvedMap.get(it.id);
+        return gen && !it.materialCode.trim() ? { ...it, materialCode: gen } : it;
+      });
+    }
+
     const isVoucherLike = (val?: string | null): boolean => {
       if (!val) return false;
       const s = val.trim().toUpperCase();
@@ -1569,10 +1901,10 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
       inbounds: StorageService.getInboundReceipts(),
       outbounds: StorageService.getOutboundReceipts(),
       osd: StorageService.getOsdReceipts(),
-      extraItems: formItems
+      extraItems: workingFormItems
     });
 
-    const normalizedItems: InboundItemDetail[] = formItems.map((it) => {
+    const normalizedItems: InboundItemDetail[] = workingFormItems.map((it) => {
       const batch = (it.batchCode || '').trim();
       const pkg = (it.packageNo || '').trim();
       const qty = Math.max(0, roundQty(it.quantity));
@@ -3137,6 +3469,26 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                         </button>
                       )}
                     </div>
+                    {formItems.some((it) => !it.materialCode.trim() && it.materialName.trim().length > 0) && (
+                      <button
+                        type="button"
+                        disabled={isBatchGeneratingAiCodes}
+                        onClick={() => void generateAiCodesForBlankRows()}
+                        className="flex items-center gap-1.5 px-3 py-2 sm:py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-60 rounded-lg text-xs font-semibold border border-indigo-200 transition min-h-[38px]"
+                        title="Dùng AI phân tích tên vật tư để tự động tạo mã (8–20 ký tự) cho các dòng đang trống mã"
+                      >
+                        {isBatchGeneratingAiCodes ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {isBatchGeneratingAiCodes
+                            ? 'AI đang tạo mã...'
+                            : `AI Tạo Mã (${formItems.filter((it) => !it.materialCode.trim() && it.materialName.trim().length > 0).length})`}
+                        </span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={addNewItemRow}
@@ -3338,19 +3690,26 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                                     updateItemRow(realIdx, 'materialCode', e.target.value)
                                   }
                                   onPaste={(e) => handleItemCellPaste(e, realIdx, 'materialCode')}
-                                  placeholder="Tự tạo nếu để trống"
+                                  placeholder={
+                                    aiGeneratingRowIds.has(item.id)
+                                      ? 'AI đang tạo mã...'
+                                      : 'AI tự tạo khi nhập tên'
+                                  }
                                   className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs focus:border-blue-500"
                                 />
-                                {!item.materialCode.trim() && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleAutoGenerateRowMaterialCode(realIdx)}
-                                    className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded transition shrink-0"
-                                    title="Tự động tạo mã vật tư không trùng"
-                                  >
+                                <button
+                                  type="button"
+                                  disabled={aiGeneratingRowIds.has(item.id) || !item.materialName.trim()}
+                                  onClick={() => handleAutoGenerateRowMaterialCode(realIdx)}
+                                  className="p-1.5 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-45 disabled:cursor-not-allowed text-indigo-700 border border-indigo-200 rounded transition shrink-0"
+                                  title="Phân tích AI tạo mã vật tư thông minh (8–20 ký tự, không bắt buộc VT)"
+                                >
+                                  {aiGeneratingRowIds.has(item.id) ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
                                     <Sparkles className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
+                                  )}
+                                </button>
                                 {materials.length > 0 && (
                                   <button
                                     type="button"
@@ -3559,13 +3918,21 @@ export const InboundManager: React.FC<InboundManagerProps> = ({
                 <button
                   ref={voucherSubmitBtnRef}
                   type="submit"
-                  className={`flex-1 py-2.5 text-white font-semibold text-sm rounded-xl transition shadow-md ${
+                  disabled={isBatchGeneratingAiCodes}
+                  className={`flex-1 py-2.5 text-white font-semibold text-sm rounded-xl transition shadow-md disabled:opacity-60 flex items-center justify-center gap-2 ${
                     editingReceipt
                       ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/20'
                       : 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/20'
                   }`}
                 >
-                  {editingReceipt ? 'Lưu Cập Nhật Phiếu Nhập Kho' : 'Lưu Phiếu Nhập Kho'}
+                  {isBatchGeneratingAiCodes && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>
+                    {isBatchGeneratingAiCodes
+                      ? 'AI đang tạo mã vật tư...'
+                      : editingReceipt
+                        ? 'Lưu Cập Nhật Phiếu Nhập Kho'
+                        : 'Lưu Phiếu Nhập Kho'}
+                  </span>
                 </button>
                 <button
                   type="button"

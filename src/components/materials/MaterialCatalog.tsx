@@ -5,9 +5,9 @@ import { StorageService } from '../../services/storage';
 import { exportToExcel, downloadMaterialTemplate } from '../../services/excelService';
 import {
   collectUsedMaterialCodeKeys,
-  generateUniqueMaterialCode,
   normKey
 } from '../../utils/additiveMerge';
+import { generateMaterialCodeWithAI } from '../../services/materialCodeAiService';
 import { 
   Package, 
   Plus, 
@@ -20,7 +20,9 @@ import {
   ShieldAlert, 
   X,
   FileSpreadsheet,
-  Boxes
+  Boxes,
+  Sparkles,
+  Loader2
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { ExcelImportModal } from '../common/ExcelImportModal';
@@ -73,6 +75,12 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
   const [minStockAlert, setMinStockAlert] = useState<number>(0);
   const [notes, setNotes] = useState('');
   const [formError, setFormError] = useState('');
+  const [isGeneratingAiCode, setIsGeneratingAiCode] = useState(false);
+  const [aiCodeReason, setAiCodeReason] = useState('');
+  const [aiCodeError, setAiCodeError] = useState('');
+  const isCodeManuallyEditedRef = useRef(false);
+  const aiDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aiAbortRef = useRef<AbortController | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -97,7 +105,113 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     }
   }, [isAdmin, selectedIds.size]);
 
+  const cancelPendingAiCode = () => {
+    if (aiDebounceTimerRef.current) {
+      clearTimeout(aiDebounceTimerRef.current);
+      aiDebounceTimerRef.current = null;
+    }
+    if (aiAbortRef.current) {
+      aiAbortRef.current.abort();
+      aiAbortRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => cancelPendingAiCode();
+  }, []);
+
+  const collectAllUsedMaterialCodes = () =>
+    collectUsedMaterialCodeKeys({
+      materials,
+      inbounds: StorageService.getInboundReceipts(),
+      outbounds: StorageService.getOutboundReceipts(),
+      osd: StorageService.getOsdReceipts()
+    });
+
+  const requestAiMaterialCode = async (targetName: string) => {
+    const cleanName = targetName.trim();
+    if (!cleanName) {
+      setAiCodeError('Vui lòng nhập Tên vật tư trước khi dùng AI tạo mã.');
+      return null;
+    }
+
+    cancelPendingAiCode();
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
+    setIsGeneratingAiCode(true);
+    setAiCodeError('');
+
+    try {
+      const usedCodes = collectAllUsedMaterialCodes();
+      const result = await generateMaterialCodeWithAI(
+        {
+          materialName: cleanName,
+          unit: unit.trim() || undefined,
+          category: category.trim() || undefined,
+          specification: specification.trim() || undefined,
+          drawingNo: drawingNo.trim() || undefined
+        },
+        usedCodes,
+        controller.signal
+      );
+
+      if (controller.signal.aborted) return null;
+      setCode(result.code);
+      setAiCodeReason(result.reason || '');
+      setAiCodeError('');
+      setFormError('');
+      return result.code;
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) {
+        return null;
+      }
+      setAiCodeError(err?.message || 'Không thể tạo mã vật tư bằng AI lúc này.');
+      return null;
+    } finally {
+      if (aiAbortRef.current === controller) {
+        aiAbortRef.current = null;
+        setIsGeneratingAiCode(false);
+      }
+    }
+  };
+
+  // Tự động phân tích AI để đề xuất mã vật tư khi người dùng nhập tên vật tư trong hộp thoại Thêm mới
+  useEffect(() => {
+    if (!isAddModalOpen || isCodeManuallyEditedRef.current) return;
+
+    const cleanName = name.trim();
+    if (cleanName.length < 3) {
+      if (cleanName.length === 0) {
+        cancelPendingAiCode();
+        setIsGeneratingAiCode(false);
+        setCode('');
+        setAiCodeReason('');
+        setAiCodeError('');
+      }
+      return;
+    }
+
+    if (aiDebounceTimerRef.current) {
+      clearTimeout(aiDebounceTimerRef.current);
+    }
+    aiDebounceTimerRef.current = setTimeout(() => {
+      aiDebounceTimerRef.current = null;
+      if (!isCodeManuallyEditedRef.current) {
+        void requestAiMaterialCode(cleanName);
+      }
+    }, 750);
+
+    return () => {
+      if (aiDebounceTimerRef.current) {
+        clearTimeout(aiDebounceTimerRef.current);
+        aiDebounceTimerRef.current = null;
+      }
+    };
+  }, [name, isAddModalOpen]);
+
   const openAddModal = () => {
+    cancelPendingAiCode();
+    isCodeManuallyEditedRef.current = false;
     setCode('');
     setName('');
     setUnit('Bộ');
@@ -111,6 +225,9 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     setMinStockAlert(2);
     setNotes('');
     setFormError('');
+    setAiCodeReason('');
+    setAiCodeError('');
+    setIsGeneratingAiCode(false);
     setIsAddModalOpen(true);
   };
 
@@ -131,29 +248,29 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
     setFormError('');
   };
 
-  const handleSaveAdd = (e: React.FormEvent) => {
+  const handleSaveAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       setFormError('Tên vật tư không được để trống.');
       return;
     }
 
-    const usedCodes = collectUsedMaterialCodeKeys({
-      materials,
-      inbounds: StorageService.getInboundReceipts(),
-      outbounds: StorageService.getOutboundReceipts(),
-      osd: StorageService.getOsdReceipts()
-    });
-
+    const usedCodes = collectAllUsedMaterialCodes();
     const trimmedCode = code.trim();
     if (trimmedCode && usedCodes.has(normKey(trimmedCode))) {
-      setFormError(`Mã vật tư "${trimmedCode}" đã tồn tại. Vui lòng đặt mã khác hoặc để trống để hệ thống tự tạo.`);
+      setFormError(`Mã vật tư "${trimmedCode}" đã tồn tại. Vui lòng đặt mã khác hoặc bấm AI Tạo mã.`);
       return;
     }
 
-    const finalCode = trimmedCode
-      ? trimmedCode.toUpperCase()
-      : generateUniqueMaterialCode(usedCodes, name);
+    let finalCode = trimmedCode ? trimmedCode.toUpperCase() : '';
+    if (!finalCode) {
+      const generated = await requestAiMaterialCode(name.trim());
+      if (!generated) {
+        setFormError('Không thể tự động tạo mã vật tư bằng AI. Vui lòng kiểm tra thông báo lỗi hoặc nhập mã thủ công.');
+        return;
+      }
+      finalCode = generated;
+    }
 
     StorageService.addMaterial({
       code: finalCode,
@@ -170,9 +287,10 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
       notes: notes.trim()
     });
 
+    cancelPendingAiCode();
     loadMaterials();
     setIsAddModalOpen(false);
-    showToast(`Đã thêm vật tư "${name}" vào danh mục thành công!`);
+    showToast(`Đã thêm vật tư "${name}" (${finalCode}) vào danh mục thành công!`);
   };
 
   const handleSaveEdit = (e: React.FormEvent) => {
@@ -718,16 +836,71 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                 </div>
               )}
 
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Tên vật tư thiết bị (*)</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="ví dụ: Van cầu áp lực cao Class 600 DN200"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  required
+                />
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Mã vật tư</label>
-                  <input
-                    type="text"
-                    value={code}
-                    onChange={(e) => setCode(e.target.value)}
-                    placeholder="Tự tạo nếu để trống"
-                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono font-medium"
-                  />
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 uppercase">Mã vật tư</label>
+                    <span className="text-[10px] text-slate-400 font-medium">8–20 ký tự (A-Z, 0-9, "-")</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={code}
+                      onChange={(e) => {
+                        const nextVal = e.target.value;
+                        isCodeManuallyEditedRef.current = Boolean(nextVal.trim());
+                        setCode(nextVal);
+                        setAiCodeReason('');
+                        setAiCodeError('');
+                      }}
+                      placeholder={isGeneratingAiCode ? 'AI đang phân tích tạo mã...' : 'Tự tạo bằng AI khi nhập tên'}
+                      className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono font-medium"
+                    />
+                    <button
+                      type="button"
+                      disabled={isGeneratingAiCode || !name.trim()}
+                      onClick={() => {
+                        isCodeManuallyEditedRef.current = false;
+                        void requestAiMaterialCode(name);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed text-indigo-700 border border-indigo-200 rounded-xl text-xs font-semibold transition shrink-0"
+                      title="Phân tích AI để tạo mã vật tư thông minh (8–20 ký tự)"
+                    >
+                      {isGeneratingAiCode ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span>AI Tạo mã</span>
+                    </button>
+                  </div>
+                  {isGeneratingAiCode && (
+                    <p className="mt-1 text-[11px] text-indigo-600 flex items-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                      <span>AI đang phân tích tên vật tư để đề xuất mã chuẩn...</span>
+                    </p>
+                  )}
+                  {!isGeneratingAiCode && aiCodeReason && (
+                    <p className="mt-1 text-[11px] text-emerald-700 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 shrink-0" />
+                      <span data-user-content="true">{aiCodeReason}</span>
+                    </p>
+                  )}
+                  {!isGeneratingAiCode && aiCodeError && (
+                    <p className="mt-1 text-[11px] text-rose-600">{aiCodeError}</p>
+                  )}
                 </div>
 
                 <div>
@@ -741,18 +914,6 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
                     required
                   />
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">Tên vật tư thiết bị (*)</label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="ví dụ: Van cầu áp lực cao Class 600 DN200"
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  required
-                />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -851,13 +1012,18 @@ export const MaterialCatalog: React.FC<MaterialCatalogProps> = ({ quickSearchSig
               <div className="pt-3 flex gap-2">
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl transition shadow-md shadow-blue-500/20"
+                  disabled={isGeneratingAiCode}
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold text-sm rounded-xl transition shadow-md shadow-blue-500/20 flex items-center justify-center gap-2"
                 >
-                  Lưu Vật Tư Mới
+                  {isGeneratingAiCode && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>{isGeneratingAiCode ? 'AI đang tạo mã vật tư...' : 'Lưu Vật Tư Mới'}</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsAddModalOpen(false)}
+                  onClick={() => {
+                    cancelPendingAiCode();
+                    setIsAddModalOpen(false);
+                  }}
                   className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition"
                 >
                   Hủy

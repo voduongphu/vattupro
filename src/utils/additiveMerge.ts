@@ -14,6 +14,7 @@ import {
   resolveConcurrentOsd,
   mergeVersionVectors
 } from './versionVector.ts';
+import { generateSmartDeterministicMaterialCode } from './materialCodeAi.ts';
 
 export function createEmptyTombstones(): TombstoneMap {
   return {
@@ -1633,45 +1634,9 @@ export function collectUsedMaterialCodeKeys(sources: {
 export function generateUniqueMaterialCode(
   usedCodes: Set<string>,
   materialName?: string | null,
-  prefix = 'VT'
+  prefix?: string
 ): string {
-  const cleanPrefix =
-    (prefix || 'VT')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[đĐ]/g, 'D')
-      .toUpperCase()
-      .replace(/[^A-Z0-9]+/g, '') || 'VT';
-
-  const asciiSlug = String(materialName || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[đĐ]/g, 'D')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '')
-    .slice(0, 6);
-
-  const stem = `${cleanPrefix}-${asciiSlug || 'ITEM'}`;
-  const stemPattern = new RegExp(`^${stem}-(\\d+)$`);
-  let maxSeq = 0;
-  usedCodes.forEach((code) => {
-    const m = code.match(stemPattern);
-    if (m) {
-      const num = parseInt(m[1], 10);
-      if (Number.isFinite(num) && num > maxSeq) {
-        maxSeq = num;
-      }
-    }
-  });
-
-  let seq = maxSeq + 1;
-  let candidate = `${stem}-${String(seq).padStart(3, '0')}`;
-  while (usedCodes.has(normKey(candidate))) {
-    seq++;
-    candidate = `${stem}-${String(seq).padStart(3, '0')}`;
-  }
-  usedCodes.add(normKey(candidate));
-  return candidate;
+  return generateSmartDeterministicMaterialCode(usedCodes, materialName, prefix);
 }
 
 export function normalizeMaterialNameLookupKey(raw: string | undefined | null): string {
