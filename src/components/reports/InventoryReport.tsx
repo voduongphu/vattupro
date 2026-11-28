@@ -6,6 +6,8 @@ import { exportToExcel } from '../../services/excelService';
 import { getAuthorizedWarehouses, roundQty } from '../../utils/additiveMerge';
 import { PaginationBar } from '../common/PaginationBar';
 import { InventoryReportPrintModal } from './InventoryReportPrintModal';
+import { InventoryIntegrityModal } from './InventoryIntegrityModal';
+import { analyzeInventoryIntegrity } from '../../utils/inventoryIntegrity';
 import { 
   BarChart3, 
   Download, 
@@ -13,7 +15,8 @@ import {
   Search, 
   Filter, 
   RotateCcw,
-  ShieldAlert
+  ShieldAlert,
+  ShieldCheck
 } from 'lucide-react';
 
 export const InventoryReport: React.FC = () => {
@@ -51,6 +54,7 @@ export const InventoryReport: React.FC = () => {
 
   const [syncTick, setSyncTick] = useState(0);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [isIntegrityModalOpen, setIsIntegrityModalOpen] = useState(false);
 
   useEffect(() => {
     setWarehouses(StorageService.getWarehouses());
@@ -112,6 +116,15 @@ export const InventoryReport: React.FC = () => {
   const records = useMemo(() => {
     return StorageService.calculateMergedInventoryReport(currentFilter);
   }, [syncTick, currentFilter]);
+
+  const integritySummary = useMemo(() => {
+    const whFilter = warehouseId === 'all' ? undefined : warehouseId;
+    const perWhRecords = StorageService.calculateInventoryRecords({
+      allowedWarehouseIds,
+      warehouseId: whFilter
+    });
+    return analyzeInventoryIntegrity(perWhRecords);
+  }, [syncTick, allowedWarehouseIds, warehouseId]);
 
   const selectedWarehouseName = useMemo(() => {
     if (warehouseId === 'all') return '';
@@ -260,11 +273,37 @@ export const InventoryReport: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full md:w-auto">
+        <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2 w-full md:w-auto">
+          <button
+            type="button"
+            onClick={() => setIsIntegrityModalOpen(true)}
+            className={`w-full sm:w-auto flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition active:scale-95 min-h-[42px] cursor-pointer ${
+              integritySummary.negativeQtyIssues.length > 0
+                ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 shadow-xs'
+                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 shadow-xs'
+            }`}
+          >
+            {integritySummary.negativeQtyIssues.length > 0 ? (
+              <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600" />
+            ) : (
+              <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600" />
+            )}
+            <span>Kiểm Tra Toàn Vẹn</span>
+            {integritySummary.negativeQtyIssues.length > 0 ? (
+              <span className="px-1.5 py-0.5 rounded-md bg-rose-600 text-white font-mono text-[10px] font-bold">
+                {integritySummary.negativeQtyIssues.length} âm
+              </span>
+            ) : integritySummary.weightAnomalyIssues.length > 0 ? (
+              <span className="px-1.5 py-0.5 rounded-md bg-amber-500 text-white font-mono text-[10px] font-bold">
+                {integritySummary.weightAnomalyIssues.length} KL
+              </span>
+            ) : null}
+          </button>
+
           <button
             type="button"
             onClick={() => setIsPrintModalOpen(true)}
-            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-rose-600/20 transition active:scale-95 min-h-[42px]"
+            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-rose-600/20 transition active:scale-95 min-h-[42px] cursor-pointer"
           >
             <FileText className="w-4 h-4 shrink-0" />
             <span>Xuất PDF / In A4 (FM09)</span>
@@ -273,7 +312,7 @@ export const InventoryReport: React.FC = () => {
           <button
             type="button"
             onClick={handleExportExcel}
-            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-700/20 transition active:scale-95 min-h-[42px]"
+            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-700/20 transition active:scale-95 min-h-[42px] cursor-pointer"
           >
             <Download className="w-4 h-4 shrink-0" />
             <span>Xuất Báo Cáo Ra Excel</span>
@@ -677,12 +716,24 @@ export const InventoryReport: React.FC = () => {
                     </td>
 
                     {/* Tồn số lượng = (Nhập + Nhập trả) - (Xuất + Tái xuất) */}
-                    <td className="p-3 text-right bg-emerald-50/50 font-mono font-bold text-emerald-800 text-sm">
+                    <td
+                      className={`p-3 text-right font-mono font-bold text-sm ${
+                        r.currentQuantity < 0
+                          ? 'bg-rose-50 text-rose-700'
+                          : 'bg-emerald-50/50 text-emerald-800'
+                      }`}
+                    >
                       {r.currentQuantity.toLocaleString('vi-VN')}
                     </td>
 
                     {/* Tồn khối lượng */}
-                    <td className="p-3 text-right bg-emerald-50/50 font-mono font-bold text-emerald-800 text-sm">
+                    <td
+                      className={`p-3 text-right font-mono font-bold text-sm ${
+                        r.currentWeightKg < -0.01
+                          ? 'bg-rose-50 text-rose-700'
+                          : 'bg-emerald-50/50 text-emerald-800'
+                      }`}
+                    >
                       {r.currentWeightKg.toLocaleString('vi-VN')}
                     </td>
                   </tr>
@@ -737,6 +788,16 @@ export const InventoryReport: React.FC = () => {
         baseFilter={currentFilter}
         defaultDepartmentName={selectedWarehouseName || currentUser?.department || ''}
         defaultReporterName=""
+      />
+
+      <InventoryIntegrityModal
+        isOpen={isIntegrityModalOpen}
+        onClose={() => setIsIntegrityModalOpen(false)}
+        allowedWarehouseIds={allowedWarehouseIds}
+        selectedWarehouseId={warehouseId}
+        currentUser={currentUser}
+        isAdmin={isAdmin}
+        syncTick={syncTick}
       />
     </div>
   );
