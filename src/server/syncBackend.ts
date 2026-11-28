@@ -834,15 +834,19 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
 
   // Đảm bảo dữ liệu đã được nạp trước khi xử lý mọi API
   app.use('/api', async (_req, res, next) => {
-    await ensureInitialized();
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.setHeader(
-      'Access-Control-Expose-Headers',
-      'X-Auth-Invalidated, X-Auth-Replaced-By, X-Auth-Token-Checked'
-    );
-    next();
+    try {
+      await ensureInitialized();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader(
+        'Access-Control-Expose-Headers',
+        'X-Auth-Invalidated, X-Auth-Replaced-By, X-Auth-Token-Checked'
+      );
+      next();
+    } catch (err) {
+      next(err);
+    }
   });
 
   // Kiểm tra hiệu lực phiên đơn điệu trên mọi request đồng bộ (/api/sync/*) có gửi kèm session header

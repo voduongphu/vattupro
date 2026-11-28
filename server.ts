@@ -158,13 +158,42 @@ async function startServer() {
     });
   }
 
+  httpServer.keepAliveTimeout = 65_000;
+  httpServer.headersTimeout = 66_000;
+
+  let isListening = false;
   httpServer.on('error', (err) => {
     console.error('HTTP server error:', err);
+    if (!isListening) {
+      process.exit(1);
+    }
   });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
+    isListening = true;
     console.log(`Inventory Sync Server listening on http://0.0.0.0:${PORT}`);
   });
+
+  const shutdown = (signal: string) => {
+    console.log(`Received ${signal}, shutting down gracefully...`);
+    wss.clients.forEach((client) => {
+      try {
+        client.terminate();
+      } catch {
+        // ignore
+      }
+    });
+    wss.close();
+    httpServer.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => {
+      process.exit(0);
+    }, 5000).unref();
+  };
+
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 
   void backend.ensureInitialized().catch((err) => {
     console.error('Background store initialization error:', err);
